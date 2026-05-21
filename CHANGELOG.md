@@ -9,6 +9,7 @@
 
 ### 文档治理
 
+- 二次精简当前稳定文档：保留 6 份入口但压缩重复段落，明确 README、架构、模块、规范、前端说明和更新日志的职责边界，并修正个人规则导入项目校验的当前 API 路径。
 - 精简当前文档入口：`README.md`、`docs/ARCHITECTURE.md`、`docs/MODULES.md`、`docs/STANDARDS.md`、`frontend/README.md` 与本文件成为当前说明主入口。
 - 压缩 README、架构、模块和前端说明中的重复段落，将历史需求、分钟级进度、一次性重构方案和长篇变更流水收口到 `docs/archive/`。
 

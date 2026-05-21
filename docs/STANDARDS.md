@@ -1,30 +1,30 @@
 # Excel Check 开发规范
 
-本文档是 Excel Check 的规范源文件。后续重构、接口扩展、命名整理和文档同步都以本文档为准；如需调整规范，应先更新本文档，再按单模块单切片实施。
+本文档是当前开发与文档维护规范源。若规范需要调整，先改本文档，再按单模块单切片实施。
 
 ## 1. 基本原则
 
-- 保持兼容优先：现有 API 路径、JSON 字段、`TaskTree`、统一执行结果结构不得在无迁移方案时破坏。
-- 单模块单切片：一次只整理一个明确模块，避免把命名、接口、视觉、数据库迁移混在同一轮。
-- 文档与代码同改：对外行为、部署方式、接口语义、占位能力发生变化时，同步更新 `README.md`、`docs/ARCHITECTURE.md`、`docs/MODULES.md`、`frontend/README.md` 或 `CHANGELOG.md`。
-- 兼容字段不删除：历史配置字段、旧 shim、旧配置迁移逻辑保留到有明确迁移窗口后再清理。
+- 兼容优先：无迁移方案时不得破坏 API 路径、JSON 字段、`TaskTree` 和统一执行结果结构。
+- 单模块单切片：一次只处理一个明确模块或文档切片。
+- 文档跟随事实：对外行为、部署方式、接口语义或占位状态变化时，同步稳定文档。
+- 历史兼容字段不直接删除；旧 shim 和迁移逻辑保留到有明确清理窗口。
 
 ## 2. 后端规范
 
-- Python 文件、模块、函数、变量使用 `snake_case`；Pydantic 模型、SQLAlchemy ORM 模型、异常类使用 `PascalCase`。
-- FastAPI 路由按业务模块拆分：认证、管理后台、数据源、个人校验、项目校验分别保持独立 router，再由 `backend/app/api/router.py` 聚合。
-- Pydantic 入参模型默认 `extra="forbid"`，除兼容历史配置的模型外，不接收未知字段。
-- 对外响应继续使用现有结构：普通业务响应为 `code/msg/data`，执行响应额外含 `meta`，文件下载使用 HTTP header 传递文件名。
-- 新规则优先复用 `ValidationRule.rule_type` 与规则注册中心，不为新场景复制第二套执行入口或结果结构。
-- 中文 docstring 只写在模块入口、公开函数、复杂分支和兼容逻辑处，避免逐行解释语法。
+- Python 文件、模块、函数、变量使用 `snake_case`；模型和异常类使用 `PascalCase`。
+- FastAPI 路由按业务模块拆分，再由 `backend/app/api/router.py` 聚合。
+- Pydantic 入参模型默认 `extra="forbid"`，兼容历史配置的模型除外。
+- 普通业务响应使用 `code/msg/data`；执行响应额外含 `meta`。
+- 新规则复用 `ValidationRule.rule_type` 和规则注册中心，不复制第二套执行入口。
+- 中文 docstring 只写在模块入口、公开函数、复杂分支和兼容逻辑处。
 
 ## 3. 前端规范
 
-- Vue 组件文件使用 `PascalCase.vue`；组合函数使用 `useXxx`；普通工具函数和变量使用 `camelCase`。
-- API 请求集中在 `frontend/src/api/`；接口类型集中在 `frontend/src/types/`；跨模块通用响应类型放在 `frontend/src/types/api.ts`。
-- Pinia store 只维护业务状态和动作，不直接散落 fetch 逻辑；请求统一走 `apiFetch` / `apiDownloadFile`。
-- 页面级布局优先复用 `components/shell/`；业务组件只处理当前业务模块，不复制全局按钮、表格、状态标签样式。
-- 历史 wire 字段保持原样，例如 `pathOrUrl`、`source_id`、`rule_type`、`local_path_replacement_presets`，不得为了前端命名统一直接改为驼峰字段。
+- Vue 组件使用 `PascalCase.vue`；组合函数使用 `useXxx`；普通变量和函数使用 `camelCase`。
+- 请求集中在 `frontend/src/api/`；类型集中在 `frontend/src/types/`。
+- Pinia store 维护状态和动作，请求统一走 `apiFetch` / `apiDownloadFile`。
+- 页面布局优先复用 `components/shell/`。
+- 历史 wire 字段保持原名，例如 `pathOrUrl`、`source_id`、`rule_type`、`local_path_replacement_presets`。
 
 ## 4. API 与类型规范
 
@@ -32,26 +32,42 @@
 - 统一执行入口保持：
   - 个人校验：`POST /api/v1/engine/execute`
   - 项目校验：`POST /api/v1/fixed-rules/execute`
-- `TaskTree` 稳定结构保持 `sources / variables / rules`；分页和勾选执行字段继续作为兼容扩展字段存在。
-- 前端新增接口类型时优先复用：
-  - `ApiResponse<TData, TMeta>`
-  - `ExecutionResponse<TItem>`
-  - `ApiFileResponse`
-- 如果需要新增规范字段，应先新增兼容别名并同步前后端，再规划清理旧字段。
+- `TaskTree` 稳定结构保持 `sources / variables / rules`。
+- 前端新增响应类型优先复用 `ApiResponse<TData, TMeta>`、`ExecutionResponse<TItem>`、`ApiFileResponse`。
+- 新增字段优先做兼容扩展，再规划旧字段清理。
 
 ## 5. 检查与测试
 
-- 后端基础检查：`python -m ruff check backend`。
-- 后端回归：`python -m pytest backend/tests -q`。
-- 前端基础检查：`cd frontend && npm run lint`。
-- 前端构建：`cd frontend && npm run build`。
-- 一键检查：`.\scripts\check-standards.ps1`。
+```powershell
+python -m ruff check backend
+python -m pytest backend/tests -q
+```
 
-## 6. 文档口径
+```powershell
+cd frontend
+npm run lint
+npm run build
+```
 
-- `README.md`：项目总览、启动、部署、常用 API。
-- `docs/ARCHITECTURE.md`：稳定 SDD，记录架构、数据模型、接口和已知限制。
-- `docs/MODULES.md`：模块速查，记录文件职责和逻辑分层。
-- `frontend/README.md`：前端启动、构建、组件规范和联调说明。
-- `CHANGELOG.md`：版本级变化，不记录分钟级流水。
-- `docs/archive/`：历史需求、分钟级进度、一次性重构方案和压缩前长篇变更快照；当前说明文档不再重复这些流水细节。
+```powershell
+.\scripts\check-standards.ps1
+```
+
+## 6. 稳定文档职责
+
+| 文档 | 职责 |
+|---|---|
+| `README.md` | 项目入口、启动、部署、最短联调、常用 API。 |
+| `docs/ARCHITECTURE.md` | 稳定架构、核心契约、接口边界、限制。 |
+| `docs/MODULES.md` | 路由、目录和业务切片定位。 |
+| `docs/STANDARDS.md` | 本文档：开发与文档维护规则。 |
+| `frontend/README.md` | 前端子项目启动、构建、目录和约定。 |
+| `CHANGELOG.md` | 版本级变化，不记录分钟级流水。 |
+| `docs/archive/` | 历史需求、进度日记、一次性方案和快照，不再追加。 |
+
+维护规则：
+
+- 当前说明不得复制历史流水；需要追溯时链接到 `docs/archive/`。
+- `README.md` 修改时更新 `文档更新时间：YYYY-MM-DD HH:mm`。
+- 文档中出现 API 路径时，以代码路由为准。
+- 仅文档治理不要求更新归档进度日记。
