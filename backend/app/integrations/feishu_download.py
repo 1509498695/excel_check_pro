@@ -13,9 +13,13 @@ from backend.app.loaders.svn_manager import update_svn_working_copy
 
 
 DOWNLOAD_COMMAND = "下载"
+QUERY_COMMAND = "查询"
 DEFAULT_DOWNLOAD_SUFFIXES = [".xls", ".xlsx", ".csv", ".json", ".xml", ".txt"]
 _DOWNLOAD_COMMAND_PATTERN = re.compile(
     r"^\s*@_user_[A-Za-z0-9_]+(?:\s+@_user_[A-Za-z0-9_]+)*\s+下载(?:\s+(?P<path>.+))?\s*$"
+)
+_QUERY_COMMAND_PATTERN = re.compile(
+    r"^\s*@_user_[A-Za-z0-9_]+(?:\s+@_user_[A-Za-z0-9_]+)*\s+查询(?:\s+(?P<args>.*))?\s*$"
 )
 _REMOTE_SVN_SCHEMES = {"http", "https", "svn"}
 
@@ -30,6 +34,25 @@ class DownloadResolution:
     display_name: str
     size_bytes: int
     svn_update_output: str = ""
+
+
+@dataclass(frozen=True)
+class QueryRequest:
+    """一次目录查询命令解析后的相对目录与名称前缀。"""
+
+    directory: str = "."
+    prefix: str = ""
+
+
+@dataclass(frozen=True)
+class QueryListingGroup:
+    """一个配置根目录下的查询结果。"""
+
+    title: str
+    directory: Path
+    entries: list[str]
+    source_kind: Literal["local", "svn"]
+    error: str = ""
 
 
 def extract_download_path(text: str) -> str | None:
@@ -49,6 +72,22 @@ def extract_download_path(text: str) -> str | None:
     return _strip_wrapping_quotes(raw_path)
 
 
+def extract_query_request(text: str) -> QueryRequest | None:
+    """从群 @ 文本中提取目录查询请求。"""
+    if not isinstance(text, str):
+        return None
+    match = _QUERY_COMMAND_PATTERN.match(text)
+    if match is None:
+        return None
+    args = (match.group("args") or "").strip()
+    if not args:
+        return QueryRequest()
+    tokens = _split_command_args(args)
+    if len(tokens) == 1:
+        return QueryRequest(directory=tokens[0] or ".")
+    return QueryRequest(directory=tokens[0] or ".", prefix=" ".join(tokens[1:]).strip())
+
+
 def parse_json_string_list(
     raw: str | None,
     *,
@@ -65,6 +104,81 @@ def parse_json_string_list(
     if not isinstance(payload, list):
         return fallback
     return [str(item).strip() for item in payload if str(item).strip()]
+
+
+def resolve_query_listing(
+    request: QueryRequest,
+    *,
+    local_roots: list[str],
+    svn_roots: list[str],
+    allowed_suffixes: list[str] | None,
+    update_working_copy: Callable[..., dict[str, Any]] = update_svn_working_copy,
+) -> list[QueryListingGroup]:
+    """查询配置根目录拼接相对目录后的下一级文件和目录。"""
+    relative_dir = _normalize_query_directory(request.directory)
+    prefix = (request.prefix or "").strip()
+    prefix_key = prefix.lower()
+    suffixes = _normalize_suffixes(allowed_suffixes)
+    svn_root_paths = _normalize_roots(svn_roots)
+    local_root_paths = _normalize_roots(local_roots)
+    if not svn_root_paths and not local_root_paths:
+        raise ValueError("后台尚未配置可下载根目录，请先配置本地或 SVN 下载根目录。")
+
+    groups: list[QueryListingGroup] = []
+    for index, root in enumerate(svn_root_paths, start=1):
+        title = f"SVN#{index} {root.name or '根目录'}"
+        target = (root / relative_dir).resolve(strict=False)
+        if not _is_relative_to(target, root):
+            raise ValueError("查询目录不在后台配置的下载根目录范围内。")
+        try:
+            update_working_copy(root)
+            entries = _list_query_entries(target, suffixes=suffixes, prefix_key=prefix_key)
+            groups.append(
+                QueryListingGroup(
+                    title=title,
+                    directory=target,
+                    entries=entries,
+                    source_kind="svn",
+                )
+            )
+        except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+            groups.append(
+                QueryListingGroup(
+                    title=title,
+                    directory=target,
+                    entries=[],
+                    source_kind="svn",
+                    error=_format_query_group_error(exc, root=root, target=target),
+                )
+            )
+
+    for index, root in enumerate(local_root_paths, start=1):
+        title = f"本地#{index} {root.name or '根目录'}"
+        target = (root / relative_dir).resolve(strict=False)
+        if not _is_relative_to(target, root):
+            raise ValueError("查询目录不在后台配置的下载根目录范围内。")
+        try:
+            entries = _list_query_entries(target, suffixes=suffixes, prefix_key=prefix_key)
+            groups.append(
+                QueryListingGroup(
+                    title=title,
+                    directory=target,
+                    entries=entries,
+                    source_kind="local",
+                )
+            )
+        except (FileNotFoundError, NotADirectoryError, ValueError) as exc:
+            groups.append(
+                QueryListingGroup(
+                    title=title,
+                    directory=target,
+                    entries=[],
+                    source_kind="local",
+                    error=_format_query_group_error(exc, root=root, target=target),
+                )
+            )
+
+    return groups
 
 
 def resolve_download_file(
@@ -296,6 +410,58 @@ def _existing_matches(relative_path: Path, roots: list[Path]) -> list[tuple[Path
     return matches
 
 
+def _normalize_query_directory(raw_directory: str) -> Path:
+    raw = (raw_directory or ".").strip()
+    if raw in {"", "."}:
+        return Path(".")
+    if _looks_like_remote_svn_url(raw):
+        raise ValueError("第一版暂不支持远端 SVN URL，请使用后台配置的本机 SVN 工作副本路径。")
+    candidate = Path(raw).expanduser()
+    _reject_relative_escape(candidate)
+    return candidate
+
+
+def _list_query_entries(
+    directory: Path,
+    *,
+    suffixes: set[str],
+    prefix_key: str,
+) -> list[str]:
+    if not directory.exists():
+        raise FileNotFoundError(f"目录不存在：{directory}")
+    if not directory.is_dir():
+        raise NotADirectoryError(f"查询目标不是目录：{directory}")
+
+    dirs: list[str] = []
+    files: list[str] = []
+    for child in directory.iterdir():
+        name = child.name
+        display_name = f"{name}/" if child.is_dir() else name
+        if prefix_key and not display_name.lower().startswith(prefix_key):
+            continue
+        if child.is_dir():
+            dirs.append(display_name)
+            continue
+        if child.is_file() and child.suffix.lower() in suffixes:
+            files.append(display_name)
+    dirs.sort(key=str.lower)
+    files.sort(key=str.lower)
+    return dirs + files
+
+
+def _format_query_group_error(exc: BaseException, *, root: Path, target: Path) -> str:
+    if isinstance(exc, FileNotFoundError):
+        return "目录不存在"
+    if isinstance(exc, NotADirectoryError):
+        return "查询目标不是目录"
+    message = str(exc) or exc.__class__.__name__
+    for path in (target, root):
+        path_text = str(path)
+        if path_text:
+            message = message.replace(path_text, "<配置目录>")
+    return message
+
+
 def _normalize_roots(raw_roots: list[str]) -> list[Path]:
     roots: list[Path] = []
     seen: set[str] = set()
@@ -366,11 +532,44 @@ def _strip_wrapping_quotes(raw: str) -> str:
     return raw
 
 
+def _split_command_args(raw: str) -> list[str]:
+    tokens: list[str] = []
+    current: list[str] = []
+    quote_end = ""
+    quote_pairs = {'"': '"', "'": "'", "“": "”", "‘": "’"}
+    for char in raw:
+        if quote_end:
+            if char == quote_end:
+                quote_end = ""
+            else:
+                current.append(char)
+            continue
+        if char in quote_pairs:
+            quote_end = quote_pairs[char]
+            continue
+        if char.isspace():
+            if current:
+                tokens.append("".join(current))
+                current = []
+            continue
+        current.append(char)
+    if quote_end:
+        raise ValueError("查询参数引号不完整。")
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
 __all__ = [
     "DEFAULT_DOWNLOAD_SUFFIXES",
     "DOWNLOAD_COMMAND",
     "DownloadResolution",
+    "QUERY_COMMAND",
+    "QueryListingGroup",
+    "QueryRequest",
     "extract_download_path",
+    "extract_query_request",
     "parse_json_string_list",
+    "resolve_query_listing",
     "resolve_download_file",
 ]

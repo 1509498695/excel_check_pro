@@ -124,9 +124,6 @@ def update_svn_working_copy(
     resolved_target = _normalize_target_file(target_file)
     closed_processes: list[ClosedFileProcess] = []
     recovery_steps: list[str] = []
-    if close_target_file and resolved_target is not None and resolved_target.exists():
-        closed_processes.extend(close_processes_using_file(resolved_target))
-
     completed = _run_svn_working_copy_command(executable, working_copy, "update")
     combined_output = _combined_completed_output(completed)
 

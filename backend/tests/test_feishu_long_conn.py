@@ -29,12 +29,14 @@ from sqlalchemy import select
 from backend.app.database import async_session_factory
 from backend.app.integrations import feishu_long_conn
 from backend.app.integrations.feishu_bot import FeishuApiError
+from backend.app.integrations.feishu_download import QueryListingGroup
 from backend.app.integrations.feishu_long_conn import (
     FeishuLongConnSupervisor,
     _CARD_PREVIEW_LIMIT,
     _DOWNLOAD_STARTED_REPLY,
     _DOWNLOAD_USAGE_REPLY,
     _FORBIDDEN_REPLY,
+    _QUERY_STARTED_REPLY,
     _STARTED_REPLY,
     build_project_check_card,
     dispatch_message_event,
@@ -538,6 +540,148 @@ async def test_dispatch_download_missing_path_returns_usage(
     assert [item["text"] for item in stub_dispatch_dependencies["text"]] == [
         _DOWNLOAD_USAGE_REPLY
     ]
+    assert stub_dispatch_dependencies["execute"] == []
+    assert stub_dispatch_dependencies["card"] == []
+
+
+@pytest.mark.anyio
+async def test_dispatch_query_sends_listing_to_origin_group(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_dispatch_dependencies: dict[str, Any],
+) -> None:
+    async with async_session_factory() as session:
+        session.add(
+            FeishuBotConfigRecord(
+                project_id=test_project_id,
+                app_id="cli_query",
+                app_secret_cipher=encrypt_secret("secret"),
+                local_download_roots='["D:/local"]',
+                svn_download_roots='["D:/svn"]',
+                allowed_download_suffixes='[".xlsx"]',
+            )
+        )
+        await session.commit()
+
+    def _resolve_query_listing(request, **kwargs):  # noqa: ANN001
+        assert request.directory == "configs"
+        assert request.prefix == "ab"
+        assert kwargs["local_roots"] == ["D:/local"]
+        assert kwargs["svn_roots"] == ["D:/svn"]
+        assert kwargs["allowed_suffixes"] == [".xlsx"]
+        return [
+            QueryListingGroup(
+                title="SVN#1 svn",
+                directory=Path("D:/svn/configs"),
+                entries=["Abc/", "abc.xlsx"],
+                source_kind="svn",
+            ),
+            QueryListingGroup(
+                title="本地#1 local",
+                directory=Path("D:/local/configs"),
+                entries=[],
+                source_kind="local",
+            ),
+        ]
+
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.resolve_query_listing",
+        _resolve_query_listing,
+    )
+
+    event = make_event(text="@_user_1 查询 configs ab")
+    async with async_session_factory() as session:
+        await dispatch_message_event(session, test_project_id, [], event)
+
+    texts = [item["text"] for item in stub_dispatch_dependencies["text"]]
+    assert texts[0] == _QUERY_STARTED_REPLY
+    assert "配置目录查询结果：configs，前缀：ab" in texts[1]
+    assert "[SVN#1 svn]" in texts[1]
+    assert "- Abc/" in texts[1]
+    assert "- abc.xlsx" in texts[1]
+    assert "[本地#1 local]" in texts[1]
+    assert "- 无匹配项" in texts[1]
+    assert stub_dispatch_dependencies["execute"] == []
+    assert stub_dispatch_dependencies["card"] == []
+
+
+@pytest.mark.anyio
+async def test_dispatch_query_reuses_open_id_whitelist(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_dispatch_dependencies: dict[str, Any],
+) -> None:
+    def fail_resolve(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("forbidden query must not resolve listings")
+
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.resolve_query_listing",
+        fail_resolve,
+    )
+
+    event = make_event(text="@_user_1 查询", open_id="ou_intruder")
+    async with async_session_factory() as session:
+        await dispatch_message_event(session, test_project_id, ["ou_admin"], event)
+
+    assert stub_dispatch_dependencies["text"] == [
+        {
+            "project_id": test_project_id,
+            "chat_id": "oc_demo",
+            "text": _FORBIDDEN_REPLY,
+        }
+    ]
+    assert stub_dispatch_dependencies["execute"] == []
+    assert stub_dispatch_dependencies["card"] == []
+
+
+@pytest.mark.anyio
+async def test_dispatch_query_splits_long_result_messages(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_dispatch_dependencies: dict[str, Any],
+) -> None:
+    async with async_session_factory() as session:
+        session.add(
+            FeishuBotConfigRecord(
+                project_id=test_project_id,
+                app_id="cli_query_long",
+                app_secret_cipher=encrypt_secret("secret"),
+                local_download_roots='["D:/local"]',
+                svn_download_roots="[]",
+                allowed_download_suffixes='[".xlsx"]',
+            )
+        )
+        await session.commit()
+
+    def _resolve_query_listing(request, **kwargs):  # noqa: ANN001
+        return [
+            QueryListingGroup(
+                title="本地#1 local",
+                directory=Path("D:/local"),
+                entries=[f"config_{index:02d}.xlsx" for index in range(12)],
+                source_kind="local",
+            )
+        ]
+
+    monkeypatch.setattr(feishu_long_conn, "_QUERY_MESSAGE_LIMIT", 90)
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.resolve_query_listing",
+        _resolve_query_listing,
+    )
+
+    event = make_event(text="@_user_1 查询")
+    async with async_session_factory() as session:
+        await dispatch_message_event(session, test_project_id, [], event)
+
+    texts = [item["text"] for item in stub_dispatch_dependencies["text"]]
+    assert texts[0] == _QUERY_STARTED_REPLY
+    assert len(texts) > 2
+    assert all(len(text) <= 90 for text in texts[1:])
+    assert "config_00.xlsx" in "\n".join(texts[1:])
+    assert "config_11.xlsx" in "\n".join(texts[1:])
     assert stub_dispatch_dependencies["execute"] == []
     assert stub_dispatch_dependencies["card"] == []
 

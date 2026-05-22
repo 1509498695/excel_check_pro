@@ -7,7 +7,10 @@ from pathlib import Path
 import pytest
 
 from backend.app.integrations.feishu_download import (
+    QueryRequest,
     extract_download_path,
+    extract_query_request,
+    resolve_query_listing,
     resolve_download_file,
 )
 
@@ -18,6 +21,121 @@ def test_extract_download_path_supports_plain_and_quoted_paths() -> None:
     assert extract_download_path("@_user_1 下载") == ""
     assert extract_download_path("下载 configs/a.xlsx") is None
     assert extract_download_path("@_user_1 项目校验") is None
+
+
+def test_extract_query_request_supports_directory_and_prefix() -> None:
+    assert extract_query_request("@_user_1 查询") == QueryRequest()
+    assert extract_query_request("@_user_1 查询 configs") == QueryRequest(
+        directory="configs"
+    )
+    assert extract_query_request('@_user_1 查询 "sub dir" x') == QueryRequest(
+        directory="sub dir",
+        prefix="x",
+    )
+    assert extract_query_request("@_user_1 查询 . Ab") == QueryRequest(
+        directory=".",
+        prefix="Ab",
+    )
+    assert extract_query_request("@_user_1 下载 configs/a.xlsx") is None
+
+
+def test_extract_query_request_rejects_unclosed_quote() -> None:
+    with pytest.raises(ValueError, match="引号"):
+        extract_query_request('@_user_1 查询 "sub dir')
+
+
+def test_resolve_query_listing_groups_roots_and_filters_entries(tmp_path: Path) -> None:
+    svn_root = tmp_path / "svn"
+    local_root = tmp_path / "local"
+    svn_root.mkdir()
+    local_root.mkdir()
+    (svn_root / "Zoo").mkdir()
+    (svn_root / "Alpha.xlsx").write_bytes(b"x")
+    (svn_root / "blocked.exe").write_bytes(b"x")
+    (local_root / "child").mkdir()
+    (local_root / "apple.txt").write_bytes(b"x")
+    (local_root / "beta.xlsx").write_bytes(b"x")
+    (local_root / "beta.exe").write_bytes(b"x")
+    (local_root / "child" / "nested.xlsx").write_bytes(b"x")
+    calls: list[Path] = []
+
+    def fake_update(root: Path) -> dict[str, str]:
+        calls.append(root)
+        return {"output": "updated"}
+
+    groups = resolve_query_listing(
+        QueryRequest(directory=".", prefix="a"),
+        local_roots=[str(local_root)],
+        svn_roots=[str(svn_root)],
+        allowed_suffixes=[".xlsx", ".txt"],
+        update_working_copy=fake_update,
+    )
+
+    assert calls == [svn_root.resolve(strict=False)]
+    assert [group.title for group in groups] == [
+        f"SVN#1 {svn_root.name}",
+        f"本地#1 {local_root.name}",
+    ]
+    assert groups[0].entries == ["Alpha.xlsx"]
+    assert groups[1].entries == ["apple.txt"]
+
+
+def test_resolve_query_listing_lists_directories_before_files(tmp_path: Path) -> None:
+    root = tmp_path / "configs"
+    root.mkdir()
+    (root / "Beta").mkdir()
+    (root / "alpha").mkdir()
+    (root / "c.txt").write_bytes(b"x")
+    (root / "a.xlsx").write_bytes(b"x")
+    (root / "skip.exe").write_bytes(b"x")
+
+    groups = resolve_query_listing(
+        QueryRequest(),
+        local_roots=[str(root)],
+        svn_roots=[],
+        allowed_suffixes=[".xlsx", ".txt"],
+    )
+
+    assert groups[0].entries == ["alpha/", "Beta/", "a.xlsx", "c.txt"]
+
+
+def test_resolve_query_listing_reports_missing_directory_without_path(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "configs"
+    root.mkdir()
+
+    groups = resolve_query_listing(
+        QueryRequest(directory="missing"),
+        local_roots=[str(root)],
+        svn_roots=[],
+        allowed_suffixes=[".xlsx"],
+    )
+
+    assert groups[0].entries == []
+    assert groups[0].error == "目录不存在"
+    assert str(root) not in groups[0].error
+
+
+def test_resolve_query_listing_rejects_unsafe_directory(tmp_path: Path) -> None:
+    root = tmp_path / "configs"
+    root.mkdir()
+
+    with pytest.raises(ValueError, match=r"\.\."):
+        resolve_query_listing(
+            QueryRequest(directory="../configs"),
+            local_roots=[str(root)],
+            svn_roots=[],
+            allowed_suffixes=[".xlsx"],
+        )
+
+    with pytest.raises(ValueError, match="远端 SVN URL"):
+        resolve_query_listing(
+            QueryRequest(directory="https://svn.example.com/configs"),
+            local_roots=[str(root)],
+            svn_roots=[],
+            allowed_suffixes=[".xlsx"],
+        )
 
 
 def test_resolve_absolute_path_inside_configured_root(tmp_path: Path) -> None:

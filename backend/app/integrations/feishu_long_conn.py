@@ -21,6 +21,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Literal
 
@@ -39,9 +40,13 @@ from backend.app.integrations.feishu_bot import (
 )
 from backend.app.integrations.feishu_download import (
     DEFAULT_DOWNLOAD_SUFFIXES,
+    QueryListingGroup,
+    QueryRequest,
     extract_download_path,
+    extract_query_request,
     parse_json_string_list,
     resolve_download_file,
+    resolve_query_listing,
 )
 from backend.app.models import FeishuBotConfigRecord
 from backend.app.security.crypto import decrypt_secret
@@ -63,6 +68,8 @@ _STARTED_REPLY = f"{PROJECT_CHECK_COMMAND}已开始执行，请稍候…"
 _DOWNLOAD_STARTED_REPLY = "配置文件下载已开始，正在更新并准备文件…"
 _DOWNLOAD_USAGE_REPLY = "请按格式发送：@机器人 下载 <文件路径>"
 _DOWNLOAD_UNCONFIGURED_REPLY = "后台尚未配置可下载根目录，请先配置本地或 SVN 下载根目录。"
+_QUERY_STARTED_REPLY = "配置目录查询已开始，正在更新并读取目录…"
+_QUERY_MESSAGE_LIMIT = 3500
 
 ConnectionState = Literal["inactive", "active", "error", "reconnecting"]
 
@@ -158,6 +165,15 @@ def translate_download_error(exc: BaseException) -> str:
     if isinstance(exc, ValueError):
         return f"配置文件下载失败：{exc}"
     return f"配置文件下载失败：{exc}"
+
+
+def translate_query_error(exc: BaseException) -> str:
+    """把查询链路异常翻译成给群里看的中文。"""
+    if isinstance(exc, NotImplementedError):
+        return f"配置目录查询失败：{exc}"
+    if isinstance(exc, ValueError):
+        return f"配置目录查询失败：{exc}"
+    return f"配置目录查询失败：{exc}"
 
 
 def format_int(value: Any) -> str:
@@ -387,6 +403,7 @@ async def _handle_download_command(
 
     await _safe_send_text(db, project_id, chat_id, _DOWNLOAD_STARTED_REPLY)
 
+    resolve_started_at = time.perf_counter()
     try:
         resolution = await asyncio.to_thread(
             resolve_download_file,
@@ -396,6 +413,8 @@ async def _handle_download_command(
             allowed_suffixes=allowed_suffixes,
             max_file_bytes=settings.feishu_bot_max_file_bytes,
         )
+        resolve_elapsed_ms = int((time.perf_counter() - resolve_started_at) * 1000)
+        upload_started_at = time.perf_counter()
         await send_file_to_chat(
             db=db,
             project_id=project_id,
@@ -403,13 +422,138 @@ async def _handle_download_command(
             file_path=resolution.path,
             file_name=resolution.display_name,
         )
+        upload_elapsed_ms = int((time.perf_counter() - upload_started_at) * 1000)
+        logger.info(
+            "飞书配置文件下载完成 project_id=%s chat_id=%s source=%s "
+            "path=%s resolve_ms=%s upload_send_ms=%s size_bytes=%s",
+            project_id,
+            chat_id,
+            getattr(resolution, "source_kind", "unknown"),
+            getattr(resolution, "path", ""),
+            resolve_elapsed_ms,
+            upload_elapsed_ms,
+            getattr(resolution, "size_bytes", 0),
+        )
     except Exception as exc:  # noqa: BLE001
+        elapsed_ms = int((time.perf_counter() - resolve_started_at) * 1000)
         logger.exception(
-            "飞书配置文件下载失败 project_id=%s requested_path=%r",
+            "飞书配置文件下载失败 project_id=%s requested_path=%r elapsed_ms=%s",
             project_id,
             requested_path,
+            elapsed_ms,
         )
         await _safe_send_text(db, project_id, chat_id, translate_download_error(exc))
+
+
+async def _handle_query_command(
+    db: AsyncSession,
+    project_id: int,
+    chat_id: str,
+    request: QueryRequest,
+) -> None:
+    """解析目录查询请求、更新 SVN 工作副本并把下一级名称返回原群。"""
+    result = await db.execute(
+        select(FeishuBotConfigRecord).where(
+            FeishuBotConfigRecord.project_id == project_id
+        )
+    )
+    record = result.scalar_one_or_none()
+    if record is None:
+        await _safe_send_text(db, project_id, chat_id, _DOWNLOAD_UNCONFIGURED_REPLY)
+        return
+
+    local_roots = parse_json_string_list(record.local_download_roots)
+    svn_roots = parse_json_string_list(record.svn_download_roots)
+    allowed_suffixes = parse_json_string_list(
+        record.allowed_download_suffixes,
+        default=DEFAULT_DOWNLOAD_SUFFIXES,
+    )
+
+    await _safe_send_text(db, project_id, chat_id, _QUERY_STARTED_REPLY)
+
+    query_started_at = time.perf_counter()
+    try:
+        groups = await asyncio.to_thread(
+            resolve_query_listing,
+            request,
+            local_roots=local_roots,
+            svn_roots=svn_roots,
+            allowed_suffixes=allowed_suffixes,
+        )
+        elapsed_ms = int((time.perf_counter() - query_started_at) * 1000)
+        logger.info(
+            "飞书配置目录查询完成 project_id=%s chat_id=%s directory=%r "
+            "prefix=%r groups=%s elapsed_ms=%s",
+            project_id,
+            chat_id,
+            request.directory,
+            request.prefix,
+            len(groups),
+            elapsed_ms,
+        )
+        for message in _format_query_listing_messages(request, groups):
+            await _safe_send_text(db, project_id, chat_id, message)
+    except Exception as exc:  # noqa: BLE001
+        elapsed_ms = int((time.perf_counter() - query_started_at) * 1000)
+        logger.exception(
+            "飞书配置目录查询失败 project_id=%s directory=%r prefix=%r elapsed_ms=%s",
+            project_id,
+            request.directory,
+            request.prefix,
+            elapsed_ms,
+        )
+        await _safe_send_text(db, project_id, chat_id, translate_query_error(exc))
+
+
+def _format_query_listing_messages(
+    request: QueryRequest,
+    groups: list[QueryListingGroup],
+) -> list[str]:
+    directory = request.directory or "."
+    prefix = request.prefix.strip()
+    title = f"配置目录查询结果：{directory}"
+    if prefix:
+        title = f"{title}，前缀：{prefix}"
+
+    lines: list[str] = [title]
+    if not groups:
+        lines.append("未配置可查询目录。")
+        return _split_text_messages("\n".join(lines), _QUERY_MESSAGE_LIMIT)
+
+    for group in groups:
+        lines.append("")
+        lines.append(f"[{group.title}]")
+        if group.error:
+            lines.append(f"- 查询失败：{group.error}")
+            continue
+        if not group.entries:
+            lines.append("- 无匹配项")
+            continue
+        for entry in group.entries:
+            lines.append(f"- {entry}")
+    return _split_text_messages("\n".join(lines), _QUERY_MESSAGE_LIMIT)
+
+
+def _split_text_messages(text: str, max_chars: int) -> list[str]:
+    if len(text) <= max_chars:
+        return [text]
+    messages: list[str] = []
+    current = ""
+    for line in text.splitlines():
+        candidate = line if not current else f"{current}\n{line}"
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+        if current:
+            messages.append(current)
+            current = ""
+        while len(line) > max_chars:
+            messages.append(line[:max_chars])
+            line = line[max_chars:]
+        current = line
+    if current:
+        messages.append(current)
+    return messages
 
 
 async def dispatch_message_event(
@@ -457,8 +601,19 @@ async def dispatch_message_event(
         return
     text = str(content_obj.get("text") or "")
     download_path = extract_download_path(text)
+    query_error: ValueError | None = None
+    try:
+        query_request = extract_query_request(text)
+    except ValueError as exc:
+        query_request = None
+        query_error = exc
     is_project_check = matches_project_check_command(text)
-    if download_path is None and not is_project_check:
+    if (
+        download_path is None
+        and query_request is None
+        and query_error is None
+        and not is_project_check
+    ):
         return
 
     chat_id = _get_attr_or_key(message, "chat_id", default="") or ""
@@ -483,6 +638,12 @@ async def dispatch_message_event(
 
     if download_path is not None:
         await _handle_download_command(db, project_id, chat_id, download_path)
+        return
+    if query_error is not None:
+        await _safe_send_text(db, project_id, chat_id, translate_query_error(query_error))
+        return
+    if query_request is not None:
+        await _handle_query_command(db, project_id, chat_id, query_request)
         return
 
     await _safe_send_text(db, project_id, chat_id, _STARTED_REPLY)
@@ -879,4 +1040,5 @@ __all__ = [
     "parse_allowed_open_ids",
     "translate_download_error",
     "translate_execution_error",
+    "translate_query_error",
 ]

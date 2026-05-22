@@ -106,6 +106,43 @@ def test_update_svn_working_copy_returns_output_and_used_executable(
     assert result["recovery_steps"] == []
 
 
+def test_update_svn_working_copy_success_does_not_scan_processes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    working_copy = tmp_path / "working-copy"
+    target_file = working_copy / "a.xlsx"
+    working_copy.mkdir()
+    target_file.write_bytes(b"x")
+    psutil_fake = _fake_psutil([])
+
+    def fail_process_iter(attrs=None):  # noqa: ANN001
+        raise AssertionError("process scan should only happen after file-busy errors")
+
+    psutil_fake.process_iter = fail_process_iter
+    monkeypatch.setattr(svn_manager, "resolve_svn_executable", lambda: "svn")
+    monkeypatch.setattr(svn_manager, "psutil", psutil_fake)
+    monkeypatch.setattr(
+        svn_manager.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0],
+            returncode=0,
+            stdout="At revision 10.\n",
+            stderr="",
+        ),
+    )
+
+    result = svn_manager.update_svn_working_copy(
+        working_copy,
+        target_file=target_file,
+        close_target_file=True,
+    )
+
+    assert "revision 10" in result["output"]
+    assert result["closed_processes"] == []
+
+
 def test_update_svn_working_copy_cleanup_then_retries_on_local_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -150,6 +187,56 @@ def test_update_svn_working_copy_cleanup_then_retries_on_local_lock(
     assert "revision 9" in result["output"]
 
 
+def test_update_svn_working_copy_local_lock_does_not_scan_processes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    working_copy = tmp_path / "working-copy"
+    target_file = working_copy / "a.xlsx"
+    working_copy.mkdir()
+    target_file.write_bytes(b"x")
+    responses = iter(
+        [
+            subprocess.CompletedProcess(
+                args=["svn", "update"],
+                returncode=1,
+                stdout="",
+                stderr="svn: E155004: Working copy locked; run 'svn cleanup'",
+            ),
+            subprocess.CompletedProcess(
+                args=["svn", "cleanup"],
+                returncode=0,
+                stdout="",
+                stderr="",
+            ),
+            subprocess.CompletedProcess(
+                args=["svn", "update"],
+                returncode=0,
+                stdout="At revision 12.\n",
+                stderr="",
+            ),
+        ]
+    )
+    psutil_fake = _fake_psutil([])
+
+    def fail_process_iter(attrs=None):  # noqa: ANN001
+        raise AssertionError("cleanup recovery should not scan processes")
+
+    psutil_fake.process_iter = fail_process_iter
+    monkeypatch.setattr(svn_manager, "resolve_svn_executable", lambda: "svn")
+    monkeypatch.setattr(svn_manager, "psutil", psutil_fake)
+    monkeypatch.setattr(svn_manager.subprocess, "run", lambda *args, **kwargs: next(responses))
+
+    result = svn_manager.update_svn_working_copy(
+        working_copy,
+        target_file=target_file,
+        close_target_file=True,
+    )
+
+    assert result["recovery_steps"] == ["cleanup"]
+    assert "revision 12" in result["output"]
+
+
 def test_update_svn_working_copy_reports_cleanup_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -177,45 +264,6 @@ def test_update_svn_working_copy_reports_cleanup_failure(
 
     with pytest.raises(ValueError, match="SVN cleanup 失败"):
         svn_manager.update_svn_working_copy(working_copy)
-
-
-def test_update_svn_working_copy_closes_target_file_process_before_update(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    working_copy = tmp_path / "working-copy"
-    target_file = working_copy / "a.xlsx"
-    working_copy.mkdir()
-    target_file.write_bytes(b"x")
-    process = _FakeProcess(pid=123, name="EXCEL.EXE", open_paths=[target_file])
-    monkeypatch.setattr(svn_manager, "resolve_svn_executable", lambda: "svn")
-    monkeypatch.setattr(
-        svn_manager,
-        "psutil",
-        _fake_psutil([process]),
-    )
-    monkeypatch.setattr(
-        svn_manager.subprocess,
-        "run",
-        lambda *args, **kwargs: subprocess.CompletedProcess(
-            args=args[0],
-            returncode=0,
-            stdout="At revision 10.\n",
-            stderr="",
-        ),
-    )
-
-    result = svn_manager.update_svn_working_copy(
-        working_copy,
-        target_file=target_file,
-        close_target_file=True,
-    )
-
-    assert process.terminated is True
-    assert process.killed is False
-    assert result["closed_processes"] == [
-        {"pid": 123, "name": "EXCEL.EXE", "action": "terminate"}
-    ]
 
 
 def test_update_svn_working_copy_file_busy_closes_and_retries(
@@ -254,6 +302,10 @@ def test_update_svn_working_copy_file_busy_closes_and_retries(
     )
 
     assert process.terminated is True
+    assert process.killed is False
+    assert result["closed_processes"] == [
+        {"pid": 456, "name": "wps.exe", "action": "terminate"}
+    ]
     assert result["recovery_steps"] == ["close_target_file"]
     assert "revision 11" in result["output"]
 
@@ -275,6 +327,16 @@ def test_update_svn_working_copy_reports_close_process_access_denied(
     psutil_fake = _fake_psutil([process])
     monkeypatch.setattr(svn_manager, "resolve_svn_executable", lambda: "svn")
     monkeypatch.setattr(svn_manager, "psutil", psutil_fake)
+    monkeypatch.setattr(
+        svn_manager.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args=args[0],
+            returncode=1,
+            stdout="",
+            stderr="The process cannot access the file because it is being used by another process.",
+        ),
+    )
 
     with pytest.raises(svn_manager.FileOccupancyError, match="EXCEL.EXE\\(PID 789\\)"):
         svn_manager.update_svn_working_copy(
