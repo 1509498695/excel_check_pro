@@ -132,7 +132,12 @@ def resolve_query_listing(
             raise ValueError("查询目录不在后台配置的下载根目录范围内。")
         try:
             update_working_copy(root)
-            entries = _list_query_entries(target, suffixes=suffixes, prefix_key=prefix_key)
+            entries = _list_query_entries(
+                target,
+                relative_dir=relative_dir,
+                suffixes=suffixes,
+                prefix_key=prefix_key,
+            )
             groups.append(
                 QueryListingGroup(
                     title=title,
@@ -158,7 +163,12 @@ def resolve_query_listing(
         if not _is_relative_to(target, root):
             raise ValueError("查询目录不在后台配置的下载根目录范围内。")
         try:
-            entries = _list_query_entries(target, suffixes=suffixes, prefix_key=prefix_key)
+            entries = _list_query_entries(
+                target,
+                relative_dir=relative_dir,
+                suffixes=suffixes,
+                prefix_key=prefix_key,
+            )
             groups.append(
                 QueryListingGroup(
                     title=title,
@@ -424,6 +434,7 @@ def _normalize_query_directory(raw_directory: str) -> Path:
 def _list_query_entries(
     directory: Path,
     *,
+    relative_dir: Path,
     suffixes: set[str],
     prefix_key: str,
 ) -> list[str]:
@@ -434,19 +445,25 @@ def _list_query_entries(
 
     dirs: list[str] = []
     files: list[str] = []
+    prefix_parts = () if str(relative_dir) in {"", "."} else relative_dir.parts
     for child in directory.iterdir():
         name = child.name
-        display_name = f"{name}/" if child.is_dir() else name
-        if prefix_key and not display_name.lower().startswith(prefix_key):
+        if prefix_key and not name.lower().startswith(prefix_key):
             continue
+        display_name = _format_query_entry_path(prefix_parts, name)
         if child.is_dir():
-            dirs.append(display_name)
+            dirs.append(f"{display_name}/")
             continue
         if child.is_file() and child.suffix.lower() in suffixes:
             files.append(display_name)
     dirs.sort(key=str.lower)
     files.sort(key=str.lower)
     return dirs + files
+
+
+def _format_query_entry_path(prefix_parts: tuple[str, ...], name: str) -> str:
+    parts = [part for part in (*prefix_parts, name) if part and part != "."]
+    return "\\".join(parts) if parts else name
 
 
 def _format_query_group_error(exc: BaseException, *, root: Path, target: Path) -> str:

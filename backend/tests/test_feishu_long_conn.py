@@ -574,7 +574,7 @@ async def test_dispatch_query_sends_listing_to_origin_group(
             QueryListingGroup(
                 title="SVN#1 svn",
                 directory=Path("D:/svn/configs"),
-                entries=["Abc/", "abc.xlsx"],
+                entries=[r"configs\Abc/", r"configs\abc.xlsx"],
                 source_kind="svn",
             ),
             QueryListingGroup(
@@ -598,8 +598,8 @@ async def test_dispatch_query_sends_listing_to_origin_group(
     assert texts[0] == _QUERY_STARTED_REPLY
     assert "配置目录查询结果：configs，前缀：ab" in texts[1]
     assert "[SVN#1 svn]" in texts[1]
-    assert "- Abc/" in texts[1]
-    assert "- abc.xlsx" in texts[1]
+    assert r"- configs\Abc/" in texts[1]
+    assert r"- configs\abc.xlsx" in texts[1]
     assert "[本地#1 local]" in texts[1]
     assert "- 无匹配项" in texts[1]
     assert stub_dispatch_dependencies["execute"] == []

@@ -80,6 +80,29 @@ def test_resolve_query_listing_groups_roots_and_filters_entries(tmp_path: Path) 
     assert groups[1].entries == ["apple.txt"]
 
 
+def test_resolve_query_listing_prefixes_relative_directory_for_copyable_paths(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "configs"
+    target = root / "datas_qa88"
+    target.mkdir(parents=True)
+    (target / "AlphaDir").mkdir()
+    (target / "Alpha.xlsx").write_bytes(b"x")
+    (target / "beta.xlsx").write_bytes(b"x")
+
+    groups = resolve_query_listing(
+        QueryRequest(directory="datas_qa88", prefix="a"),
+        local_roots=[str(root)],
+        svn_roots=[],
+        allowed_suffixes=[".xlsx"],
+    )
+
+    assert groups[0].entries == [
+        r"datas_qa88\AlphaDir/",
+        r"datas_qa88\Alpha.xlsx",
+    ]
+
+
 def test_resolve_query_listing_lists_directories_before_files(tmp_path: Path) -> None:
     root = tmp_path / "configs"
     root.mkdir()
@@ -97,6 +120,15 @@ def test_resolve_query_listing_lists_directories_before_files(tmp_path: Path) ->
     )
 
     assert groups[0].entries == ["alpha/", "Beta/", "a.xlsx", "c.txt"]
+
+    dot_groups = resolve_query_listing(
+        QueryRequest(directory="."),
+        local_roots=[str(root)],
+        svn_roots=[],
+        allowed_suffixes=[".xlsx", ".txt"],
+    )
+
+    assert dot_groups[0].entries == ["alpha/", "Beta/", "a.xlsx", "c.txt"]
 
 
 def test_resolve_query_listing_reports_missing_directory_without_path(
