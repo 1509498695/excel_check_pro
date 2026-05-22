@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 from uuid import uuid4
 
@@ -148,6 +149,16 @@ async def test_get_returns_empty_skeleton_when_unconfigured(
         "has_app_secret": False,
         "default_chat_id": "",
         "allowed_open_ids": [],
+        "local_download_roots": [],
+        "svn_download_roots": [],
+        "allowed_download_suffixes": [
+            ".xls",
+            ".xlsx",
+            ".csv",
+            ".json",
+            ".xml",
+            ".txt",
+        ],
         "connection_state": "inactive",
         "updated_at": None,
     }
@@ -185,13 +196,19 @@ async def test_put_blank_app_secret_rejected(
 async def test_put_creates_then_get_returns_masked_data(
     auth_client: AsyncClient,
     test_project_id: int,
+    tmp_path,
 ) -> None:
     """首次 PUT 创建成功 → GET 返回 has_app_secret=True 且不暴露密文。"""
+    local_root = tmp_path / "local configs"
+    svn_root = tmp_path / "svn_configs"
     payload = {
         "app_id": "cli_round_trip",
         "app_secret": "S3CRET_v1",
         "default_chat_id": "oc_chat_one",
         "allowed_open_ids": "ou_a, ou_b\nou_a\n  ou_c  ",
+        "local_download_roots": f"{local_root}\n{local_root}",
+        "svn_download_roots": str(svn_root),
+        "allowed_download_suffixes": "xlsx, .json\n.csv",
     }
     put_resp = await auth_client.put(
         f"/api/v1/admin/projects/{test_project_id}/feishu-bot",
@@ -204,6 +221,11 @@ async def test_put_creates_then_get_returns_masked_data(
     assert put_data["has_app_secret"] is True
     assert put_data["default_chat_id"] == "oc_chat_one"
     assert put_data["allowed_open_ids"] == ["ou_a", "ou_b", "ou_c"]
+    assert put_data["local_download_roots"] == [
+        str(local_root.resolve(strict=False))
+    ]
+    assert put_data["svn_download_roots"] == [str(svn_root.resolve(strict=False))]
+    assert put_data["allowed_download_suffixes"] == [".xlsx", ".json", ".csv"]
     assert put_data["connection_state"] == "inactive"
     assert put_data["updated_at"] is not None
 
@@ -213,6 +235,15 @@ async def test_put_creates_then_get_returns_masked_data(
     # 密文应能解出原始明文，但 GET 永远不返回原文。
     assert decrypt_secret(record.app_secret_cipher) == "S3CRET_v1"
     assert record.allowed_open_ids == "ou_a,ou_b,ou_c"
+    assert json.loads(record.local_download_roots) == [
+        str(local_root.resolve(strict=False))
+    ]
+    assert json.loads(record.svn_download_roots) == [str(svn_root.resolve(strict=False))]
+    assert json.loads(record.allowed_download_suffixes) == [
+        ".xlsx",
+        ".json",
+        ".csv",
+    ]
 
     get_resp = await auth_client.get(
         f"/api/v1/admin/projects/{test_project_id}/feishu-bot"
@@ -222,6 +253,11 @@ async def test_put_creates_then_get_returns_masked_data(
     assert get_data["has_app_secret"] is True
     assert "app_secret" not in get_data
     assert get_data["allowed_open_ids"] == ["ou_a", "ou_b", "ou_c"]
+    assert get_data["local_download_roots"] == [
+        str(local_root.resolve(strict=False))
+    ]
+    assert get_data["svn_download_roots"] == [str(svn_root.resolve(strict=False))]
+    assert get_data["allowed_download_suffixes"] == [".xlsx", ".json", ".csv"]
 
 
 @pytest.mark.anyio

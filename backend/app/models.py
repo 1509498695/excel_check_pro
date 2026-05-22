@@ -220,6 +220,13 @@ class FeishuBotConfigRecord(Base):
     default_chat_id: Mapped[str] = mapped_column(String(128), default="")
     # 触发权限白名单：飞书 open_id 列表，逗号分隔字符串落库；空串视为放开。
     allowed_open_ids: Mapped[str] = mapped_column(Text, default="")
+    # 机器人下载根目录与后缀白名单：JSON 数组字符串，运行时解析后使用。
+    local_download_roots: Mapped[str] = mapped_column(Text, default="[]")
+    svn_download_roots: Mapped[str] = mapped_column(Text, default="[]")
+    allowed_download_suffixes: Mapped[str] = mapped_column(
+        Text,
+        default='[".xls",".xlsx",".csv",".json",".xml",".txt"]',
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

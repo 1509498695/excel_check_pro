@@ -54,6 +54,10 @@ class FeishuBotConfigUpdateRequest(BaseModel):
     - default_chat_id：默认推送群 chat_id，None 保持原值，"" 表示清空。
     - allowed_open_ids：触发指令的 open_id 白名单原文（前端按行/逗号拆分输入），
       None 保持原值，"" 表示清空。
+    - local_download_roots / svn_download_roots：机器人下载根目录原文（前端按行输入），
+      None 保持原值，"" 表示清空。
+    - allowed_download_suffixes：允许下载的文件后缀原文（逗号 / 换行分隔），
+      None 保持原值，"" 表示恢复默认。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -62,6 +66,9 @@ class FeishuBotConfigUpdateRequest(BaseModel):
     app_secret: str | None = Field(default=None, max_length=256)
     default_chat_id: str | None = Field(default=None, max_length=128)
     allowed_open_ids: str | None = Field(default=None, max_length=2048)
+    local_download_roots: str | None = Field(default=None, max_length=4096)
+    svn_download_roots: str | None = Field(default=None, max_length=4096)
+    allowed_download_suffixes: str | None = Field(default=None, max_length=1024)
 
 
 class FeishuBotTestSendRequest(BaseModel):

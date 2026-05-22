@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlsplit, urlunsplit
@@ -13,6 +14,11 @@ from urllib.parse import urlparse, urlsplit, urlunsplit
 from backend.app.api.schemas import DataSource
 from backend.app.loaders.svn_credentials import SvnCredential
 from backend.config import settings
+
+try:
+    import psutil
+except ImportError:  # pragma: no cover - 依赖安装缺失时由调用路径给出中文提示
+    psutil = None  # type: ignore[assignment]
 
 
 # SVN 命令统一注入的「非交互 + 自签证书放行」参数，避免在 uvicorn 子进程里挂死。
@@ -22,6 +28,45 @@ _SVN_NONINTERACTIVE_FLAGS: tuple[str, ...] = (
     "unknown-ca,cn-mismatch,not-yet-valid,expired,other",
 )
 
+_PROCESS_CLOSE_TIMEOUT_SECONDS = 5
+_LOCAL_WORKING_COPY_LOCK_PATTERNS: tuple[str, ...] = (
+    "working copy locked",
+    "working copy is locked",
+    "run 'svn cleanup'",
+    "run \"svn cleanup\"",
+    "cleanup required",
+    "sqlite",
+    "database is locked",
+    "e155004",
+    "e155007",
+)
+_FILE_BUSY_PATTERNS: tuple[str, ...] = (
+    "sharing violation",
+    "being used by another process",
+    "process cannot access the file",
+    "access is denied",
+    "permission denied",
+    "e720032",
+    "e720005",
+)
+_SVN_FILE_LOCK_PATTERNS: tuple[str, ...] = (
+    "locked by user",
+    "already locked",
+    "no lock token",
+    "lock token",
+    "e195022",
+    "e160035",
+)
+
+
+@dataclass(frozen=True)
+class ClosedFileProcess:
+    """一次目标文件占用进程关闭结果。"""
+
+    pid: int
+    name: str
+    action: str
+
 
 class SvnRemoteError(RuntimeError):
     """带分类信息的 SVN 远端错误。"""
@@ -30,6 +75,10 @@ class SvnRemoteError(RuntimeError):
         super().__init__(message)
         self.category = category
         self.message = message
+
+
+class FileOccupancyError(RuntimeError):
+    """关闭占用目标文件的进程失败。"""
 
 
 def resolve_svn_executable() -> str | None:
@@ -49,8 +98,18 @@ def resolve_svn_executable() -> str | None:
     return None
 
 
-def update_svn_working_copy(working_copy: Path) -> dict[str, Any]:
-    """对指定目录执行一次 SVN update。"""
+def update_svn_working_copy(
+    working_copy: Path,
+    *,
+    target_file: Path | None = None,
+    close_target_file: bool = False,
+    cleanup_on_lock: bool = True,
+) -> dict[str, Any]:
+    """对指定目录执行一次 SVN update，并按需恢复常见本地异常。
+
+    ``target_file`` 仅由飞书下载链路传入：只关闭持有该目标文件句柄的进程，
+    不扫描或关闭整个工作副本目录，避免误伤。
+    """
     executable = resolve_svn_executable()
     if executable is None:
         raise NotImplementedError(
@@ -62,8 +121,130 @@ def update_svn_working_copy(working_copy: Path) -> dict[str, Any]:
     if not working_copy.is_dir():
         raise ValueError(f"SVN 更新目标不是目录：'{working_copy}'。")
 
-    completed = subprocess.run(
-        [executable, "update"],
+    resolved_target = _normalize_target_file(target_file)
+    closed_processes: list[ClosedFileProcess] = []
+    recovery_steps: list[str] = []
+    if close_target_file and resolved_target is not None and resolved_target.exists():
+        closed_processes.extend(close_processes_using_file(resolved_target))
+
+    completed = _run_svn_working_copy_command(executable, working_copy, "update")
+    combined_output = _combined_completed_output(completed)
+
+    if completed.returncode != 0:
+        combined_output = _recover_and_retry_update(
+            executable=executable,
+            working_copy=working_copy,
+            first_error=combined_output,
+            target_file=resolved_target,
+            close_target_file=close_target_file,
+            cleanup_on_lock=cleanup_on_lock,
+            closed_processes=closed_processes,
+            recovery_steps=recovery_steps,
+        )
+
+    return {
+        "output": combined_output,
+        "used_executable": executable,
+        "closed_processes": [
+            {"pid": item.pid, "name": item.name, "action": item.action}
+            for item in closed_processes
+        ],
+        "recovery_steps": recovery_steps,
+    }
+
+
+def close_processes_using_file(target_file: Path) -> list[ClosedFileProcess]:
+    """关闭持有目标文件句柄的进程；仅处理这一个文件。"""
+    if psutil is None:
+        raise FileOccupancyError("关闭占用文件需要安装 psutil 依赖。")
+
+    target = target_file.resolve(strict=False)
+    matched_processes = _find_processes_using_file(target)
+    closed: list[ClosedFileProcess] = []
+    for process in matched_processes:
+        pid = int(process.pid)
+        name = _safe_process_name(process)
+        try:
+            process.terminate()
+            try:
+                process.wait(timeout=_PROCESS_CLOSE_TIMEOUT_SECONDS)
+                closed.append(ClosedFileProcess(pid=pid, name=name, action="terminate"))
+                continue
+            except psutil.TimeoutExpired:  # type: ignore[union-attr]
+                process.kill()
+                process.wait(timeout=_PROCESS_CLOSE_TIMEOUT_SECONDS)
+                closed.append(ClosedFileProcess(pid=pid, name=name, action="kill"))
+        except (
+            psutil.AccessDenied,  # type: ignore[union-attr]
+            psutil.NoSuchProcess,  # type: ignore[union-attr]
+            psutil.TimeoutExpired,  # type: ignore[union-attr]
+            OSError,
+        ) as exc:
+            raise FileOccupancyError(
+                f"无法关闭占用文件的进程：{name}(PID {pid})，请手动关闭后重试。"
+            ) from exc
+    return closed
+
+
+def _recover_and_retry_update(
+    *,
+    executable: str,
+    working_copy: Path,
+    first_error: str,
+    target_file: Path | None,
+    close_target_file: bool,
+    cleanup_on_lock: bool,
+    closed_processes: list[ClosedFileProcess],
+    recovery_steps: list[str],
+) -> str:
+    lower_output = first_error.lower()
+    if "not a working copy" in lower_output:
+        raise ValueError(f"目标目录不是 SVN 工作副本：'{working_copy}'。")
+    if _is_svn_file_lock_error(lower_output):
+        raise ValueError("目标文件存在 SVN 锁，请锁持有人释放后重试。")
+
+    if cleanup_on_lock and _is_local_working_copy_lock_error(lower_output):
+        cleanup_result = _run_svn_working_copy_command(
+            executable,
+            working_copy,
+            "cleanup",
+        )
+        cleanup_output = _combined_completed_output(cleanup_result)
+        if cleanup_result.returncode != 0:
+            raise ValueError(
+                f"SVN cleanup 失败：{cleanup_output or '命令返回非零退出码。'}"
+            )
+        recovery_steps.append("cleanup")
+        retry_result = _run_svn_working_copy_command(executable, working_copy, "update")
+        retry_output = _combined_completed_output(retry_result)
+        if retry_result.returncode == 0:
+            return retry_output
+        if _is_svn_file_lock_error(retry_output.lower()):
+            raise ValueError("目标文件存在 SVN 锁，请锁持有人释放后重试。")
+        first_error = retry_output
+        lower_output = retry_output.lower()
+
+    if close_target_file and target_file is not None and _is_file_busy_error(lower_output):
+        closed_processes.extend(close_processes_using_file(target_file))
+        recovery_steps.append("close_target_file")
+        retry_result = _run_svn_working_copy_command(executable, working_copy, "update")
+        retry_output = _combined_completed_output(retry_result)
+        if retry_result.returncode == 0:
+            return retry_output
+        if _is_svn_file_lock_error(retry_output.lower()):
+            raise ValueError("目标文件存在 SVN 锁，请锁持有人释放后重试。")
+        first_error = retry_output
+
+    raise ValueError(f"SVN 更新失败：{first_error or '命令返回非零退出码。'}")
+
+
+def _run_svn_working_copy_command(
+    executable: str,
+    working_copy: Path,
+    command: str,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [executable, command],
         cwd=str(working_copy),
         capture_output=True,
         text=True,
@@ -72,22 +253,62 @@ def update_svn_working_copy(working_copy: Path) -> dict[str, Any]:
         check=False,
     )
 
-    stdout = completed.stdout.strip()
-    stderr = completed.stderr.strip()
-    combined_output = "\n".join(part for part in (stdout, stderr) if part).strip()
-    lower_output = combined_output.lower()
 
-    if completed.returncode != 0:
-        if "not a working copy" in lower_output:
-            raise ValueError(f"目标目录不是 SVN 工作副本：'{working_copy}'。")
-        raise ValueError(
-            f"SVN 更新失败：{combined_output or '命令返回非零退出码。'}"
-        )
+def _combined_completed_output(completed: subprocess.CompletedProcess[str]) -> str:
+    stdout = (completed.stdout or "").strip()
+    stderr = (completed.stderr or "").strip()
+    return "\n".join(part for part in (stdout, stderr) if part).strip()
 
-    return {
-        "output": combined_output,
-        "used_executable": executable,
-    }
+
+def _normalize_target_file(target_file: Path | None) -> Path | None:
+    if target_file is None:
+        return None
+    return Path(target_file).expanduser().resolve(strict=False)
+
+
+def _find_processes_using_file(target_file: Path) -> list[Any]:
+    if psutil is None:
+        raise FileOccupancyError("关闭占用文件需要安装 psutil 依赖。")
+
+    result: list[Any] = []
+    target_key = _path_key(target_file)
+    for process in psutil.process_iter(["pid", "name"]):  # type: ignore[union-attr]
+        try:
+            for opened_file in process.open_files() or []:
+                path = getattr(opened_file, "path", "")
+                if path and _path_key(Path(path)) == target_key:
+                    result.append(process)
+                    break
+        except (
+            psutil.AccessDenied,  # type: ignore[union-attr]
+            psutil.NoSuchProcess,  # type: ignore[union-attr]
+            OSError,
+        ):
+            continue
+    return result
+
+
+def _safe_process_name(process: Any) -> str:
+    try:
+        return str(process.name() or "unknown")
+    except Exception:  # noqa: BLE001
+        return "unknown"
+
+
+def _path_key(path: Path) -> str:
+    return str(path.expanduser().resolve(strict=False)).lower()
+
+
+def _is_local_working_copy_lock_error(lower_output: str) -> bool:
+    return any(pattern in lower_output for pattern in _LOCAL_WORKING_COPY_LOCK_PATTERNS)
+
+
+def _is_file_busy_error(lower_output: str) -> bool:
+    return any(pattern in lower_output for pattern in _FILE_BUSY_PATTERNS)
+
+
+def _is_svn_file_lock_error(lower_output: str) -> bool:
+    return any(pattern in lower_output for pattern in _SVN_FILE_LOCK_PATTERNS)
 
 
 def sync_svn_source(source: DataSource) -> None:

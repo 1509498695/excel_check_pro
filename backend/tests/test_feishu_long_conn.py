@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable
 from uuid import uuid4
@@ -31,6 +32,8 @@ from backend.app.integrations.feishu_bot import FeishuApiError
 from backend.app.integrations.feishu_long_conn import (
     FeishuLongConnSupervisor,
     _CARD_PREVIEW_LIMIT,
+    _DOWNLOAD_STARTED_REPLY,
+    _DOWNLOAD_USAGE_REPLY,
     _FORBIDDEN_REPLY,
     _STARTED_REPLY,
     build_project_check_card,
@@ -451,6 +454,92 @@ async def test_dispatch_translates_execution_error(
     assert texts[1].startswith("项目校验失败")
     assert "尚未配置固定规则" in texts[1]
     assert stub_calls["card"] == []
+
+
+@pytest.mark.anyio
+async def test_dispatch_download_sends_file_to_origin_group(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_dispatch_dependencies: dict[str, Any],
+) -> None:
+    async with async_session_factory() as session:
+        session.add(
+            FeishuBotConfigRecord(
+                project_id=test_project_id,
+                app_id="cli_download",
+                app_secret_cipher=encrypt_secret("secret"),
+                local_download_roots="[]",
+                svn_download_roots="[]",
+                allowed_download_suffixes='[".xlsx"]',
+            )
+        )
+        await session.commit()
+
+    file_calls: list[dict[str, Any]] = []
+
+    def _resolve_download_file(requested_path, **kwargs):  # noqa: ANN001
+        assert requested_path == "configs/a.xlsx"
+        assert kwargs["allowed_suffixes"] == [".xlsx"]
+        return SimpleNamespace(
+            path=Path("D:/configs/a.xlsx"),
+            display_name="a.xlsx",
+        )
+
+    async def _send_file(*, db, project_id, chat_id, file_path, file_name):  # noqa: ANN001
+        file_calls.append(
+            {
+                "project_id": project_id,
+                "chat_id": chat_id,
+                "file_path": file_path,
+                "file_name": file_name,
+            }
+        )
+        return {"message_id": "om_file", "file_key": "file_x"}
+
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.resolve_download_file",
+        _resolve_download_file,
+    )
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.send_file_to_chat",
+        _send_file,
+    )
+
+    event = make_event(text="@_user_1 下载 configs/a.xlsx")
+    async with async_session_factory() as session:
+        await dispatch_message_event(session, test_project_id, [], event)
+
+    assert [item["text"] for item in stub_dispatch_dependencies["text"]] == [
+        _DOWNLOAD_STARTED_REPLY
+    ]
+    assert file_calls == [
+        {
+            "project_id": test_project_id,
+            "chat_id": "oc_demo",
+            "file_path": Path("D:/configs/a.xlsx"),
+            "file_name": "a.xlsx",
+        }
+    ]
+    assert stub_dispatch_dependencies["execute"] == []
+    assert stub_dispatch_dependencies["card"] == []
+
+
+@pytest.mark.anyio
+async def test_dispatch_download_missing_path_returns_usage(
+    test_db,
+    test_project_id: int,
+    stub_dispatch_dependencies: dict[str, Any],
+) -> None:
+    event = make_event(text="@_user_1 下载")
+    async with async_session_factory() as session:
+        await dispatch_message_event(session, test_project_id, [], event)
+
+    assert [item["text"] for item in stub_dispatch_dependencies["text"]] == [
+        _DOWNLOAD_USAGE_REPLY
+    ]
+    assert stub_dispatch_dependencies["execute"] == []
+    assert stub_dispatch_dependencies["card"] == []
 
 
 @pytest.mark.anyio

@@ -17,6 +17,9 @@ export interface FeishuBotConfig {
   has_app_secret: boolean
   default_chat_id: string
   allowed_open_ids: string[]
+  local_download_roots: string[]
+  svn_download_roots: string[]
+  allowed_download_suffixes: string[]
   connection_state: FeishuBotConnectionState
   updated_at: string | null
 }
@@ -26,6 +29,9 @@ export interface FeishuBotConfigPayload {
   app_secret?: string | null
   default_chat_id?: string | null
   allowed_open_ids?: string | null
+  local_download_roots?: string | null
+  svn_download_roots?: string | null
+  allowed_download_suffixes?: string | null
 }
 
 export interface FeishuBotTestSendPayload {

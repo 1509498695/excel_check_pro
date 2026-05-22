@@ -41,6 +41,7 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
     await _ensure_user_primary_project_column()
     await _ensure_execution_result_display_value_column()
+    await _ensure_feishu_bot_download_columns()
     await _ensure_feishu_bot_app_id_unique_index()
     await ensure_default_auth_bootstrap()
 
@@ -83,6 +84,33 @@ async def _ensure_execution_result_display_value_column() -> None:
                     "ADD COLUMN display_value_json TEXT DEFAULT 'null'"
                 )
             )
+
+
+async def _ensure_feishu_bot_download_columns() -> None:
+    """为已有运行时数据库补齐飞书机器人下载配置列。"""
+
+    def _existing_columns(sync_conn) -> set[str]:
+        inspector = inspect(sync_conn)
+        return {column["name"] for column in inspector.get_columns("feishu_bot_configs")}
+
+    columns_to_add = {
+        "local_download_roots": "TEXT DEFAULT '[]'",
+        "svn_download_roots": "TEXT DEFAULT '[]'",
+        "allowed_download_suffixes": (
+            "TEXT DEFAULT '[\".xls\",\".xlsx\",\".csv\",\".json\",\".xml\",\".txt\"]'"
+        ),
+    }
+
+    async with engine.begin() as conn:
+        existing_columns = await conn.run_sync(_existing_columns)
+        for column_name, column_definition in columns_to_add.items():
+            if column_name not in existing_columns:
+                await conn.execute(
+                    text(
+                        f"ALTER TABLE feishu_bot_configs "
+                        f"ADD COLUMN {column_name} {column_definition}"
+                    )
+                )
 
 
 async def _ensure_feishu_bot_app_id_unique_index() -> None:

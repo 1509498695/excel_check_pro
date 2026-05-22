@@ -33,6 +33,9 @@ interface BotForm {
   appSecret: string
   defaultChatId: string
   allowedOpenIds: string
+  localDownloadRoots: string
+  svnDownloadRoots: string
+  allowedDownloadSuffixes: string
 }
 
 const config = ref<FeishuBotConfig | null>(null)
@@ -46,6 +49,9 @@ const form = reactive<BotForm>({
   appSecret: '',
   defaultChatId: '',
   allowedOpenIds: '',
+  localDownloadRoots: '',
+  svnDownloadRoots: '',
+  allowedDownloadSuffixes: '.xls,.xlsx,.csv,.json,.xml,.txt',
 })
 
 watch(
@@ -66,6 +72,9 @@ function resetForm(): void {
   form.appSecret = ''
   form.defaultChatId = ''
   form.allowedOpenIds = ''
+  form.localDownloadRoots = ''
+  form.svnDownloadRoots = ''
+  form.allowedDownloadSuffixes = '.xls,.xlsx,.csv,.json,.xml,.txt'
 }
 
 function applyConfigToForm(next: FeishuBotConfig): void {
@@ -74,6 +83,9 @@ function applyConfigToForm(next: FeishuBotConfig): void {
   form.appSecret = ''
   form.defaultChatId = next.default_chat_id
   form.allowedOpenIds = next.allowed_open_ids.join('\n')
+  form.localDownloadRoots = next.local_download_roots.join('\n')
+  form.svnDownloadRoots = next.svn_download_roots.join('\n')
+  form.allowedDownloadSuffixes = next.allowed_download_suffixes.join(',')
 }
 
 async function loadConfig(projectId: number): Promise<void> {
@@ -128,6 +140,9 @@ function buildPayload(): FeishuBotConfigPayload {
   payload.default_chat_id = form.defaultChatId.trim()
   // allowed_open_ids 同样始终下发原文，由后端做去重 / 拼接。
   payload.allowed_open_ids = form.allowedOpenIds
+  payload.local_download_roots = form.localDownloadRoots
+  payload.svn_download_roots = form.svnDownloadRoots
+  payload.allowed_download_suffixes = form.allowedDownloadSuffixes
   return payload
 }
 
@@ -272,6 +287,45 @@ function formatUpdatedAt(value: string | null): string {
                 :rows="4"
                 placeholder="例如：&#10;ou_aaa&#10;ou_bbb"
                 maxlength="2048"
+              />
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <div>
+              <label class="mb-1.5 block text-[12px] font-medium text-ink-500">
+                本地下载根目录（每行或英文逗号分隔）
+              </label>
+              <el-input
+                v-model="form.localDownloadRoots"
+                type="textarea"
+                :rows="4"
+                placeholder="例如：&#10;D:\project\configs"
+                maxlength="4096"
+              />
+            </div>
+
+            <div>
+              <label class="mb-1.5 block text-[12px] font-medium text-ink-500">
+                SVN 工作副本根目录（每行或英文逗号分隔）
+              </label>
+              <el-input
+                v-model="form.svnDownloadRoots"
+                type="textarea"
+                :rows="4"
+                placeholder="例如：&#10;D:\svn\game-configs"
+                maxlength="4096"
+              />
+            </div>
+
+            <div class="md:col-span-2">
+              <label class="mb-1.5 block text-[12px] font-medium text-ink-500">
+                允许下载后缀（每行或英文逗号分隔，留空恢复默认）
+              </label>
+              <el-input
+                v-model="form.allowedDownloadSuffixes"
+                placeholder=".xls,.xlsx,.csv,.json,.xml,.txt"
+                maxlength="1024"
               />
             </div>
           </div>

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -29,6 +30,8 @@ from backend.app.security.crypto import decrypt_secret
 __all__ = [
     "FeishuApiError",
     "get_tenant_access_token",
+    "upload_file",
+    "send_file_to_chat",
     "send_text_to_chat",
     "send_card_to_chat",
     "invalidate_token_cache",
@@ -41,6 +44,7 @@ TOKEN_REFRESH_BUFFER_SECONDS: int = 2 * 60
 FEISHU_OPEN_BASE_URL: str = "https://open.feishu.cn"
 TENANT_ACCESS_TOKEN_PATH: str = "/open-apis/auth/v3/tenant_access_token/internal"
 SEND_MESSAGE_PATH: str = "/open-apis/im/v1/messages"
+UPLOAD_FILE_PATH: str = "/open-apis/im/v1/files"
 
 
 _TOKEN_CACHE: dict[int, tuple[str, float]] = {}
@@ -224,6 +228,94 @@ async def _send_message(
         if isinstance(raw_id, str):
             message_id = raw_id
     return {"message_id": message_id, "raw": body}
+
+
+def _get_im_file_type(file_path: Path) -> str:
+    """按飞书 IM 文件类型映射本地文件后缀。"""
+    suffix = file_path.suffix.lower()
+    if suffix in {".xls", ".xlsx"}:
+        return "xls"
+    return "stream"
+
+
+async def upload_file(
+    db: AsyncSession,
+    project_id: int,
+    file_path: Path,
+    *,
+    file_name: str | None = None,
+) -> dict[str, Any]:
+    """上传本地文件到飞书 IM 资源，返回 {"file_key": str, "raw": dict}。"""
+    resolved_path = Path(file_path).expanduser()
+    if not resolved_path.is_file():
+        raise FeishuApiError(f"待上传文件不存在或不是文件：{resolved_path}")
+
+    token = await get_tenant_access_token(db, project_id)
+    headers = {"Authorization": f"Bearer {token}"}
+    display_name = file_name or resolved_path.name
+    data = {
+        "file_type": _get_im_file_type(resolved_path),
+        "file_name": display_name,
+    }
+
+    try:
+        with resolved_path.open("rb") as file_handle:
+            async with _create_async_client() as client:
+                response = await client.post(
+                    UPLOAD_FILE_PATH,
+                    data=data,
+                    files={"file": (display_name, file_handle)},
+                    headers=headers,
+                )
+    except httpx.TimeoutException as exc:
+        raise FeishuApiError("飞书 API 网络异常：请求超时") from exc
+    except httpx.HTTPError as exc:
+        raise FeishuApiError(f"飞书 API 网络异常：{exc}") from exc
+    except OSError as exc:
+        raise FeishuApiError(f"读取待上传文件失败：{exc}") from exc
+
+    _raise_for_http_status(response)
+    body = _parse_business_payload(response)
+    data_payload = body.get("data")
+    file_key = ""
+    if isinstance(data_payload, dict):
+        raw_file_key = data_payload.get("file_key")
+        if isinstance(raw_file_key, str):
+            file_key = raw_file_key
+    if not file_key:
+        raise FeishuApiError("飞书 API 返回缺少 file_key")
+    return {"file_key": file_key, "raw": body}
+
+
+async def send_file_to_chat(
+    db: AsyncSession,
+    project_id: int,
+    chat_id: str,
+    file_path: Path,
+    *,
+    file_name: str | None = None,
+) -> dict[str, Any]:
+    """上传本地文件并向指定群发送文件消息。"""
+    upload_result = await upload_file(
+        db,
+        project_id,
+        file_path,
+        file_name=file_name,
+    )
+    file_key = upload_result["file_key"]
+    message_result = await _send_message(
+        db=db,
+        project_id=project_id,
+        chat_id=chat_id,
+        msg_type="file",
+        content={"file_key": file_key},
+    )
+    return {
+        "message_id": message_result.get("message_id", ""),
+        "file_key": file_key,
+        "upload": upload_result.get("raw", {}),
+        "raw": message_result.get("raw", {}),
+    }
 
 
 async def send_text_to_chat(

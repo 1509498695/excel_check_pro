@@ -34,7 +34,14 @@ from backend.app.integrations.feishu_bot import (
     FeishuApiError,
     invalidate_token_cache,
     send_card_to_chat,
+    send_file_to_chat,
     send_text_to_chat,
+)
+from backend.app.integrations.feishu_download import (
+    DEFAULT_DOWNLOAD_SUFFIXES,
+    extract_download_path,
+    parse_json_string_list,
+    resolve_download_file,
 )
 from backend.app.models import FeishuBotConfigRecord
 from backend.app.security.crypto import decrypt_secret
@@ -53,6 +60,9 @@ _USER_MENTION_COMMAND_PATTERN = re.compile(r"@_user_\d+\s*项目校验")
 _CARD_PREVIEW_LIMIT = 5
 _FORBIDDEN_REPLY = "当前用户无项目校验执行权限"
 _STARTED_REPLY = f"{PROJECT_CHECK_COMMAND}已开始执行，请稍候…"
+_DOWNLOAD_STARTED_REPLY = "配置文件下载已开始，正在更新并准备文件…"
+_DOWNLOAD_USAGE_REPLY = "请按格式发送：@机器人 下载 <文件路径>"
+_DOWNLOAD_UNCONFIGURED_REPLY = "后台尚未配置可下载根目录，请先配置本地或 SVN 下载根目录。"
 
 ConnectionState = Literal["inactive", "active", "error", "reconnecting"]
 
@@ -135,6 +145,19 @@ def translate_execution_error(exc: BaseException) -> str:
     if isinstance(exc, NotImplementedError):
         return "项目校验失败：当前环境不支持该操作（如未安装 svn）"
     return f"项目校验执行失败：{exc}"
+
+
+def translate_download_error(exc: BaseException) -> str:
+    """把下载链路异常翻译成给群里看的中文。"""
+    if isinstance(exc, FeishuApiError):
+        return f"配置文件发送失败：{exc}"
+    if isinstance(exc, FileNotFoundError):
+        return f"配置文件下载失败：{exc}"
+    if isinstance(exc, NotImplementedError):
+        return f"配置文件下载失败：{exc}"
+    if isinstance(exc, ValueError):
+        return f"配置文件下载失败：{exc}"
+    return f"配置文件下载失败：{exc}"
 
 
 def format_int(value: Any) -> str:
@@ -334,6 +357,61 @@ async def _safe_send_card(
         )
 
 
+async def _handle_download_command(
+    db: AsyncSession,
+    project_id: int,
+    chat_id: str,
+    requested_path: str,
+) -> None:
+    """解析下载路径、更新 SVN 工作副本并把文件发送回原群。"""
+    if not requested_path:
+        await _safe_send_text(db, project_id, chat_id, _DOWNLOAD_USAGE_REPLY)
+        return
+
+    result = await db.execute(
+        select(FeishuBotConfigRecord).where(
+            FeishuBotConfigRecord.project_id == project_id
+        )
+    )
+    record = result.scalar_one_or_none()
+    if record is None:
+        await _safe_send_text(db, project_id, chat_id, _DOWNLOAD_UNCONFIGURED_REPLY)
+        return
+
+    local_roots = parse_json_string_list(record.local_download_roots)
+    svn_roots = parse_json_string_list(record.svn_download_roots)
+    allowed_suffixes = parse_json_string_list(
+        record.allowed_download_suffixes,
+        default=DEFAULT_DOWNLOAD_SUFFIXES,
+    )
+
+    await _safe_send_text(db, project_id, chat_id, _DOWNLOAD_STARTED_REPLY)
+
+    try:
+        resolution = await asyncio.to_thread(
+            resolve_download_file,
+            requested_path,
+            local_roots=local_roots,
+            svn_roots=svn_roots,
+            allowed_suffixes=allowed_suffixes,
+            max_file_bytes=settings.feishu_bot_max_file_bytes,
+        )
+        await send_file_to_chat(
+            db=db,
+            project_id=project_id,
+            chat_id=chat_id,
+            file_path=resolution.path,
+            file_name=resolution.display_name,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception(
+            "飞书配置文件下载失败 project_id=%s requested_path=%r",
+            project_id,
+            requested_path,
+        )
+        await _safe_send_text(db, project_id, chat_id, translate_download_error(exc))
+
+
 async def dispatch_message_event(
     db: AsyncSession,
     project_id: int,
@@ -378,7 +456,9 @@ async def dispatch_message_event(
     if not isinstance(content_obj, dict):
         return
     text = str(content_obj.get("text") or "")
-    if not matches_project_check_command(text):
+    download_path = extract_download_path(text)
+    is_project_check = matches_project_check_command(text)
+    if download_path is None and not is_project_check:
         return
 
     chat_id = _get_attr_or_key(message, "chat_id", default="") or ""
@@ -399,6 +479,10 @@ async def dispatch_message_event(
             sender_open_id,
         )
         await _safe_send_text(db, project_id, chat_id, _FORBIDDEN_REPLY)
+        return
+
+    if download_path is not None:
+        await _handle_download_command(db, project_id, chat_id, download_path)
         return
 
     await _safe_send_text(db, project_id, chat_id, _STARTED_REPLY)
@@ -793,5 +877,6 @@ __all__ = [
     "long_conn_supervisor",
     "matches_project_check_command",
     "parse_allowed_open_ids",
+    "translate_download_error",
     "translate_execution_error",
 ]

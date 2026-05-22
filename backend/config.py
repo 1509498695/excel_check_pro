@@ -64,6 +64,9 @@ class Settings:
     max_upload_mb: int = field(
         default_factory=lambda: _parse_int_env("MAX_UPLOAD_MB", 50)
     )
+    feishu_bot_max_file_mb: int = field(
+        default_factory=lambda: _parse_int_env("FEISHU_BOT_MAX_FILE_MB", 30)
+    )
     fixed_rules_config_path: Path = field(
         default_factory=lambda: Path(__file__).resolve().parent
         / ".runtime"
@@ -137,6 +140,11 @@ class Settings:
     def max_upload_bytes(self) -> int:
         """返回上传文件大小上限（字节）。"""
         return max(1, self.max_upload_mb) * 1024 * 1024
+
+    @property
+    def feishu_bot_max_file_bytes(self) -> int:
+        """返回飞书机器人单文件推送大小上限（字节）。"""
+        return max(1, self.feishu_bot_max_file_mb) * 1024 * 1024
 
 
 settings = Settings()

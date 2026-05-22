@@ -16,6 +16,7 @@ from backend.app.integrations.feishu_bot import (
     get_tenant_access_token,
     invalidate_token_cache,
     send_card_to_chat,
+    send_file_to_chat,
     send_text_to_chat,
 )
 from backend.app.models import FeishuBotConfigRecord
@@ -324,6 +325,81 @@ async def test_send_card_to_chat_serializes_card_dict(
     assert captured["body"]["msg_type"] == "interactive"
     content = json.loads(captured["body"]["content"])
     assert content == card
+
+
+@pytest.mark.anyio
+async def test_send_file_to_chat_uploads_file_then_sends_file_message(
+    test_db,
+    test_project_id: int,
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """文件消息应先上传拿 file_key，再用 msg_type=file 发送到原群。"""
+    await _seed_feishu_config(test_project_id)
+    file_path = tmp_path / "config.xlsx"
+    file_path.write_bytes(b"excel-bytes")
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "tenant_access_token": "t_file",
+                    "expire": 7200,
+                },
+            )
+        if request.url.path == feishu_bot.UPLOAD_FILE_PATH:
+            captured["upload_headers"] = dict(request.headers)
+            captured["upload_body"] = request.content
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "data": {"file_key": "file_key_unit"},
+                },
+            )
+        if request.url.path == feishu_bot.SEND_MESSAGE_PATH:
+            captured["send_url"] = str(request.url)
+            captured["send_headers"] = dict(request.headers)
+            captured["send_body"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "data": {"message_id": "om_file"},
+                },
+            )
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    async with async_session_factory() as session:
+        result = await send_file_to_chat(
+            db=session,
+            project_id=test_project_id,
+            chat_id="oc_file_chat",
+            file_path=file_path,
+        )
+
+    assert result["message_id"] == "om_file"
+    assert result["file_key"] == "file_key_unit"
+    assert captured["upload_headers"].get("authorization") == "Bearer t_file"
+    assert b'name="file_type"' in captured["upload_body"]
+    assert b"xls" in captured["upload_body"]
+    assert b"config.xlsx" in captured["upload_body"]
+    assert b"excel-bytes" in captured["upload_body"]
+    assert "receive_id_type=chat_id" in captured["send_url"]
+    assert captured["send_headers"].get("authorization") == "Bearer t_file"
+    assert captured["send_body"]["receive_id"] == "oc_file_chat"
+    assert captured["send_body"]["msg_type"] == "file"
+    assert json.loads(captured["send_body"]["content"]) == {
+        "file_key": "file_key_unit"
+    }
 
 
 @pytest.mark.anyio

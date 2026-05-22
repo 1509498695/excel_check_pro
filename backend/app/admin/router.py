@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -47,6 +49,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 DEFAULT_PROJECT_NAME = "默认项目"
+DEFAULT_FEISHU_DOWNLOAD_SUFFIXES = [".xls", ".xlsx", ".csv", ".json", ".xml", ".txt"]
 
 
 async def _get_project_or_404(db: AsyncSession, project_id: int) -> Project:
@@ -685,6 +688,34 @@ async def upsert_feishu_bot_config(
             payload.allowed_open_ids
         )
 
+    if payload.local_download_roots is None:
+        new_local_download_roots = "[]" if is_create else record.local_download_roots  # type: ignore[union-attr]
+    else:
+        new_local_download_roots = json.dumps(
+            _normalize_download_roots_input(payload.local_download_roots),
+            ensure_ascii=False,
+        )
+
+    if payload.svn_download_roots is None:
+        new_svn_download_roots = "[]" if is_create else record.svn_download_roots  # type: ignore[union-attr]
+    else:
+        new_svn_download_roots = json.dumps(
+            _normalize_download_roots_input(payload.svn_download_roots),
+            ensure_ascii=False,
+        )
+
+    if payload.allowed_download_suffixes is None:
+        new_allowed_download_suffixes = (
+            json.dumps(DEFAULT_FEISHU_DOWNLOAD_SUFFIXES, ensure_ascii=False)
+            if is_create
+            else record.allowed_download_suffixes  # type: ignore[union-attr]
+        )
+    else:
+        new_allowed_download_suffixes = json.dumps(
+            _normalize_download_suffixes_input(payload.allowed_download_suffixes),
+            ensure_ascii=False,
+        )
+
     if record is None:
         record = FeishuBotConfigRecord(
             project_id=project_id,
@@ -692,6 +723,9 @@ async def upsert_feishu_bot_config(
             app_secret_cipher=new_app_secret_cipher,
             default_chat_id=new_default_chat_id,
             allowed_open_ids=new_allowed_open_ids,
+            local_download_roots=new_local_download_roots,
+            svn_download_roots=new_svn_download_roots,
+            allowed_download_suffixes=new_allowed_download_suffixes,
         )
         db.add(record)
     else:
@@ -699,6 +733,9 @@ async def upsert_feishu_bot_config(
         record.app_secret_cipher = new_app_secret_cipher
         record.default_chat_id = new_default_chat_id
         record.allowed_open_ids = new_allowed_open_ids
+        record.local_download_roots = new_local_download_roots
+        record.svn_download_roots = new_svn_download_roots
+        record.allowed_download_suffixes = new_allowed_download_suffixes
         db.add(record)
 
     try:
@@ -814,6 +851,9 @@ def _serialize_feishu_bot_config(
             "has_app_secret": False,
             "default_chat_id": "",
             "allowed_open_ids": [],
+            "local_download_roots": [],
+            "svn_download_roots": [],
+            "allowed_download_suffixes": DEFAULT_FEISHU_DOWNLOAD_SUFFIXES,
             "connection_state": "inactive",
             "updated_at": None,
         }
@@ -824,6 +864,12 @@ def _serialize_feishu_bot_config(
         "has_app_secret": bool(record.app_secret_cipher),
         "default_chat_id": record.default_chat_id or "",
         "allowed_open_ids": _parse_allowed_open_ids(record.allowed_open_ids or ""),
+        "local_download_roots": _parse_json_string_list(record.local_download_roots),
+        "svn_download_roots": _parse_json_string_list(record.svn_download_roots),
+        "allowed_download_suffixes": _parse_json_string_list(
+            record.allowed_download_suffixes,
+            default=DEFAULT_FEISHU_DOWNLOAD_SUFFIXES,
+        ),
         # Step 1 阶段尚未引入 supervisor，状态先固定 inactive，
         # 后续 step 接入长连接后再回填真实状态。
         "connection_state": "inactive",
@@ -855,6 +901,75 @@ def _parse_allowed_open_ids(raw: str) -> list[str]:
     if not raw:
         return []
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _normalize_download_roots_input(raw: str) -> list[str]:
+    """前端根目录原文 → 去重后的绝对目录列表。"""
+    if not raw:
+        return []
+    result: list[str] = []
+    seen: set[str] = set()
+    for piece in _split_multiline_csv(raw):
+        path = Path(piece).expanduser()
+        if not path.is_absolute():
+            raise HTTPException(status_code=400, detail="下载根目录必须是本机绝对路径")
+        normalized = str(path.resolve(strict=False))
+        key = normalized.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(normalized)
+    return result
+
+
+def _normalize_download_suffixes_input(raw: str) -> list[str]:
+    """前端后缀白名单原文 → 规范化后缀列表；空值恢复默认。"""
+    if not raw.strip():
+        return list(DEFAULT_FEISHU_DOWNLOAD_SUFFIXES)
+    result: list[str] = []
+    seen: set[str] = set()
+    for piece in _split_multiline_csv(raw):
+        suffix = piece.strip().lower()
+        if not suffix:
+            continue
+        if not suffix.startswith("."):
+            suffix = f".{suffix}"
+        if suffix == "." or any(char in suffix for char in "\\/"):
+            raise HTTPException(status_code=400, detail=f"文件后缀不合法：{piece}")
+        if suffix in seen:
+            continue
+        seen.add(suffix)
+        result.append(suffix)
+    return result or list(DEFAULT_FEISHU_DOWNLOAD_SUFFIXES)
+
+
+def _split_multiline_csv(raw: str) -> list[str]:
+    """按换行与英文逗号拆分前端 textarea。"""
+    pieces: list[str] = []
+    for chunk in raw.replace("\r", "\n").split("\n"):
+        for piece in chunk.split(","):
+            normalized = piece.strip()
+            if normalized:
+                pieces.append(normalized)
+    return pieces
+
+
+def _parse_json_string_list(
+    raw: str | None,
+    *,
+    default: list[str] | None = None,
+) -> list[str]:
+    """解析 JSON 数组字符串；旧库异常值按默认值兜底。"""
+    fallback = list(default or [])
+    if not raw:
+        return fallback
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        return fallback
+    if not isinstance(payload, list):
+        return fallback
+    return [str(item).strip() for item in payload if str(item).strip()]
 
 
 def _build_test_card(text_content: str) -> dict[str, Any]:

@@ -121,6 +121,18 @@ export async function apiUpsertFeishuBotConfig(
   if (payload.allowed_open_ids !== undefined && payload.allowed_open_ids !== null) {
     body.allowed_open_ids = payload.allowed_open_ids
   }
+  if (payload.local_download_roots !== undefined && payload.local_download_roots !== null) {
+    body.local_download_roots = payload.local_download_roots
+  }
+  if (payload.svn_download_roots !== undefined && payload.svn_download_roots !== null) {
+    body.svn_download_roots = payload.svn_download_roots
+  }
+  if (
+    payload.allowed_download_suffixes !== undefined &&
+    payload.allowed_download_suffixes !== null
+  ) {
+    body.allowed_download_suffixes = payload.allowed_download_suffixes
+  }
   return apiFetch<SingleResponse<FeishuBotConfig>>(
     `/api/v1/admin/projects/${projectId}/feishu-bot`,
     {
