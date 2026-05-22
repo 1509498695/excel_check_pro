@@ -101,12 +101,14 @@ def resolve_svn_executable() -> str | None:
 def update_svn_working_copy(
     working_copy: Path,
     *,
+    update_target: Path | None = None,
     target_file: Path | None = None,
     close_target_file: bool = False,
     cleanup_on_lock: bool = True,
 ) -> dict[str, Any]:
     """对指定目录执行一次 SVN update，并按需恢复常见本地异常。
 
+    ``update_target`` 用于只更新工作副本内的某个相对路径，未传时更新整目录。
     ``target_file`` 仅由飞书下载链路传入：只关闭持有该目标文件句柄的进程，
     不扫描或关闭整个工作副本目录，避免误伤。
     """
@@ -121,10 +123,16 @@ def update_svn_working_copy(
     if not working_copy.is_dir():
         raise ValueError(f"SVN 更新目标不是目录：'{working_copy}'。")
 
+    resolved_update_target = _normalize_update_target(working_copy, update_target)
     resolved_target = _normalize_target_file(target_file)
     closed_processes: list[ClosedFileProcess] = []
     recovery_steps: list[str] = []
-    completed = _run_svn_working_copy_command(executable, working_copy, "update")
+    completed = _run_svn_working_copy_command(
+        executable,
+        working_copy,
+        "update",
+        target_path=resolved_update_target,
+    )
     combined_output = _combined_completed_output(completed)
 
     if completed.returncode != 0:
@@ -132,6 +140,7 @@ def update_svn_working_copy(
             executable=executable,
             working_copy=working_copy,
             first_error=combined_output,
+            update_target=resolved_update_target,
             target_file=resolved_target,
             close_target_file=close_target_file,
             cleanup_on_lock=cleanup_on_lock,
@@ -188,6 +197,7 @@ def _recover_and_retry_update(
     executable: str,
     working_copy: Path,
     first_error: str,
+    update_target: Path | None,
     target_file: Path | None,
     close_target_file: bool,
     cleanup_on_lock: bool,
@@ -212,7 +222,12 @@ def _recover_and_retry_update(
                 f"SVN cleanup 失败：{cleanup_output or '命令返回非零退出码。'}"
             )
         recovery_steps.append("cleanup")
-        retry_result = _run_svn_working_copy_command(executable, working_copy, "update")
+        retry_result = _run_svn_working_copy_command(
+            executable,
+            working_copy,
+            "update",
+            target_path=update_target,
+        )
         retry_output = _combined_completed_output(retry_result)
         if retry_result.returncode == 0:
             return retry_output
@@ -224,7 +239,12 @@ def _recover_and_retry_update(
     if close_target_file and target_file is not None and _is_file_busy_error(lower_output):
         closed_processes.extend(close_processes_using_file(target_file))
         recovery_steps.append("close_target_file")
-        retry_result = _run_svn_working_copy_command(executable, working_copy, "update")
+        retry_result = _run_svn_working_copy_command(
+            executable,
+            working_copy,
+            "update",
+            target_path=update_target,
+        )
         retry_output = _combined_completed_output(retry_result)
         if retry_result.returncode == 0:
             return retry_output
@@ -239,9 +259,14 @@ def _run_svn_working_copy_command(
     executable: str,
     working_copy: Path,
     command: str,
+    *,
+    target_path: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
+    args = [executable, command]
+    if target_path is not None:
+        args.append(str(target_path))
     return subprocess.run(
-        [executable, command],
+        args,
         cwd=str(working_copy),
         capture_output=True,
         text=True,
@@ -261,6 +286,28 @@ def _normalize_target_file(target_file: Path | None) -> Path | None:
     if target_file is None:
         return None
     return Path(target_file).expanduser().resolve(strict=False)
+
+
+def _normalize_update_target(
+    working_copy: Path,
+    update_target: Path | None,
+) -> Path | None:
+    if update_target is None:
+        return None
+    root = Path(working_copy).expanduser().resolve(strict=False)
+    target = Path(update_target).expanduser()
+    resolved = (
+        target.resolve(strict=False)
+        if target.is_absolute()
+        else (root / target).resolve(strict=False)
+    )
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"SVN 更新目标不在工作副本内：'{resolved}'。") from exc
+    if str(relative) in {"", "."}:
+        return None
+    return relative
 
 
 def _find_processes_using_file(target_file: Path) -> list[Any]:

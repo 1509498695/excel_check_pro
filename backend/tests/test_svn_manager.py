@@ -143,6 +143,53 @@ def test_update_svn_working_copy_success_does_not_scan_processes(
     assert result["closed_processes"] == []
 
 
+def test_update_svn_working_copy_can_update_relative_target(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    working_copy = tmp_path / "working-copy"
+    target_dir = working_copy / "datas_qa88"
+    target_dir.mkdir(parents=True)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(svn_manager, "resolve_svn_executable", lambda: "svn")
+
+    def fake_run(args, **kwargs):  # noqa: ANN001
+        calls.append(args)
+        return subprocess.CompletedProcess(
+            args=args,
+            returncode=0,
+            stdout="At revision 13.\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(svn_manager.subprocess, "run", fake_run)
+
+    result = svn_manager.update_svn_working_copy(
+        working_copy,
+        update_target=target_dir,
+    )
+
+    assert calls == [["svn", "update", "datas_qa88"]]
+    assert "revision 13" in result["output"]
+
+
+def test_update_svn_working_copy_rejects_update_target_outside_working_copy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    working_copy = tmp_path / "working-copy"
+    outside = tmp_path / "outside"
+    working_copy.mkdir()
+    outside.mkdir()
+    monkeypatch.setattr(svn_manager, "resolve_svn_executable", lambda: "svn")
+
+    with pytest.raises(ValueError, match="工作副本内"):
+        svn_manager.update_svn_working_copy(
+            working_copy,
+            update_target=outside,
+        )
+
+
 def test_update_svn_working_copy_cleanup_then_retries_on_local_lock(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

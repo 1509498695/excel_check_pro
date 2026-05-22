@@ -131,7 +131,8 @@ def resolve_query_listing(
         if not _is_relative_to(target, root):
             raise ValueError("查询目录不在后台配置的下载根目录范围内。")
         try:
-            update_working_copy(root)
+            update_target = None if str(relative_dir) in {"", "."} else target
+            update_working_copy(root, update_target=update_target)
             entries = _list_query_entries(
                 target,
                 relative_dir=relative_dir,

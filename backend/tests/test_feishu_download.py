@@ -57,10 +57,10 @@ def test_resolve_query_listing_groups_roots_and_filters_entries(tmp_path: Path) 
     (local_root / "beta.xlsx").write_bytes(b"x")
     (local_root / "beta.exe").write_bytes(b"x")
     (local_root / "child" / "nested.xlsx").write_bytes(b"x")
-    calls: list[Path] = []
+    calls: list[tuple[Path, Path | None]] = []
 
-    def fake_update(root: Path) -> dict[str, str]:
-        calls.append(root)
+    def fake_update(root: Path, *, update_target: Path | None = None) -> dict[str, str]:
+        calls.append((root, update_target))
         return {"output": "updated"}
 
     groups = resolve_query_listing(
@@ -71,7 +71,7 @@ def test_resolve_query_listing_groups_roots_and_filters_entries(tmp_path: Path) 
         update_working_copy=fake_update,
     )
 
-    assert calls == [svn_root.resolve(strict=False)]
+    assert calls == [(svn_root.resolve(strict=False), None)]
     assert [group.title for group in groups] == [
         f"SVN#1 {svn_root.name}",
         f"本地#1 {local_root.name}",
@@ -101,6 +101,36 @@ def test_resolve_query_listing_prefixes_relative_directory_for_copyable_paths(
         r"datas_qa88\AlphaDir/",
         r"datas_qa88\Alpha.xlsx",
     ]
+
+
+def test_resolve_query_listing_updates_only_requested_svn_directory(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "svn"
+    target = root / "datas_qa88"
+    target.mkdir(parents=True)
+    (target / "about.xlsx").write_bytes(b"x")
+    calls: list[tuple[Path, Path | None]] = []
+
+    def fake_update(root_path: Path, *, update_target: Path | None = None) -> dict[str, str]:
+        calls.append((root_path, update_target))
+        return {"output": "updated"}
+
+    groups = resolve_query_listing(
+        QueryRequest(directory="datas_qa88", prefix="a"),
+        local_roots=[],
+        svn_roots=[str(root)],
+        allowed_suffixes=[".xlsx"],
+        update_working_copy=fake_update,
+    )
+
+    assert calls == [
+        (
+            root.resolve(strict=False),
+            target.resolve(strict=False),
+        )
+    ]
+    assert groups[0].entries == [r"datas_qa88\about.xlsx"]
 
 
 def test_resolve_query_listing_lists_directories_before_files(tmp_path: Path) -> None:
