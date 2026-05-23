@@ -7,6 +7,9 @@ import type {
   CompositePreviewResponse,
   DataSource,
   ExecuteResponse,
+  FeishuPermissionCheckResponse,
+  FeishuSendAuthorizationCardResponse,
+  FeishuSourceAuthorizationRequest,
   LocalDirectoryValidateResponse,
   LocalPickResponse,
   SourceCapabilitiesResponse,
@@ -53,6 +56,27 @@ export async function fetchSourceMetadata(source: DataSource): Promise<SourceMet
     method: 'POST',
     body: JSON.stringify(source),
   })
+}
+
+export async function checkFeishuSourcePermission(
+  payload: FeishuSourceAuthorizationRequest,
+): Promise<FeishuPermissionCheckResponse> {
+  return apiFetch<FeishuPermissionCheckResponse>('/api/v1/feishu/sources/check-permission', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function sendFeishuSourceAuthorizationCard(
+  payload: FeishuSourceAuthorizationRequest,
+): Promise<FeishuSendAuthorizationCardResponse> {
+  return apiFetch<FeishuSendAuthorizationCardResponse>(
+    '/api/v1/feishu/sources/send-authorization-card',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
 }
 
 export async function fetchColumnPreview(

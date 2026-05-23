@@ -12,11 +12,31 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.schemas import DataSource
-from backend.app.auth.dependencies import CurrentUserContext, get_current_user
+from backend.app.auth.dependencies import (
+    CurrentUserContext,
+    get_current_user,
+    get_optional_user,
+)
+from backend.app.database import get_db
+from backend.app.integrations.feishu_client import (
+    FEISHU_API_ERROR,
+    FEISHU_APP_PERMISSION_MISSING,
+    FEISHU_DOCUMENT_NOT_FOUND,
+    FEISHU_DOCUMENT_PERMISSION_DENIED,
+    FEISHU_INVALID_URL,
+    FEISHU_READ_RANGE_TOO_LARGE,
+    FeishuClientError,
+)
+from backend.app.loaders.feishu_reader import (
+    preview_feishu_composite_variable,
+    preview_feishu_source_column,
+    read_feishu_source_metadata,
+)
 from backend.app.loaders.local_reader import (
     preview_composite_variable,
     preview_source_column,
@@ -132,12 +152,35 @@ _SVN_ERROR_HTTP_MAP: dict[str, tuple[int, int]] = {
     "unknown": (500, 500),
 }
 
+_FEISHU_METADATA_ERROR_HTTP_MAP: dict[str, int] = {
+    FEISHU_INVALID_URL: 400,
+    FEISHU_APP_PERMISSION_MISSING: 403,
+    FEISHU_DOCUMENT_PERMISSION_DENIED: 403,
+    FEISHU_DOCUMENT_NOT_FOUND: 404,
+    FEISHU_READ_RANGE_TOO_LARGE: 502,
+    FEISHU_API_ERROR: 502,
+}
+
 
 def _raise_for_svn_error(error: SvnRemoteError) -> None:
     status_code, code_value = _SVN_ERROR_HTTP_MAP.get(error.category, (500, 500))
     raise HTTPException(
         status_code=status_code,
         detail={"code": code_value, "msg": error.message, "category": error.category},
+    )
+
+
+def _raise_for_feishu_metadata_error(error: FeishuClientError) -> None:
+    """将飞书客户端错误转换为 metadata 接口的 HTTP 错误。"""
+    status_code = _FEISHU_METADATA_ERROR_HTTP_MAP.get(error.code, 502)
+    message = (
+        "机器人暂无该表格权限，请发送授权请求到群。"
+        if error.code == FEISHU_DOCUMENT_PERMISSION_DENIED
+        else error.message
+    )
+    raise HTTPException(
+        status_code=status_code,
+        detail={"code": error.code, "msg": message},
     )
 
 
@@ -414,8 +457,33 @@ async def validate_local_directory_path(
 
 
 @router.post("/metadata")
-async def get_source_metadata(source: DataSource) -> dict[str, Any]:
+async def get_source_metadata(
+    source: DataSource,
+    db: AsyncSession = Depends(get_db),
+    ctx: CurrentUserContext | None = Depends(get_optional_user),
+) -> dict[str, Any]:
     """返回变量池构建所需的 Sheet 与列结构。"""
+    if source.type == "feishu":
+        if ctx is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="未提供认证令牌",
+            )
+        project_id = ctx.require_project_member()
+        try:
+            metadata = await read_feishu_source_metadata(
+                source,
+                db=db,
+                project_id=project_id,
+            )
+        except FeishuClientError as error:
+            _raise_for_feishu_metadata_error(error)
+        return {
+            "code": 200,
+            "msg": "ok",
+            "data": metadata,
+        }
+
     try:
         metadata = read_source_metadata(source)
     except (FileNotFoundError, ValueError, ImportError) as error:
@@ -429,8 +497,39 @@ async def get_source_metadata(source: DataSource) -> dict[str, Any]:
 
 
 @router.post("/column-preview")
-async def get_source_column_preview(payload: ColumnPreviewRequest) -> dict[str, Any]:
+async def get_source_column_preview(
+    payload: ColumnPreviewRequest,
+    db: AsyncSession = Depends(get_db),
+    ctx: CurrentUserContext | None = Depends(get_optional_user),
+) -> dict[str, Any]:
     """返回单个变量详情弹窗所需的列预览数据。"""
+    if payload.source.type == "feishu":
+        if ctx is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="未提供认证令牌",
+            )
+        project_id = ctx.require_project_member()
+        try:
+            preview = await preview_feishu_source_column(
+                payload.source,
+                sheet_name=payload.sheet,
+                column_name=payload.column,
+                limit=payload.limit,
+                db=db,
+                project_id=project_id,
+            )
+        except FeishuClientError as error:
+            _raise_for_feishu_metadata_error(error)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+        return {
+            "code": 200,
+            "msg": "ok",
+            "data": preview,
+        }
+
     try:
         preview = preview_source_column(
             payload.source,
@@ -449,8 +548,40 @@ async def get_source_column_preview(payload: ColumnPreviewRequest) -> dict[str, 
 
 
 @router.post("/composite-preview")
-async def get_composite_variable_preview(payload: CompositePreviewRequest) -> dict[str, Any]:
+async def get_composite_variable_preview(
+    payload: CompositePreviewRequest,
+    db: AsyncSession = Depends(get_db),
+    ctx: CurrentUserContext | None = Depends(get_optional_user),
+) -> dict[str, Any]:
     """返回组合变量所需的 JSON 映射预览。"""
+    if payload.source.type == "feishu":
+        if ctx is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="未提供认证令牌",
+            )
+        project_id = ctx.require_project_member()
+        try:
+            preview = await preview_feishu_composite_variable(
+                payload.source,
+                sheet_name=payload.sheet,
+                columns=payload.columns,
+                key_column=payload.key_column,
+                append_index_to_key=payload.append_index_to_key,
+                db=db,
+                project_id=project_id,
+            )
+        except FeishuClientError as error:
+            _raise_for_feishu_metadata_error(error)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+        return {
+            "code": 200,
+            "msg": "ok",
+            "data": preview,
+        }
+
     try:
         preview = preview_composite_variable(
             payload.source,

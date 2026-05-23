@@ -42,9 +42,14 @@ async def execute_engine(
 ) -> dict[str, Any]:
     """按 TaskTree 串起加载、规则执行与响应组装流程。"""
     start = time.perf_counter()
+    project_id = (
+        ctx.require_project_member()
+        if ctx is not None and ctx.project_id is not None
+        else None
+    )
 
     try:
-        execution_artifacts = run_execution_pipeline(task_tree)
+        execution_artifacts = run_execution_pipeline(task_tree, project_id=project_id)
     except (ValueError, ImportError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -57,11 +62,11 @@ async def execute_engine(
     page, size = normalize_result_page(task_tree.page, task_tree.size)
 
     result_id: int | None = None
-    if ctx is not None and ctx.project_id is not None:
+    if ctx is not None and project_id is not None:
         result_id = await persist_execution_result(
             db,
             scope_type="workbench",
-            project_id=ctx.require_project_member(),
+            project_id=project_id,
             user_id=ctx.user_id,
             abnormal_results=abnormal_results,
             execution_time_ms=elapsed_ms,

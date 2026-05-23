@@ -5,7 +5,7 @@ export const DEFAULT_SOURCE_TYPE: CreatableSourceType = 'svn'
 export const SOURCE_TYPE_OPTIONS: Array<{ label: string; value: CreatableSourceType; disabled?: boolean }> = [
   { label: 'SVN（推荐 HTTP 链接）', value: 'svn' },
   { label: '本地 Excel (.xlsx / .xls)', value: 'local_excel' },
-  { label: '飞书表格（占位）', value: 'feishu', disabled: true },
+  { label: '飞书电子表格', value: 'feishu' },
 ]
 
 export const EXPECTED_TYPE_OPTIONS: Array<{ label: string; value: ExpectedType }> = [

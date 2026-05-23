@@ -1,8 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 
-import { pickLocalSourcePath, uploadSourceFile } from '../../api/workbench'
+import {
+  checkFeishuSourcePermission,
+  pickLocalSourcePath,
+  sendFeishuSourceAuthorizationCard,
+  uploadSourceFile,
+} from '../../api/workbench'
 import {
   ensureTrailingSlash,
   fetchSvnCredential,
@@ -17,7 +22,7 @@ import SvnCredentialDialog from './SvnCredentialDialog.vue'
 import EmptyState from '../shell/EmptyState.vue'
 import { useWorkbenchStore } from '../../store/workbench'
 import type { SourceManagementStoreLike } from '../../types/panelStores'
-import type { DataSource, SourceType } from '../../types/workbench'
+import type { DataSource, FeishuAuthorizationStatus, SourceType } from '../../types/workbench'
 import { extractSourceBasename } from '../../utils/sourcePathReplacement'
 import { DEFAULT_SOURCE_TYPE, getSourceTypeLabel, SOURCE_TYPE_OPTIONS } from '../../utils/workbenchMeta'
 
@@ -72,9 +77,16 @@ const draftErrors = reactive({
 })
 
 const localSource = computed(() => draft.type === 'local_excel')
-const needsToken = computed(() => draft.type === 'feishu')
+const isFeishuSource = computed(() => draft.type === 'feishu')
 const isSvnSource = computed(() => draft.type === 'svn')
 const isUnsupportedCsvSource = computed(() => draft.type === 'local_csv')
+const feishuAuthState = ref<'idle' | 'checking' | 'requesting'>('idle')
+const feishuAuthStatus = ref<FeishuAuthorizationStatus | null>(null)
+const feishuAuthMessage = ref('')
+const feishuPermissionPollTimer = ref<number | null>(null)
+const feishuPermissionPollStartedAt = ref<number | null>(null)
+const FEISHU_PERMISSION_POLL_INTERVAL_MS = 3000
+const FEISHU_PERMISSION_POLL_TIMEOUT_MS = 10 * 60 * 1000
 
 // SVN 子模式：远端 URL（默认）或本地工作副本路径
 const svnSubMode = ref<'remote' | 'working_copy'>('remote')
@@ -107,6 +119,95 @@ const canBrowseSvnDirectory = computed(
     isHttpDirUrl(draft.pathOrUrl?.trim() ?? ''),
 )
 const savedSvnDirectoryOptions = computed(() => store.svnPathReplacementPresets ?? [])
+const feishuAuthStatusLabelMap: Record<FeishuAuthorizationStatus, string> = {
+  authorized: '已授权',
+  pending_authorization: '待授权',
+  authorization_sent: '已发送授权请求',
+  authorization_success: '授权成功',
+  authorization_failed: '授权失败',
+  invalid_url: '链接无效',
+  app_permission_missing: '应用权限不足',
+  document_permission_denied: '文档权限不足',
+  not_found: '表格不存在',
+  bot_not_configured: '机器人未配置',
+  callback_not_configured: '回调地址未配置',
+  send_failed: '发送失败',
+}
+const feishuAuthStatusLabel = computed(() => {
+  if (feishuAuthState.value === 'checking') return '检测中'
+  if (feishuAuthState.value === 'requesting') return '授权请求发送中'
+  if (!feishuAuthStatus.value && hasFeishuUrl.value) return '待授权'
+  if (!feishuAuthStatus.value) return '待检测'
+  return feishuAuthStatusLabelMap[feishuAuthStatus.value] ?? '状态未知'
+})
+const feishuAuthStatusTone = computed<'success' | 'info' | 'warning' | 'danger'>(() => {
+  if (feishuAuthState.value === 'checking' || feishuAuthState.value === 'requesting') {
+    return 'info'
+  }
+  if (feishuAuthStatus.value === 'authorized' || feishuAuthStatus.value === 'authorization_success') {
+    return 'success'
+  }
+  if (
+    feishuAuthStatus.value === 'authorization_failed' ||
+    feishuAuthStatus.value === 'invalid_url' ||
+    feishuAuthStatus.value === 'not_found' ||
+    feishuAuthStatus.value === 'send_failed'
+  ) {
+    return 'danger'
+  }
+  if (feishuAuthStatus.value) {
+    return 'warning'
+  }
+  return 'info'
+})
+const feishuAuthStatusDescription = computed(() => {
+  if (feishuAuthMessage.value) return feishuAuthMessage.value
+  if (feishuAuthStatus.value === 'authorized' || feishuAuthStatus.value === 'authorization_success') {
+    return '飞书电子表格已授权，可保存后进入变量配置。'
+  }
+  if (feishuAuthStatus.value === 'authorization_sent') {
+    return '授权请求已发送到群，正在等待有权限的成员完成授权。'
+  }
+  if (
+    feishuAuthStatus.value === 'pending_authorization' ||
+    feishuAuthStatus.value === 'document_permission_denied'
+  ) {
+    return '机器人暂无该表格权限，请发送授权请求到群。'
+  }
+  if (!feishuAuthStatus.value && hasFeishuUrl.value) {
+    return '机器人默认没有该表格权限，请点击一键授权发送请求到群。'
+  }
+  return '请先检测飞书电子表格读取权限。'
+})
+const isFeishuAuthBusy = computed(
+  () => feishuAuthState.value === 'checking' || feishuAuthState.value === 'requesting',
+)
+const hasFeishuUrl = computed(() => Boolean(draft.pathOrUrl?.trim()))
+const canCheckFeishuPermission = computed(() => hasFeishuUrl.value && !isFeishuAuthBusy.value)
+const showFeishuPermissionCheck = computed(
+  () => feishuAuthStatus.value !== null && feishuAuthStatus.value !== 'authorization_sent',
+)
+const canSendFeishuAuthRequest = computed(
+  () =>
+    !isFeishuAuthBusy.value &&
+    hasFeishuUrl.value &&
+    (
+      feishuAuthStatus.value === null ||
+      feishuAuthStatus.value === 'pending_authorization' ||
+      feishuAuthStatus.value === 'document_permission_denied' ||
+      feishuAuthStatus.value === 'app_permission_missing' ||
+      feishuAuthStatus.value === 'authorization_failed'
+    ),
+)
+const canRecheckFeishuPermission = computed(
+  () =>
+    !isFeishuAuthBusy.value &&
+    hasFeishuUrl.value &&
+    feishuAuthStatus.value === 'authorization_sent',
+)
+const isFeishuAuthorized = computed(
+  () => feishuAuthStatus.value === 'authorized' || feishuAuthStatus.value === 'authorization_success',
+)
 const canSaveSource = computed(() => {
   const path = draft.pathOrUrl?.trim() ?? ''
   return (
@@ -114,7 +215,8 @@ const canSaveSource = computed(() => {
     !isPicking.value &&
     draft.id.trim().length > 0 &&
     path.length > 0 &&
-    validatePathByType(path)
+    validatePathByType(path) &&
+    (!isFeishuSource.value || isFeishuAuthorized.value)
   )
 })
 
@@ -123,8 +225,16 @@ function resetDraft(): void {
   draft.type = DEFAULT_SOURCE_TYPE
   draft.pathOrUrl = ''
   draft.token = ''
+  resetFeishuAuthStatus()
   sourceIdTouched.value = false
   clearDraftErrors()
+}
+
+function resetFeishuAuthStatus(): void {
+  stopFeishuPermissionPolling()
+  feishuAuthState.value = 'idle'
+  feishuAuthStatus.value = null
+  feishuAuthMessage.value = ''
 }
 
 function clearDraftErrors(): void {
@@ -154,6 +264,7 @@ function openEditDialog(source: DataSource): void {
   draft.type = source.type
   draft.pathOrUrl = source.pathOrUrl ?? source.path ?? source.url ?? ''
   draft.token = source.token ?? ''
+  resetFeishuAuthStatus()
   if (source.type === 'svn') {
     svnSubMode.value = isRemoteSvnSource(source) ? 'remote' : 'working_copy'
   } else {
@@ -177,16 +288,31 @@ function handleSourceTypeChange(nextType: SourceType): void {
 
   if (nextType === 'local_excel') {
     draft.pathOrUrl = ''
+    draft.token = ''
+    resetFeishuAuthStatus()
     return
   }
 
   if (nextType === 'svn') {
     svnSubMode.value = 'remote'
     draft.pathOrUrl = ''
+    draft.token = ''
+    resetFeishuAuthStatus()
     return
   }
 
   draft.pathOrUrl = draft.pathOrUrl?.trim() ?? ''
+  if (nextType === 'feishu') {
+    draft.token = ''
+    resetFeishuAuthStatus()
+  }
+}
+
+function handlePathInput(): void {
+  draftErrors.pathOrUrl = ''
+  if (isFeishuSource.value) {
+    resetFeishuAuthStatus()
+  }
 }
 
 function handleSvnSubModeChange(value: 'remote' | 'working_copy'): void {
@@ -304,11 +430,17 @@ function validateDraft(): boolean {
   }
 
   if (!draft.pathOrUrl?.trim()) {
-    draftErrors.pathOrUrl = localSource.value ? '请选择或输入本地文件路径。' : '请输入链接或目录路径。'
+    draftErrors.pathOrUrl = localSource.value
+      ? '请选择或输入本地文件路径。'
+      : isFeishuSource.value
+        ? '请输入飞书电子表格 URL。'
+        : '请输入链接或目录路径。'
   } else if (isUnsupportedCsvSource.value) {
     draftErrors.pathOrUrl = 'CSV 数据源已不再支持，请删除后改用 Excel 或 SVN Excel。'
   } else if (!validatePathByType(draft.pathOrUrl.trim())) {
     draftErrors.pathOrUrl = '本地 Excel 数据源仅支持 .xls 或 .xlsx 文件。'
+  } else if (isFeishuSource.value && !isFeishuAuthorized.value) {
+    draftErrors.pathOrUrl = '请先完成飞书表格授权检测后再保存数据源。'
   }
 
   return !draftErrors.id && !draftErrors.pathOrUrl
@@ -326,7 +458,7 @@ async function saveSource(): Promise<void> {
       id: sourceId,
       type: draft.type,
       pathOrUrl: draft.pathOrUrl?.trim(),
-      token: draft.token?.trim(),
+      token: draft.type === 'feishu' ? undefined : draft.token?.trim(),
     },
     editingId.value ?? undefined,
   )
@@ -345,7 +477,7 @@ function getStatusTone(source: DataSource): 'success' | 'warning' | 'info' {
     return 'warning'
   }
 
-  if (source.type === 'feishu' && !source.token) {
+  if (source.type === 'feishu') {
     return 'warning'
   }
 
@@ -375,8 +507,8 @@ function getStatusLabel(source: DataSource): string {
   if (source.type === 'local_csv') {
     return '不支持'
   }
-  if (source.type === 'feishu' && !source.token) {
-    return '待授权'
+  if (source.type === 'feishu') {
+    return '待检测'
   }
 
   if (source.type === 'svn') {
@@ -400,7 +532,7 @@ function getStatusLabel(source: DataSource): string {
 
 function getPathLabel(sourceType: SourceType): string {
   if (sourceType === 'feishu') {
-    return '飞书链接'
+    return '飞书电子表格 URL'
   }
 
   if (sourceType === 'svn') {
@@ -508,6 +640,159 @@ function getSourceIssue(sourceId: string): string {
   return sourceIssueMap.value[sourceId] ?? ''
 }
 
+function ensureFeishuUrlReady(): boolean {
+  if (!draft.pathOrUrl?.trim()) {
+    ElMessage.warning('请先填写飞书电子表格 URL。')
+    return false
+  }
+  return true
+}
+
+function ensureFeishuRequestReady(): boolean {
+  if (!ensureFeishuUrlReady()) {
+    return false
+  }
+  if (!draft.id.trim()) {
+    ElMessage.warning('请先填写数据源标识。')
+    return false
+  }
+  return true
+}
+
+function getFeishuRequestPayload(): { source_id: string; sheet_url: string } {
+  return {
+    source_id: draft.id.trim(),
+    sheet_url: draft.pathOrUrl?.trim() ?? '',
+  }
+}
+
+function applyFeishuAuthStatus(
+  status: FeishuAuthorizationStatus,
+  message?: string,
+): void {
+  feishuAuthStatus.value = status
+  feishuAuthMessage.value = message?.trim() ?? ''
+}
+
+function applyFeishuAuthResponse(data: {
+  status: FeishuAuthorizationStatus
+  message?: string
+  sheet_url?: string
+}): void {
+  applyFeishuAuthStatus(data.status, data.message ?? '')
+  if (
+    (data.status === 'authorized' || data.status === 'authorization_success') &&
+    data.sheet_url?.trim()
+  ) {
+    draft.pathOrUrl = data.sheet_url.trim()
+  }
+}
+
+function getFeishuErrorMessage(error: unknown, fallback: string): string {
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+  return fallback
+}
+
+function notifyFeishuAuthResult(status: FeishuAuthorizationStatus, message: string): void {
+  if (status === 'authorized' || status === 'authorization_success') {
+    ElMessage.success(message || '飞书表格已授权。')
+    return
+  }
+  if (status === 'authorization_sent') {
+    ElMessage.success(message || '授权请求已发送到群。')
+    return
+  }
+  if (status === 'pending_authorization' || status === 'document_permission_denied') {
+    ElMessage.warning(message || '文档权限不足，请发送授权请求到群。')
+    return
+  }
+  ElMessage.error(message || '飞书授权状态异常，请稍后重试。')
+}
+
+async function checkFeishuPermission(options?: { silent?: boolean }): Promise<void> {
+  if (!ensureFeishuRequestReady()) {
+    return
+  }
+  feishuAuthState.value = 'checking'
+  try {
+    const response = await checkFeishuSourcePermission(getFeishuRequestPayload())
+    const status = response.data.status
+    const message = response.data.message ?? ''
+    applyFeishuAuthResponse(response.data)
+    if (status === 'authorized' || status === 'authorization_success' || status === 'authorization_failed') {
+      stopFeishuPermissionPolling()
+    }
+    if (!options?.silent) {
+      notifyFeishuAuthResult(status, message)
+    }
+  } catch (error) {
+    const message = getFeishuErrorMessage(error, '飞书权限检测失败，请稍后重试。')
+    applyFeishuAuthStatus('authorization_failed', message)
+    stopFeishuPermissionPolling()
+    if (!options?.silent) {
+      ElMessage.error(message)
+    }
+  } finally {
+    feishuAuthState.value = 'idle'
+  }
+}
+
+async function sendFeishuAuthRequest(): Promise<void> {
+  if (!ensureFeishuRequestReady()) {
+    return
+  }
+  feishuAuthState.value = 'requesting'
+  try {
+    const response = await sendFeishuSourceAuthorizationCard(getFeishuRequestPayload())
+    const status = response.data.status
+    const message = response.data.message ?? ''
+    applyFeishuAuthResponse(response.data)
+    notifyFeishuAuthResult(status, message || '授权请求已发送到群。')
+    if (status === 'authorization_sent') {
+      startFeishuPermissionPolling()
+    }
+  } catch (error) {
+    const message = getFeishuErrorMessage(error, '飞书授权请求发送失败，请稍后重试。')
+    applyFeishuAuthStatus('send_failed', message)
+    ElMessage.error(message)
+  } finally {
+    feishuAuthState.value = 'idle'
+  }
+}
+
+async function recheckFeishuPermission(): Promise<void> {
+  await checkFeishuPermission()
+}
+
+function startFeishuPermissionPolling(): void {
+  stopFeishuPermissionPolling()
+  feishuPermissionPollStartedAt.value = Date.now()
+  feishuPermissionPollTimer.value = window.setInterval(() => {
+    if (!dialogVisible.value || !isFeishuSource.value || !hasFeishuUrl.value) {
+      stopFeishuPermissionPolling()
+      return
+    }
+    const startedAt = feishuPermissionPollStartedAt.value
+    if (startedAt && Date.now() - startedAt > FEISHU_PERMISSION_POLL_TIMEOUT_MS) {
+      stopFeishuPermissionPolling()
+      return
+    }
+    if (feishuAuthState.value === 'idle') {
+      void checkFeishuPermission({ silent: true })
+    }
+  }, FEISHU_PERMISSION_POLL_INTERVAL_MS)
+}
+
+function stopFeishuPermissionPolling(): void {
+  if (feishuPermissionPollTimer.value !== null) {
+    window.clearInterval(feishuPermissionPollTimer.value)
+    feishuPermissionPollTimer.value = null
+  }
+  feishuPermissionPollStartedAt.value = null
+}
+
 async function chooseLocalFile(): Promise<void> {
   if (!localSource.value || isPicking.value) {
     return
@@ -574,6 +859,16 @@ defineExpose({
 
 onMounted(() => {
   void refreshSvnCredentialItems()
+})
+
+onUnmounted(() => {
+  stopFeishuPermissionPolling()
+})
+
+watch(dialogVisible, (visible) => {
+  if (!visible) {
+    stopFeishuPermissionPolling()
+  }
 })
 </script>
 
@@ -735,9 +1030,11 @@ onMounted(() => {
                   ? '上传文件，或输入服务器本机/共享盘文件路径'
                   : isSvnSource
                     ? '请输入本地 SVN 工作副本路径，例如 D:\\svn\\datas\\quests.xls'
-                    : '请输入链接或目录路径'
+                    : isFeishuSource
+                      ? '请输入飞书电子表格 URL'
+                      : '请输入链接或目录路径'
               "
-              @input="draftErrors.pathOrUrl = ''"
+              @input="handlePathInput"
             />
             <input
               v-if="localSource"
@@ -811,14 +1108,48 @@ onMounted(() => {
           </div>
         </div>
 
-        <div v-if="needsToken">
-          <label class="mb-1.5 block text-[12px] font-medium text-ink-500">访问令牌</label>
-          <el-input
-            v-model="draft.token"
-            type="password"
-            show-password
-            placeholder="飞书接入时可预留 token"
-          />
+        <div
+          v-if="isFeishuSource"
+          class="rounded-card border border-line bg-canvas px-4 py-3"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="text-[12px] font-medium text-ink-500">授权状态</div>
+            <el-tag :type="feishuAuthStatusTone" effect="light" round>
+              {{ feishuAuthStatusLabel }}
+            </el-tag>
+          </div>
+          <div class="mt-2 text-[12px] text-ink-500">
+            {{ feishuAuthStatusDescription }}
+          </div>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button
+              v-if="showFeishuPermissionCheck"
+              type="button"
+              class="ec-btn ec-btn-secondary ec-btn-sm"
+              :disabled="!canCheckFeishuPermission"
+              @click="() => checkFeishuPermission()"
+            >
+              检测权限
+            </button>
+            <button
+              v-if="canSendFeishuAuthRequest"
+              type="button"
+              class="ec-btn ec-btn-primary ec-btn-sm"
+              :disabled="isFeishuAuthBusy"
+              @click="sendFeishuAuthRequest"
+            >
+              一键授权到群
+            </button>
+            <button
+              v-if="canRecheckFeishuPermission"
+              type="button"
+              class="ec-btn ec-btn-secondary ec-btn-sm"
+              :disabled="isFeishuAuthBusy"
+              @click="recheckFeishuPermission"
+            >
+              重新检测
+            </button>
+          </div>
         </div>
       </div>
 

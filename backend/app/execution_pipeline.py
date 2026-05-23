@@ -9,18 +9,26 @@ from typing import Any
 import pandas as pd
 
 from backend.app.api.schemas import DataSource, TaskTree, ValidationRule, VariableTag
-from backend.app.loaders.feishu_reader import read_feishu_sheet
+from backend.app.loaders.feishu_reader import load_feishu_variables_by_source
 from backend.app.loaders.local_reader import load_variables_by_source
 from backend.app.loaders.svn_manager import sync_svn_source
 from backend.app.rules.engine_core import RULE_REGISTRY, execute_rules
 from backend.config import settings
 
 
-def run_execution_pipeline(task_tree: TaskTree) -> dict[str, Any]:
+def run_execution_pipeline(
+    task_tree: TaskTree,
+    *,
+    project_id: int | None = None,
+) -> dict[str, Any]:
     """执行完整主干流程，并返回规则执行所需的中间结果。"""
     source_map = _build_source_map(task_tree.sources)
     grouped_variables = _group_variables_by_source(task_tree.variables, source_map)
-    load_result = _load_sources_concurrently(source_map, grouped_variables)
+    load_result = _load_sources_concurrently(
+        source_map,
+        grouped_variables,
+        project_id=project_id,
+    )
     executable_rules = _filter_executable_rules(
         _filter_rules_by_selected_ids(task_tree.rules, task_tree.selected_rule_ids),
         grouped_variables=grouped_variables,
@@ -108,6 +116,8 @@ def _group_variables_by_source(
 def _load_sources_concurrently(
     source_map: dict[str, DataSource],
     grouped_variables: dict[str, list[VariableTag]],
+    *,
+    project_id: int | None = None,
 ) -> dict[str, Any]:
     loaded_variables: dict[str, pd.DataFrame] = {}
     failed_sources: list[str] = []
@@ -126,6 +136,7 @@ def _load_sources_concurrently(
                 _load_single_source,
                 source_map[source_id],
                 grouped_variables[source_id],
+                project_id,
             ): source_id
             for source_id in source_ids
         }
@@ -155,7 +166,9 @@ def _load_sources_concurrently(
 
 
 def _load_single_source(
-    source: DataSource, variables_for_source: list[VariableTag]
+    source: DataSource,
+    variables_for_source: list[VariableTag],
+    project_id: int | None = None,
 ) -> dict[str, pd.DataFrame]:
     if source.type == "local_excel":
         return load_variables_by_source(source, variables_for_source)
@@ -164,8 +177,11 @@ def _load_single_source(
         raise ValueError("CSV 数据源已不再支持，请删除后改用 Excel 或 SVN Excel。")
 
     if source.type == "feishu":
-        read_feishu_sheet(source=source, variables_for_source=variables_for_source)
-        return {}
+        return load_feishu_variables_by_source(
+            source,
+            variables_for_source,
+            project_id=project_id,
+        )
 
     if source.type == "svn":
         # 远端 URL 直接走缓存机制；本地工作副本仍走旧 sync_svn_source 触发 svn update。

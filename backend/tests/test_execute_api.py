@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pandas as pd
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -17,12 +18,138 @@ from backend.app.api import source_api
 from backend.app.api.schemas import DataSource, VariableTag
 from backend.app.auth.service import create_access_token, hash_password
 from backend.app.database import async_session_factory
+from backend.app.integrations import feishu_bot, feishu_client
+from backend.app.integrations.feishu_client import (
+    FEISHU_APP_PERMISSION_MISSING,
+    FEISHU_API_ERROR,
+    FEISHU_DOCUMENT_NOT_FOUND,
+    FEISHU_DOCUMENT_PERMISSION_DENIED,
+    FEISHU_INVALID_URL,
+    FeishuClientError,
+    FeishuSheetMetadata,
+    FeishuSheetTable,
+)
 from backend.app.loaders.local_reader import load_local_variables
-from backend.app.models import User, UserProjectRole
+from backend.app.models import FeishuBotConfigRecord, User, UserProjectRole
+from backend.app.security.crypto import encrypt_secret
 from backend.run import app
 
 
 TEST_DATA_PATH = Path(__file__).resolve().parent / "data" / "minimal_rules.xlsx"
+
+
+async def _seed_feishu_bot_config(project_id: int) -> None:
+    """写入项目级飞书机器人配置，供 metadata 接口测试复用。"""
+    feishu_bot._TOKEN_CACHE.clear()
+    feishu_bot._TOKEN_LOCKS.clear()
+    async with async_session_factory() as session:
+        session.add(
+            FeishuBotConfigRecord(
+                project_id=project_id,
+                app_id="metadata_app",
+                app_secret_cipher=encrypt_secret("metadata_secret"),
+                default_chat_id="",
+            )
+        )
+        await session.commit()
+
+
+def _install_feishu_metadata_mock(
+    monkeypatch: pytest.MonkeyPatch,
+    handler,
+) -> None:
+    transport = httpx.MockTransport(handler)
+
+    def _factory(timeout: float = 10.0) -> httpx.AsyncClient:
+        return httpx.AsyncClient(
+            transport=transport,
+            base_url=feishu_bot.FEISHU_OPEN_BASE_URL,
+            timeout=timeout,
+        )
+
+    monkeypatch.setattr(feishu_bot, "_create_async_client", _factory)
+    monkeypatch.setattr(feishu_client, "_create_async_client", _factory)
+
+
+def _feishu_token_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "code": 0,
+            "msg": "ok",
+            "tenant_access_token": "t_metadata",
+            "expire": 7200,
+        },
+    )
+
+
+def _feishu_sheets_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "sheets": [
+                    {
+                        "sheet_id": "gid001",
+                        "title": "Sheet1",
+                        "index": 0,
+                        "hidden": False,
+                        "resource_type": "sheet",
+                        "grid_properties": {"row_count": 2, "column_count": 2},
+                    },
+                    {
+                        "sheet_id": "gid002",
+                        "title": "Sheet2",
+                        "index": 1,
+                        "hidden": False,
+                        "resource_type": "sheet",
+                        "grid_properties": {"row_count": 2, "column_count": 1},
+                    },
+                ]
+            },
+        },
+    )
+
+
+def _feishu_preview_sheets_response() -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "sheets": [
+                    {
+                        "sheet_id": "gid_preview",
+                        "title": "Preview",
+                        "index": 0,
+                        "hidden": False,
+                        "resource_type": "sheet",
+                        "grid_properties": {"row_count": 6, "column_count": 3},
+                    }
+                ]
+            },
+        },
+    )
+
+
+def _feishu_preview_values_response(values: list[list[Any]]) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "spreadsheetToken": "shtcnabc123",
+                "valueRange": {
+                    "range": "gid_preview!A1:C6",
+                    "values": values,
+                },
+            },
+        },
+    )
 
 
 def _create_composite_test_workbook(target_path: Path) -> Path:
@@ -191,6 +318,133 @@ async def test_execute_engine_returns_three_rule_results() -> None:
             "raw_value",
             "message",
         }
+
+
+@pytest.mark.anyio
+async def test_execute_engine_loads_feishu_variables(
+    auth_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """执行流水线应能加载飞书变量并参与规则执行。"""
+    _install_feishu_runtime_stubs(monkeypatch)
+
+    response = await auth_client.post(
+        "/api/v1/engine/execute",
+        json={
+            "sources": [
+                {
+                    "id": "src_feishu",
+                    "type": "feishu",
+                    "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+                }
+            ],
+            "variables": [
+                {
+                    "tag": "[items-name]",
+                    "source_id": "src_feishu",
+                    "sheet": "Items",
+                    "column": "Name",
+                }
+            ],
+            "rules": [
+                {
+                    "rule_type": "not_null",
+                    "params": {"target_tags": ["[items-name]"]},
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["failed_sources"] == []
+    assert payload["meta"]["total_rows_scanned"] == 3
+    abnormal_results = payload["data"]["abnormal_results"]
+    assert any(
+        item["rule_name"] == "not_null"
+        and item["row_index"] == 3
+        and item["location"] == "[items-name] -> Name"
+        for item in abnormal_results
+    )
+
+
+@pytest.mark.anyio
+async def test_execute_engine_marks_failed_feishu_source(
+    auth_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """飞书读取失败时只标记 failed_sources，不让整个任务崩溃。"""
+
+    async def _explode(*_args, **_kwargs):
+        raise FeishuClientError(FEISHU_API_ERROR, "飞书 API 临时不可用")
+
+    monkeypatch.setattr(feishu_client, "list_spreadsheet_sheets", _explode)
+
+    response = await auth_client.post(
+        "/api/v1/engine/execute",
+        json={
+            "sources": [
+                {
+                    "id": "src_feishu",
+                    "type": "feishu",
+                    "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+                }
+            ],
+            "variables": [
+                {
+                    "tag": "[items-name]",
+                    "source_id": "src_feishu",
+                    "sheet": "Items",
+                    "column": "Name",
+                }
+            ],
+            "rules": [
+                {
+                    "rule_type": "not_null",
+                    "params": {"target_tags": ["[items-name]"]},
+                }
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["meta"]["failed_sources"] == ["src_feishu"]
+    assert payload["data"]["abnormal_results"] == []
+
+
+def _install_feishu_runtime_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _list_sheets(*_args, **_kwargs):
+        return [
+            FeishuSheetMetadata(
+                sheet_id="gid_items",
+                title="Items",
+                index=0,
+                row_count=4,
+                column_count=3,
+                hidden=False,
+                resource_type="sheet",
+            )
+        ]
+
+    async def _read_values(*_args, **_kwargs):
+        return FeishuSheetTable(
+            spreadsheet_token="shtcnabc123",
+            sheet_id="gid_items",
+            sheet_title="Items",
+            range="gid_items!A1:C4",
+            columns=["ID", "Name", "Group"],
+            rows=[],
+            raw_values=[
+                ["ID", "Name", "Group"],
+                [1, "Alpha", "A"],
+                [2, "", "B"],
+                [3, "Gamma", "C"],
+            ],
+        )
+
+    monkeypatch.setattr(feishu_client, "list_spreadsheet_sheets", _list_sheets)
+    monkeypatch.setattr(feishu_client, "read_sheet_values", _read_values)
 
 
 @pytest.mark.anyio
@@ -926,6 +1180,191 @@ async def test_source_metadata_rejects_csv_for_variable_pool_dropdown(
 
 
 @pytest.mark.anyio
+async def test_source_metadata_returns_feishu_sheet_and_columns(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """飞书 metadata 接口应返回兼容变量池的 Sheet 与列结构。"""
+    await _seed_feishu_bot_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _feishu_token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query":
+            return _feishu_sheets_response()
+        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid001!A1:B2":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "success",
+                    "data": {
+                        "spreadsheetToken": "shtcnabc123",
+                        "valueRange": {
+                            "range": "gid001!A1:B2",
+                            "values": [["id", "name"], [1, "张三"]],
+                        },
+                    },
+                },
+            )
+        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid002!A1:A2":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "success",
+                    "data": {
+                        "spreadsheetToken": "shtcnabc123",
+                        "valueRange": {
+                            "range": "gid002!A1:A2",
+                            "values": [["status"], ["ok"]],
+                        },
+                    },
+                },
+            )
+        return httpx.Response(404, json={"code": 404, "msg": "not found"})
+
+    _install_feishu_metadata_mock(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/sources/metadata",
+        json={
+            "id": "src_feishu",
+            "type": "feishu",
+            "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data"] == {
+        "source_id": "src_feishu",
+        "source_type": "feishu",
+        "sheets": [
+            {"name": "Sheet1", "sheet_id": "gid001", "columns": ["id", "name"]},
+            {"name": "Sheet2", "sheet_id": "gid002", "columns": ["status"]},
+        ],
+        "authorization_status": "authorized",
+    }
+
+
+@pytest.mark.anyio
+async def test_source_metadata_feishu_requires_login() -> None:
+    """飞书 metadata 需要当前项目上下文；未登录请求应返回 401。"""
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.post(
+            "/api/v1/sources/metadata",
+            json={
+                "id": "src_feishu",
+                "type": "feishu",
+                "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+            },
+        )
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "未提供认证令牌"
+
+
+@pytest.mark.anyio
+async def test_source_metadata_feishu_invalid_url_maps_error(
+    auth_client: AsyncClient,
+) -> None:
+    response = await auth_client.post(
+        "/api/v1/sources/metadata",
+        json={
+            "id": "src_feishu",
+            "type": "feishu",
+            "pathOrUrl": "not-a-url",
+        },
+    )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == FEISHU_INVALID_URL
+    assert detail["msg"] == "请输入合法的飞书电子表格链接"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("api_response", "expected_status", "expected_code", "expected_message"),
+    [
+        (
+            httpx.Response(403, json={"code": 1254030, "msg": "permission denied"}),
+            403,
+            FEISHU_DOCUMENT_PERMISSION_DENIED,
+            "机器人暂无该表格权限，请发送授权请求到群。",
+        ),
+        (
+            httpx.Response(404, json={"code": 1254040, "msg": "not found"}),
+            404,
+            FEISHU_DOCUMENT_NOT_FOUND,
+            None,
+        ),
+    ],
+)
+async def test_source_metadata_feishu_api_errors_map_to_http_detail(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    api_response: httpx.Response,
+    expected_status: int,
+    expected_code: str,
+    expected_message: str | None,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _feishu_token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query":
+            return api_response
+        return httpx.Response(404, json={"code": 404, "msg": "not found"})
+
+    _install_feishu_metadata_mock(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/sources/metadata",
+        json={
+            "id": "src_feishu",
+            "type": "feishu",
+            "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+        },
+    )
+
+    assert response.status_code == expected_status
+    detail = response.json()["detail"]
+    assert detail["code"] == expected_code
+    if expected_message is not None:
+        assert detail["msg"] == expected_message
+
+
+@pytest.mark.anyio
+async def test_source_metadata_feishu_app_permission_missing(
+    auth_client: AsyncClient,
+) -> None:
+    feishu_bot._TOKEN_CACHE.clear()
+    feishu_bot._TOKEN_LOCKS.clear()
+
+    response = await auth_client.post(
+        "/api/v1/sources/metadata",
+        json={
+            "id": "src_feishu",
+            "type": "feishu",
+            "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+        },
+    )
+
+    assert response.status_code == 403
+    detail = response.json()["detail"]
+    assert detail["code"] == FEISHU_APP_PERMISSION_MISSING
+    assert "飞书应用凭证不可用" in detail["msg"]
+
+
+@pytest.mark.anyio
 async def test_column_preview_returns_top_rows_for_variable_detail() -> None:
     """验证列预览接口会返回变量详情页签所需的前几行数据。"""
 
@@ -997,6 +1436,117 @@ async def test_column_preview_without_limit_returns_full_column_for_detail_dialo
         {"row_index": 4, "value": 2},
         {"row_index": 5, "value": None},
         {"row_index": 6, "value": "   "},
+    ]
+
+
+@pytest.mark.anyio
+async def test_feishu_column_preview_returns_rows_with_real_row_index(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """飞书单列预览应以首行为表头，数据第一行 row_index=2。"""
+    await _seed_feishu_bot_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _feishu_token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query":
+            return _feishu_preview_sheets_response()
+        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid_preview!A1:C6":
+            return _feishu_preview_values_response(
+                [
+                    ["id", "name", "group"],
+                    [1, "Alpha", "A"],
+                    [2, "", "B"],
+                    [3, None, "C"],
+                    [4, "   ", "D"],
+                ]
+            )
+        return httpx.Response(404, json={"code": 404, "msg": "not found"})
+
+    _install_feishu_metadata_mock(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/sources/column-preview",
+        json={
+            "source": {
+                "id": "src_feishu",
+                "type": "feishu",
+                "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+            },
+            "sheet": "Preview",
+            "column": "name",
+            "limit": 3,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["variable_kind"] == "single"
+    assert payload["source_id"] == "src_feishu"
+    assert payload["source_type"] == "feishu"
+    assert payload["sheet"] == "Preview"
+    assert payload["column"] == "name"
+    assert payload["preview_limit"] == 3
+    assert payload["total_rows"] == 4
+    assert payload["loaded_rows"] == 3
+    assert payload["loaded_all_rows"] is False
+    assert payload["preview_rows"] == [
+        {"row_index": 2, "value": "Alpha"},
+        {"row_index": 3, "value": None},
+        {"row_index": 4, "value": None},
+    ]
+
+
+@pytest.mark.anyio
+async def test_feishu_column_preview_without_limit_returns_full_column(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _feishu_token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query":
+            return _feishu_preview_sheets_response()
+        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid_preview!A1:C6":
+            return _feishu_preview_values_response(
+                [
+                    ["id", "name", "group"],
+                    [1, "Alpha", "A"],
+                    [2, "Beta", "B"],
+                    [3, "Gamma", "C"],
+                ]
+            )
+        return httpx.Response(404, json={"code": 404, "msg": "not found"})
+
+    _install_feishu_metadata_mock(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/sources/column-preview",
+        json={
+            "source": {
+                "id": "src_feishu",
+                "type": "feishu",
+                "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+            },
+            "sheet": "gid_preview",
+            "column": "id",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["preview_limit"] == 3
+    assert payload["loaded_rows"] == 3
+    assert payload["loaded_all_rows"] is True
+    assert payload["preview_rows"] == [
+        {"row_index": 2, "value": 1},
+        {"row_index": 3, "value": 2},
+        {"row_index": 4, "value": 3},
     ]
 
 
@@ -1129,6 +1679,233 @@ async def test_composite_preview_reports_duplicate_keys_without_append_mode(
     assert payload["duplicate_keys_preview"] == ["list"]
     assert payload["mapping"] == {}
     assert payload["loaded_rows"] == 0
+
+
+@pytest.mark.anyio
+async def test_feishu_composite_preview_returns_mapping_and_skips_empty_keys(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _feishu_token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query":
+            return _feishu_preview_sheets_response()
+        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid_preview!A1:C6":
+            return _feishu_preview_values_response(
+                [
+                    ["id", "name", "group"],
+                    [1, "Alpha", "A"],
+                    ["", "NoKey", "B"],
+                    [3, None, "C"],
+                ]
+            )
+        return httpx.Response(404, json={"code": 404, "msg": "not found"})
+
+    _install_feishu_metadata_mock(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/sources/composite-preview",
+        json={
+            "source": {
+                "id": "src_feishu",
+                "type": "feishu",
+                "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+            },
+            "sheet": "Preview",
+            "columns": ["id", "name", "group"],
+            "key_column": "id",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["variable_kind"] == "composite"
+    assert payload["source_type"] == "feishu"
+    assert payload["sheet"] == "Preview"
+    assert payload["columns"] == ["id", "name", "group"]
+    assert payload["key_column"] == "id"
+    assert payload["has_duplicate_keys"] is False
+    assert payload["duplicate_keys_preview"] == []
+    assert payload["total_rows"] == 3
+    assert payload["loaded_rows"] == 2
+    assert payload["loaded_all_rows"] is False
+    assert payload["mapping"] == {
+        "1": {"name": "Alpha", "group": "A"},
+        "3": {"name": None, "group": "C"},
+    }
+
+
+@pytest.mark.anyio
+async def test_feishu_composite_preview_duplicate_keys_without_append_mode(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _feishu_token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query":
+            return _feishu_preview_sheets_response()
+        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid_preview!A1:C6":
+            return _feishu_preview_values_response(
+                [
+                    ["id", "name", "group"],
+                    ["A", "Alpha", 1],
+                    ["A", "Beta", 2],
+                    ["B", "Gamma", 3],
+                ]
+            )
+        return httpx.Response(404, json={"code": 404, "msg": "not found"})
+
+    _install_feishu_metadata_mock(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/sources/composite-preview",
+        json={
+            "source": {
+                "id": "src_feishu",
+                "type": "feishu",
+                "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+            },
+            "sheet": "Preview",
+            "columns": ["id", "name", "group"],
+            "key_column": "id",
+            "append_index_to_key": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["has_duplicate_keys"] is True
+    assert payload["duplicate_keys_preview"] == ["A"]
+    assert payload["mapping"] == {}
+    assert payload["loaded_rows"] == 0
+
+
+@pytest.mark.anyio
+async def test_feishu_composite_preview_appends_index_to_duplicate_keys(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _feishu_token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query":
+            return _feishu_preview_sheets_response()
+        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid_preview!A1:C6":
+            return _feishu_preview_values_response(
+                [
+                    ["id", "name", "group"],
+                    ["A", "Alpha", 1],
+                    ["A", "Beta", 2],
+                    ["B", "Gamma", 3],
+                ]
+            )
+        return httpx.Response(404, json={"code": 404, "msg": "not found"})
+
+    _install_feishu_metadata_mock(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/sources/composite-preview",
+        json={
+            "source": {
+                "id": "src_feishu",
+                "type": "feishu",
+                "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+            },
+            "sheet": "Preview",
+            "columns": ["id", "name", "group"],
+            "key_column": "id",
+            "append_index_to_key": True,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["has_duplicate_keys"] is True
+    assert payload["duplicate_keys_preview"] == ["A"]
+    assert payload["mapping"] == {
+        "A_0": {"name": "Alpha", "group": 1},
+        "A_1": {"name": "Beta", "group": 2},
+        "B_2": {"name": "Gamma", "group": 3},
+    }
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("request_payload", "expected_message"),
+    [
+        (
+            {
+                "endpoint": "/api/v1/sources/column-preview",
+                "body": {"sheet": "Missing", "column": "id", "limit": 3},
+            },
+            "未找到指定 Sheet",
+        ),
+        (
+            {
+                "endpoint": "/api/v1/sources/column-preview",
+                "body": {"sheet": "Preview", "column": "missing", "limit": 3},
+            },
+            "未找到指定列",
+        ),
+        (
+            {
+                "endpoint": "/api/v1/sources/composite-preview",
+                "body": {
+                    "sheet": "Preview",
+                    "columns": ["id", "name"],
+                    "key_column": "group",
+                    "append_index_to_key": False,
+                },
+            },
+            "主键列必须包含在组合列中",
+        ),
+    ],
+)
+async def test_feishu_preview_validation_errors_return_chinese_messages(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    request_payload: dict[str, Any],
+    expected_message: str,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _feishu_token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query":
+            return _feishu_preview_sheets_response()
+        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid_preview!A1:C6":
+            return _feishu_preview_values_response(
+                [["id", "name", "group"], [1, "Alpha", "A"]]
+            )
+        return httpx.Response(404, json={"code": 404, "msg": "not found"})
+
+    _install_feishu_metadata_mock(monkeypatch, handler)
+    body = {
+        "source": {
+            "id": "src_feishu",
+            "type": "feishu",
+            "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+        },
+        **request_payload["body"],
+    }
+
+    response = await auth_client.post(request_payload["endpoint"], json=body)
+
+    assert response.status_code == 400
+    assert expected_message in response.json()["detail"]
 
 
 @pytest.mark.anyio

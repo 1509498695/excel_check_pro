@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.database import Base
@@ -226,6 +226,63 @@ class FeishuBotConfigRecord(Base):
     allowed_download_suffixes: Mapped[str] = mapped_column(
         Text,
         default='[".xls",".xlsx",".csv",".json",".xml",".txt"]',
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class FeishuSheetAuthorizationRecord(Base):
+    """飞书电子表格授权记录。
+
+    同一项目内同一个 spreadsheet_token 允许被多个 source_id 复用，因此不对
+    project_id + spreadsheet_token 建唯一索引。
+    """
+
+    __tablename__ = "feishu_sheet_authorizations"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id",
+            "source_id",
+            name="uq_feishu_sheet_auth_project_source",
+        ),
+        Index(
+            "ix_feishu_sheet_auth_project_token",
+            "project_id",
+            "spreadsheet_token",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    spreadsheet_token: Mapped[str] = mapped_column(
+        String(128),
+        index=True,
+        nullable=False,
+    )
+    sheet_url: Mapped[str] = mapped_column(Text, default="")
+    sheet_title: Mapped[str] = mapped_column(String(255), default="")
+    authorized_by_open_id: Mapped[str] = mapped_column(String(128), default="")
+    bot_open_id: Mapped[str] = mapped_column(String(128), default="")
+    chat_id: Mapped[str] = mapped_column(String(128), default="")
+    message_id: Mapped[str] = mapped_column(String(128), default="")
+    status: Mapped[str] = mapped_column(String(32), default="authorized", index=True)
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    state_hash: Mapped[str] = mapped_column(String(128), default="")
+    state_expires_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    authorized_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
     )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

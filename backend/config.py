@@ -67,6 +67,21 @@ class Settings:
     feishu_bot_max_file_mb: int = field(
         default_factory=lambda: _parse_int_env("FEISHU_BOT_MAX_FILE_MB", 30)
     )
+    feishu_oauth_callback_url: str = field(
+        default_factory=lambda: (os.getenv("FEISHU_OAUTH_CALLBACK_URL") or "").strip()
+    )
+    feishu_oauth_authorize_url: str = field(
+        default_factory=lambda: (
+            os.getenv("FEISHU_OAUTH_AUTHORIZE_URL")
+            or "https://accounts.feishu.cn/open-apis/authen/v1/authorize"
+        ).strip()
+    )
+    feishu_sheet_oauth_scope: str = field(
+        default_factory=lambda: (
+            os.getenv("FEISHU_SHEET_OAUTH_SCOPE")
+            or "sheets:spreadsheet:readonly wiki:node:read"
+        ).strip()
+    )
     fixed_rules_config_path: Path = field(
         default_factory=lambda: Path(__file__).resolve().parent
         / ".runtime"

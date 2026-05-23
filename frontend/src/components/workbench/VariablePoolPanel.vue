@@ -103,11 +103,11 @@ const isFixedRulesVariant = computed(() => props.variant === 'fixed-rules')
 const panelCopy = computed(() => ({
   emptyText: '请先添加单个变量或组合变量。',
   sourceTypeError: isFixedRulesVariant.value
-    ? '当前项目校验页的字段映射提取仅支持 Excel 数据源（本地 Excel / SVN Excel）。'
-    : '当前步骤 2 的字段映射提取仅支持 Excel 数据源（本地 Excel / SVN Excel）。',
+    ? '当前项目校验页的字段映射提取支持本地 Excel、SVN Excel 与飞书电子表格。'
+    : '当前步骤 2 的字段映射提取支持本地 Excel、SVN Excel 与飞书电子表格。',
   compositeTypeError: isFixedRulesVariant.value
-    ? '当前项目校验页的组合变量提取仅支持 Excel 数据源（本地 Excel / SVN Excel）。'
-    : '当前步骤 2 的组合变量提取仅支持 Excel 数据源（本地 Excel / SVN Excel）。',
+    ? '当前项目校验页的组合变量提取支持本地 Excel、SVN Excel 与飞书电子表格。'
+    : '当前步骤 2 的组合变量提取支持本地 Excel、SVN Excel 与飞书电子表格。',
 }))
 
 function getSourceLocator(source: DataSource | null | undefined): string {
@@ -122,8 +122,17 @@ function isExcelLocator(locator: string): boolean {
 function supportsVariableMappingSource(source: DataSource | null | undefined): boolean {
   if (!source) return false
   if (source.type === 'local_excel') return true
+  if (source.type === 'feishu') return true
   if (source.type === 'svn') return isExcelLocator(getSourceLocator(source))
   return false
+}
+
+function getMetadataErrorMessage(source: DataSource | null, error: unknown): string {
+  const message = error instanceof Error ? error.message : '读取数据源结构失败。'
+  if (source?.type === 'feishu') {
+    return `飞书电子表格元数据读取失败：${message}`
+  }
+  return message
 }
 
 const singleSource = computed<DataSource | null>(
@@ -300,7 +309,7 @@ async function prepareSingleEditorForSource(sourceId: string, preserve = false):
     if (!metadata.sheets.length) singleMetadataError.value = '当前数据源没有读取到可用的 Sheet。'
     syncSingleTag()
   } catch (error) {
-    singleMetadataError.value = error instanceof Error ? error.message : '读取数据源结构失败。'
+    singleMetadataError.value = getMetadataErrorMessage(singleSource.value, error)
     if (!preserve) {
       singleDraft.sheet = ''
       singleDraft.column = ''
@@ -344,7 +353,7 @@ async function prepareCompositeEditorForSource(sourceId: string, preserve = fals
     if (!metadata.sheets.length) compositeMetadataError.value = '当前数据源没有读取到可用的 Sheet。'
     syncCompositeTag()
   } catch (error) {
-    compositeMetadataError.value = error instanceof Error ? error.message : '读取数据源结构失败。'
+    compositeMetadataError.value = getMetadataErrorMessage(compositeSource.value, error)
     if (!preserve) {
       compositeDraft.sheet = ''
       compositeDraft.columns = []

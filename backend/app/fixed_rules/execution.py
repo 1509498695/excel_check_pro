@@ -74,7 +74,7 @@ async def execute_fixed_rules_for_project(
     )
 
     start = time.perf_counter()
-    execution_artifacts = run_execution_pipeline(task_tree)
+    execution_artifacts = run_execution_pipeline(task_tree, project_id=project_id)
     elapsed_ms = int((time.perf_counter() - start) * 1000)
 
     abnormal_results = execution_artifacts["abnormal_results"]

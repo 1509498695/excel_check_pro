@@ -114,6 +114,41 @@ export interface SourceMetadata {
 
 export type SourceMetadataResponse = ApiResponse<SourceMetadata>
 
+export type FeishuAuthorizationStatus =
+  | 'authorized'
+  | 'pending_authorization'
+  | 'authorization_sent'
+  | 'authorization_success'
+  | 'authorization_failed'
+  | 'invalid_url'
+  | 'app_permission_missing'
+  | 'document_permission_denied'
+  | 'not_found'
+  | 'bot_not_configured'
+  | 'callback_not_configured'
+  | 'send_failed'
+
+export interface FeishuSourceAuthorizationRequest {
+  source_id: string
+  sheet_url: string
+}
+
+export interface FeishuSourceAuthorizationData {
+  status: FeishuAuthorizationStatus
+  message?: string
+  error_status?: FeishuAuthorizationStatus
+  spreadsheet_token?: string
+  sheet_url?: string
+  title?: string
+  reused_authorization?: boolean
+  expires_at?: string
+  chat_id?: string
+  message_id?: string
+}
+
+export type FeishuPermissionCheckResponse = ApiResponse<FeishuSourceAuthorizationData>
+export type FeishuSendAuthorizationCardResponse = ApiResponse<FeishuSourceAuthorizationData>
+
 export interface ColumnPreviewRow {
   row_index: number
   value: unknown
