@@ -85,8 +85,9 @@ const feishuAuthStatus = ref<FeishuAuthorizationStatus | null>(null)
 const feishuAuthMessage = ref('')
 const feishuPermissionPollTimer = ref<number | null>(null)
 const feishuPermissionPollStartedAt = ref<number | null>(null)
-const feishuMetadataLoadingMap = reactive<Record<string, boolean>>({})
-const feishuMetadataErrorMap = reactive<Record<string, string>>({})
+const savedFeishuStatusMap = reactive<Record<string, FeishuAuthorizationStatus | undefined>>({})
+const savedFeishuStatusLoadingMap = reactive<Record<string, boolean>>({})
+const savedFeishuStatusErrorMap = reactive<Record<string, string>>({})
 const FEISHU_PERMISSION_POLL_INTERVAL_MS = 3000
 const FEISHU_PERMISSION_POLL_TIMEOUT_MS = 10 * 60 * 1000
 
@@ -472,7 +473,7 @@ async function saveSource(): Promise<void> {
     editingId.value ?? undefined,
   )
   if (isSavingFeishuSource) {
-    await refreshSavedFeishuMetadata(sourceId, { forceRefresh: true })
+    await refreshSavedFeishuStatus(sourceId)
   }
   dialogVisible.value = false
   emit('saved', sourceId)
@@ -480,35 +481,45 @@ async function saveSource(): Promise<void> {
   ElMessage.success(editingId.value ? '数据源已更新。' : '数据源已添加。')
 }
 
-async function refreshSavedFeishuMetadata(
+async function refreshSavedFeishuStatus(
   sourceId: string,
-  options?: { forceRefresh?: boolean; silent?: boolean },
+  options?: { silent?: boolean },
 ): Promise<void> {
-  if (!store.loadSourceMetadata) {
+  const source = store.sources.find((item) => item.id === sourceId && item.type === 'feishu')
+  const sheetUrl = source ? getSourceLocator(source) : ''
+  if (!source || !sheetUrl) {
     return
   }
-  feishuMetadataLoadingMap[sourceId] = true
-  feishuMetadataErrorMap[sourceId] = ''
+  savedFeishuStatusLoadingMap[sourceId] = true
+  savedFeishuStatusErrorMap[sourceId] = ''
   try {
-    await store.loadSourceMetadata(sourceId, options?.forceRefresh ?? false)
+    const response = await checkFeishuSourcePermission({
+      source_id: sourceId,
+      sheet_url: sheetUrl,
+    })
+    savedFeishuStatusMap[sourceId] = response.data.status
+    if (
+      (response.data.status === 'authorized' || response.data.status === 'authorization_success') &&
+      response.data.sheet_url?.trim() &&
+      response.data.sheet_url.trim() !== sheetUrl
+    ) {
+      store.upsertSource({ ...source, pathOrUrl: response.data.sheet_url.trim() }, source.id)
+    }
   } catch (error) {
-    const message = getFeishuErrorMessage(error, '飞书电子表格结构读取失败，请稍后在变量配置中重试。')
-    feishuMetadataErrorMap[sourceId] = message
+    const message = getFeishuErrorMessage(error, '飞书授权状态读取失败，请稍后重试。')
+    savedFeishuStatusErrorMap[sourceId] = message
     if (!options?.silent) {
       ElMessage.error(message)
     }
   } finally {
-    feishuMetadataLoadingMap[sourceId] = false
+    savedFeishuStatusLoadingMap[sourceId] = false
   }
 }
 
-async function refreshSavedFeishuSourcesMetadata(): Promise<void> {
-  if (!store.loadSourceMetadata) {
-    return
-  }
+async function refreshSavedFeishuSourcesStatus(): Promise<void> {
   const feishuSources = store.sources.filter((source) => source.type === 'feishu')
   await Promise.allSettled(
-    feishuSources.map((source) => refreshSavedFeishuMetadata(source.id, { silent: true })),
+    feishuSources.map((source) => refreshSavedFeishuStatus(source.id, { silent: true })),
   )
 }
 
@@ -520,17 +531,27 @@ function getFeishuSourceMetadata(sourceId: string) {
   return store.sourceMetadataMap?.[sourceId] ?? null
 }
 
-function isFeishuMetadataLoading(sourceId: string): boolean {
-  return Boolean(feishuMetadataLoadingMap[sourceId])
+function getSavedFeishuStatus(sourceId: string): FeishuAuthorizationStatus | undefined {
+  return savedFeishuStatusMap[sourceId]
 }
 
-function hasFeishuMetadataError(sourceId: string): boolean {
-  return Boolean(feishuMetadataErrorMap[sourceId])
+function isSavedFeishuStatusLoading(sourceId: string): boolean {
+  return Boolean(savedFeishuStatusLoadingMap[sourceId])
+}
+
+function hasSavedFeishuStatusError(sourceId: string): boolean {
+  return Boolean(savedFeishuStatusErrorMap[sourceId])
 }
 
 function isFeishuSourceReady(source: DataSource): boolean {
   const metadata = getFeishuSourceMetadata(source.id)
-  return metadata?.authorization_status === 'authorized' || Boolean(metadata?.sheets?.length)
+  const status = getSavedFeishuStatus(source.id)
+  return (
+    status === 'authorized' ||
+    status === 'authorization_success' ||
+    metadata?.authorization_status === 'authorized' ||
+    Boolean(metadata?.sheets?.length)
+  )
 }
 
 function getStatusTone(source: DataSource): 'success' | 'warning' | 'info' {
@@ -543,8 +564,20 @@ function getStatusTone(source: DataSource): 'success' | 'warning' | 'info' {
   }
 
   if (source.type === 'feishu') {
-    if (isFeishuMetadataLoading(source.id)) {
+    if (isSavedFeishuStatusLoading(source.id)) {
       return 'info'
+    }
+    const savedStatus = getSavedFeishuStatus(source.id)
+    if (savedStatus === 'authorized' || savedStatus === 'authorization_success') {
+      return 'success'
+    }
+    if (
+      savedStatus === 'authorization_failed' ||
+      savedStatus === 'invalid_url' ||
+      savedStatus === 'not_found' ||
+      savedStatus === 'send_failed'
+    ) {
+      return 'warning'
     }
     return isFeishuSourceReady(source) ? 'success' : 'warning'
   }
@@ -579,11 +612,15 @@ function getStatusLabel(source: DataSource): string {
     if (isFeishuSourceReady(source)) {
       return '已授权'
     }
-    if (isFeishuMetadataLoading(source.id)) {
+    if (isSavedFeishuStatusLoading(source.id)) {
       return '检测中'
     }
-    if (hasFeishuMetadataError(source.id)) {
+    if (hasSavedFeishuStatusError(source.id)) {
       return '读取失败'
+    }
+    const savedStatus = getSavedFeishuStatus(source.id)
+    if (savedStatus) {
+      return feishuAuthStatusLabelMap[savedStatus] ?? '待检测'
     }
     return '待检测'
   }
@@ -936,7 +973,6 @@ defineExpose({
 
 onMounted(() => {
   void refreshSvnCredentialItems()
-  void refreshSavedFeishuSourcesMetadata()
 })
 
 onUnmounted(() => {
@@ -952,7 +988,7 @@ watch(dialogVisible, (visible) => {
 watch(
   savedFeishuSourceSignature,
   () => {
-    void refreshSavedFeishuSourcesMetadata()
+    void refreshSavedFeishuSourcesStatus()
   },
   { immediate: true },
 )
