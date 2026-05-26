@@ -617,7 +617,10 @@ def _validate_authorization_state_record(
 
 def _map_oauth_callback_error(error: FeishuClientError) -> str:
     if _is_share_permission_error(error):
-        return "授权失败：当前用户没有该表格的分享权限，请文档所有者或可管理协作者操作。"
+        return (
+            "授权失败：飞书拒绝添加机器人为表格协作者。请确认当前用户是文档所有者或可管理协作者，"
+            "并确认飞书应用已开通“添加云文档协作者”或云文档权限管理相关权限且已发布生效。"
+        )
     return f"授权失败：{error.message}"
 
 

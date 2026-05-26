@@ -79,7 +79,7 @@ class Settings:
     feishu_sheet_oauth_scope: str = field(
         default_factory=lambda: (
             os.getenv("FEISHU_SHEET_OAUTH_SCOPE")
-            or "sheets:spreadsheet:readonly wiki:node:read"
+            or "sheets:spreadsheet:readonly wiki:node:read docs:permission.member:create"
         ).strip()
     )
     fixed_rules_config_path: Path = field(

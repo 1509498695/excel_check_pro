@@ -85,6 +85,8 @@ const feishuAuthStatus = ref<FeishuAuthorizationStatus | null>(null)
 const feishuAuthMessage = ref('')
 const feishuPermissionPollTimer = ref<number | null>(null)
 const feishuPermissionPollStartedAt = ref<number | null>(null)
+const feishuMetadataLoadingMap = reactive<Record<string, boolean>>({})
+const feishuMetadataErrorMap = reactive<Record<string, string>>({})
 const FEISHU_PERMISSION_POLL_INTERVAL_MS = 3000
 const FEISHU_PERMISSION_POLL_TIMEOUT_MS = 10 * 60 * 1000
 
@@ -119,6 +121,12 @@ const canBrowseSvnDirectory = computed(
     isHttpDirUrl(draft.pathOrUrl?.trim() ?? ''),
 )
 const savedSvnDirectoryOptions = computed(() => store.svnPathReplacementPresets ?? [])
+const savedFeishuSourceSignature = computed(() =>
+  store.sources
+    .filter((source) => source.type === 'feishu')
+    .map((source) => `${source.id}:${getSourceLocator(source)}`)
+    .join('|'),
+)
 const feishuAuthStatusLabelMap: Record<FeishuAuthorizationStatus, string> = {
   authorized: '已授权',
   pending_authorization: '待授权',
@@ -453,6 +461,7 @@ async function saveSource(): Promise<void> {
   }
 
   const sourceId = draft.id.trim()
+  const isSavingFeishuSource = draft.type === 'feishu'
   store.upsertSource(
     {
       id: sourceId,
@@ -462,10 +471,66 @@ async function saveSource(): Promise<void> {
     },
     editingId.value ?? undefined,
   )
+  if (isSavingFeishuSource) {
+    await refreshSavedFeishuMetadata(sourceId, { forceRefresh: true })
+  }
   dialogVisible.value = false
   emit('saved', sourceId)
   emit('changed')
   ElMessage.success(editingId.value ? '数据源已更新。' : '数据源已添加。')
+}
+
+async function refreshSavedFeishuMetadata(
+  sourceId: string,
+  options?: { forceRefresh?: boolean; silent?: boolean },
+): Promise<void> {
+  if (!store.loadSourceMetadata) {
+    return
+  }
+  feishuMetadataLoadingMap[sourceId] = true
+  feishuMetadataErrorMap[sourceId] = ''
+  try {
+    await store.loadSourceMetadata(sourceId, options?.forceRefresh ?? false)
+  } catch (error) {
+    const message = getFeishuErrorMessage(error, '飞书电子表格结构读取失败，请稍后在变量配置中重试。')
+    feishuMetadataErrorMap[sourceId] = message
+    if (!options?.silent) {
+      ElMessage.error(message)
+    }
+  } finally {
+    feishuMetadataLoadingMap[sourceId] = false
+  }
+}
+
+async function refreshSavedFeishuSourcesMetadata(): Promise<void> {
+  if (!store.loadSourceMetadata) {
+    return
+  }
+  const feishuSources = store.sources.filter((source) => source.type === 'feishu')
+  await Promise.allSettled(
+    feishuSources.map((source) => refreshSavedFeishuMetadata(source.id, { silent: true })),
+  )
+}
+
+function getSourceLocator(source: DataSource): string {
+  return (source.pathOrUrl ?? source.path ?? source.url ?? '').trim()
+}
+
+function getFeishuSourceMetadata(sourceId: string) {
+  return store.sourceMetadataMap?.[sourceId] ?? null
+}
+
+function isFeishuMetadataLoading(sourceId: string): boolean {
+  return Boolean(feishuMetadataLoadingMap[sourceId])
+}
+
+function hasFeishuMetadataError(sourceId: string): boolean {
+  return Boolean(feishuMetadataErrorMap[sourceId])
+}
+
+function isFeishuSourceReady(source: DataSource): boolean {
+  const metadata = getFeishuSourceMetadata(source.id)
+  return metadata?.authorization_status === 'authorized' || Boolean(metadata?.sheets?.length)
 }
 
 function getStatusTone(source: DataSource): 'success' | 'warning' | 'info' {
@@ -478,7 +543,10 @@ function getStatusTone(source: DataSource): 'success' | 'warning' | 'info' {
   }
 
   if (source.type === 'feishu') {
-    return 'warning'
+    if (isFeishuMetadataLoading(source.id)) {
+      return 'info'
+    }
+    return isFeishuSourceReady(source) ? 'success' : 'warning'
   }
 
   if (source.type === 'svn') {
@@ -508,6 +576,15 @@ function getStatusLabel(source: DataSource): string {
     return '不支持'
   }
   if (source.type === 'feishu') {
+    if (isFeishuSourceReady(source)) {
+      return '已授权'
+    }
+    if (isFeishuMetadataLoading(source.id)) {
+      return '检测中'
+    }
+    if (hasFeishuMetadataError(source.id)) {
+      return '读取失败'
+    }
     return '待检测'
   }
 
@@ -859,6 +936,7 @@ defineExpose({
 
 onMounted(() => {
   void refreshSvnCredentialItems()
+  void refreshSavedFeishuSourcesMetadata()
 })
 
 onUnmounted(() => {
@@ -870,6 +948,14 @@ watch(dialogVisible, (visible) => {
     stopFeishuPermissionPolling()
   }
 })
+
+watch(
+  savedFeishuSourceSignature,
+  () => {
+    void refreshSavedFeishuSourcesMetadata()
+  },
+  { immediate: true },
+)
 </script>
 
 <template>

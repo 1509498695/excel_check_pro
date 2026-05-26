@@ -68,7 +68,7 @@ type WorkbenchPathReplacementContext = WorkbenchState & {
   addPathReplacementPreset(group: SourcePathReplacementGroup, path: string): void
   setSelectedPathReplacementPreset(group: SourcePathReplacementGroup, path: string | null): void
   saveConfigNow(): Promise<void>
-  loadSourceMetadata(sourceId: string): Promise<unknown>
+  loadSourceMetadata(sourceId: string, forceRefresh?: boolean): Promise<unknown>
   loadVariablePreview(variable: any, limit?: number, force?: boolean): Promise<unknown>
   clearExecutionResult(): void
   clearPageError(): void

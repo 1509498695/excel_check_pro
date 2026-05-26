@@ -110,6 +110,7 @@ export interface SourceMetadata {
   source_id: string
   source_type: SourceType
   sheets: SourceSheetMetadata[]
+  authorization_status?: string
 }
 
 export type SourceMetadataResponse = ApiResponse<SourceMetadata>

@@ -293,9 +293,9 @@ export const useWorkbenchStore = defineStore('workbench', {
       }
     },
 
-    async loadSourceMetadata(sourceId: string): Promise<SourceMetadata> {
+    async loadSourceMetadata(sourceId: string, forceRefresh = false): Promise<SourceMetadata> {
       const cached = this.sourceMetadataMap[sourceId]
-      if (cached) {
+      if (cached && !forceRefresh) {
         return cached
       }
 

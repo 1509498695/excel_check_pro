@@ -217,6 +217,18 @@ function getCompositeSuggestion(sourceId: string, sheet: string, keyColumn: stri
   return `[${sourceId || 'source'}-${sheet || 'sheet'}-${keyColumn || 'key'}-mapping]`
 }
 
+function shouldForceMetadataRefresh(source: DataSource | null | undefined): boolean {
+  if (source?.type !== 'feishu') {
+    return false
+  }
+  const cached = store.sourceMetadataMap[source.id]
+  return !cached || cached.authorization_status !== 'authorized' || !cached.sheets?.length
+}
+
+function getFirstSheet(metadata: { sheets: Array<{ name: string; columns: string[] }> }) {
+  return metadata.sheets[0] ?? null
+}
+
 function syncSingleTag(): void {
   if (!singleTagTouched.value) {
     singleDraft.tag = getSingleSuggestion(
@@ -298,13 +310,21 @@ async function prepareSingleEditorForSource(sourceId: string, preserve = false):
   singleMetadataLoading.value = true
   singleMetadataError.value = ''
   try {
-    const metadata = await store.loadSourceMetadata(sourceId)
+    const source = singleSource.value
+    const metadata = await store.loadSourceMetadata(sourceId, shouldForceMetadataRefresh(source))
     const matchedSheet = metadata.sheets.find((item) => item.name === singleDraft.sheet)
+    const shouldAutoSelect = source?.type === 'feishu'
     if (!preserve || !matchedSheet) {
-      singleDraft.sheet = ''
-      singleDraft.column = ''
+      if (shouldAutoSelect) {
+        const firstSheet = getFirstSheet(metadata)
+        singleDraft.sheet = firstSheet?.name ?? ''
+        singleDraft.column = firstSheet?.columns[0] ?? ''
+      } else {
+        singleDraft.sheet = ''
+        singleDraft.column = ''
+      }
     } else if (!matchedSheet.columns.includes(singleDraft.column ?? '')) {
-      singleDraft.column = ''
+      singleDraft.column = shouldAutoSelect ? matchedSheet.columns[0] ?? '' : ''
     }
     if (!metadata.sheets.length) singleMetadataError.value = '当前数据源没有读取到可用的 Sheet。'
     syncSingleTag()
@@ -337,10 +357,12 @@ async function prepareCompositeEditorForSource(sourceId: string, preserve = fals
   compositeMetadataLoading.value = true
   compositeMetadataError.value = ''
   try {
-    const metadata = await store.loadSourceMetadata(sourceId)
+    const source = compositeSource.value
+    const metadata = await store.loadSourceMetadata(sourceId, shouldForceMetadataRefresh(source))
     const matchedSheet = metadata.sheets.find((item) => item.name === compositeDraft.sheet)
+    const shouldAutoSelect = source?.type === 'feishu'
     if (!preserve || !matchedSheet) {
-      compositeDraft.sheet = ''
+      compositeDraft.sheet = shouldAutoSelect ? getFirstSheet(metadata)?.name ?? '' : ''
       compositeDraft.columns = []
       compositeDraft.key_column = ''
     } else {

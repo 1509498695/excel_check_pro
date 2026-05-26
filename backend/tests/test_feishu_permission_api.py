@@ -598,7 +598,7 @@ async def test_send_authorization_card_sends_card_and_persists_state_hash(
     object.__setattr__(
         settings,
         "feishu_sheet_oauth_scope",
-        "sheets:spreadsheet:readonly wiki:node:read",
+        "sheets:spreadsheet:readonly wiki:node:read docs:permission.member:create",
     )
     captured: dict[str, object] = {}
 
@@ -650,7 +650,9 @@ async def test_send_authorization_card_sends_card_and_persists_state_hash(
     )
     assert query["client_id"] == ["perm_app"]
     assert query["redirect_uri"] == ["https://example.com/api/v1/feishu/oauth/callback"]
-    assert query["scope"] == ["sheets:spreadsheet:readonly wiki:node:read"]
+    assert query["scope"] == [
+        "sheets:spreadsheet:readonly wiki:node:read docs:permission.member:create"
+    ]
     state = query["state"][0]
     assert len(state) > 20
 
@@ -934,7 +936,7 @@ async def test_oauth_callback_adds_sheet_viewer_and_marks_authorized(
             assert request.headers["authorization"] == "Bearer t_perm"
             return httpx.Response(
                 200,
-                json={"code": 0, "data": {"bot": {"open_id": "ou_bot"}}},
+                json={"code": 0, "bot": {"open_id": "ou_bot"}},
             )
         if request.url.path == "/open-apis/drive/v1/permissions/shtcnperm123/members":
             assert request.url.params["type"] == "sheet"
@@ -1087,7 +1089,10 @@ async def test_oauth_callback_drive_permission_denied_uses_fixed_chinese_error(
             params={"code": "oauth-code", "state": "state-denied"},
         )
 
-    message = "授权失败：当前用户没有该表格的分享权限，请文档所有者或可管理协作者操作。"
+    message = (
+        "授权失败：飞书拒绝添加机器人为表格协作者。请确认当前用户是文档所有者或可管理协作者，"
+        "并确认飞书应用已开通“添加云文档协作者”或云文档权限管理相关权限且已发布生效。"
+    )
     assert response.status_code == 200
     assert message in response.text
     assert notices == [message]

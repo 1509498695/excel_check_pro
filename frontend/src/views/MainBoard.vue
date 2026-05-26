@@ -559,7 +559,7 @@ function handleToggleVisibleRuleSelection(payload: {
         <CollapsibleSection
           step="01"
           title="数据源"
-          description="接入 Excel 或 SVN 来源，飞书暂为占位"
+          description="接入 Excel、SVN 或飞书电子表格来源"
           :status-label="getSectionStatusLabel(1)"
           :status-tone="getSectionStatusTone(1)"
           :active="activeGuideStep === 1"

@@ -206,9 +206,12 @@ async def get_oauth_user_info(user_access_token: str) -> FeishuOAuthUserInfo:
 async def get_current_bot_open_id(db: AsyncSession, project_id: int) -> str:
     """获取当前项目飞书应用机器人的 open_id。"""
     payload = await _request_feishu_json(db, project_id, "GET", BOT_INFO_PATH)
-    data = _ensure_dict(payload.get("data"), "data")
-    bot = data.get("bot")
+    data = payload.get("data")
+    data_payload = data if isinstance(data, dict) else payload
+    bot = data_payload.get("bot")
     bot_payload = bot if isinstance(bot, dict) else data
+    if not isinstance(bot_payload, dict):
+        bot_payload = data_payload if isinstance(data_payload, dict) else {}
     open_id = _as_str(bot_payload.get("open_id"))
     if not open_id:
         open_id = _as_str(bot_payload.get("id"))

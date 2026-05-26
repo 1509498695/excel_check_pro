@@ -744,7 +744,10 @@ async def test_feishu_authorization_e2e_callback_share_permission_failure(
             params={"code": "oauth-code", "state": "share-denied"},
         )
 
-    message = "授权失败：当前用户没有该表格的分享权限，请文档所有者或可管理协作者操作。"
+    message = (
+        "授权失败：飞书拒绝添加机器人为表格协作者。请确认当前用户是文档所有者或可管理协作者，"
+        "并确认飞书应用已开通“添加云文档协作者”或云文档权限管理相关权限且已发布生效。"
+    )
     assert response.status_code == 200
     assert message in response.text
     async with async_session_factory() as session:

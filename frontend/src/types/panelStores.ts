@@ -11,8 +11,10 @@ export interface SourceManagementStoreLike {
   sources: DataSource[]
   capabilities: SourceType[]
   preferredSourceId: string | null
+  sourceMetadataMap?: Record<string, SourceMetadata>
   svnPathReplacementPresets?: string[]
   selectedSvnPathReplacementPreset?: string | null
+  loadSourceMetadata?(sourceId: string, forceRefresh?: boolean): Promise<SourceMetadata>
   upsertSource(source: DataSource, originalId?: string): void
   removeSource(sourceId: string): void
   useSampleSource(): void
@@ -24,7 +26,7 @@ export interface VariablePoolStoreLike extends SourceManagementStoreLike {
   sourceMetadataMap: Record<string, SourceMetadata>
   variablePreviewMap: Record<string, VariablePreviewData>
   setActiveTag(tag: string | null): void
-  loadSourceMetadata(sourceId: string): Promise<SourceMetadata>
+  loadSourceMetadata(sourceId: string, forceRefresh?: boolean): Promise<SourceMetadata>
   loadVariablePreview(
     variable: VariableTag,
     limit?: number,
