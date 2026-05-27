@@ -10,6 +10,7 @@
 | `/fixed-rules` | `frontend/src/views/FixedRulesBoard.vue` | 项目校验配置、执行、导入和结果。 |
 | `/admin` | `frontend/src/views/AdminView.vue` | 项目、成员、角色和密码管理。 |
 | `/profile` | `frontend/src/views/ProfileView.vue` | 账号、密码、项目切换和 AI 配置。 |
+| `/user-guide` | `frontend/src/views/UserGuideView.vue` | 登录后使用说明。 |
 | `/login` `/register` | `LoginView.vue` `RegisterView.vue` | 登录与注册。 |
 
 ## 2. 前端目录
@@ -38,7 +39,9 @@
 | `backend/app/auth/` | JWT、密码、当前用户/项目依赖、认证路由。 |
 | `backend/app/admin/` | 项目、成员、角色和密码管理。 |
 | `backend/app/api/` | `/api/v1` 聚合路由和业务 API。 |
-| `backend/app/loaders/` | 本地 Excel、SVN、飞书占位读取。 |
+| `backend/app/loaders/` | 本地 Excel、SVN、飞书电子表格读取。 |
+| `backend/app/integrations/` | 飞书客户端、飞书机器人、长连接和文件下载集成。 |
+| `backend/app/services/` | 跨模块业务服务，例如飞书表格授权记录。 |
 | `backend/app/rules/` | 规则引擎、领域工具、handler 注册与执行。 |
 | `backend/app/fixed_rules/` | 项目校验配置、迁移、导入、执行整合。 |
 | `backend/app/ai/` | AI 规则助手、凭据、上下文、编译和草稿历史。 |
@@ -53,6 +56,7 @@
 | 个人规则导入项目 | `features/fixed-rules-import/` | `fixed_rules/importer/` |
 | AI 规则助手 | `components/workbench/ai/`、`api/ai.ts`、`store/ai.ts` | `api/ai_api.py`、`ai/` |
 | 数据源 | `api/workbench.ts`、数据源面板组件 | `api/source_api.py`、`loaders/` |
+| 飞书接入 | `components/admin/FeishuBotConfigCard.vue`、`components/workbench/DataSourcePanel.vue`、`api/admin.ts`、`api/workbench.ts` | `admin/router.py`、`api/feishu_api.py`、`integrations/feishu_*`、`loaders/feishu_reader.py`、`services/feishu_sheet_authorization_service.py` |
 
 ## 5. 文档入口
 
@@ -64,4 +68,5 @@
 | [STANDARDS.md](STANDARDS.md) | 开发与文档维护规范。 |
 | [../frontend/README.md](../frontend/README.md) | 前端子项目说明。 |
 | [../CHANGELOG.md](../CHANGELOG.md) | 版本级变化。 |
+| [../PROJECT_RECORD.md](../PROJECT_RECORD.md) | 当前执行进度记录。 |
 | [archive/](archive/) | 历史快照，不作为当前说明入口。 |

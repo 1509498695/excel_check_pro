@@ -50,6 +50,7 @@ __all__ = [
     "get_oauth_user_info",
     "get_spreadsheet_metadata",
     "list_spreadsheet_sheets",
+    "read_sheet_header_columns",
     "read_sheet_columns",
     "read_sheet_values",
     "resolve_wiki_sheet_locator",
@@ -358,29 +359,54 @@ async def read_sheet_values(
     sheets = await list_spreadsheet_sheets(db, project_id, resolved_locator)
     selected_sheet = _select_sheet(sheets, requested_sheet_id=sheet_id or resolved_locator.sheet_id)
     range_name = _build_sheet_range(selected_sheet)
-    path = SHEET_VALUES_PATH.format(
-        spreadsheet_token=quote(resolved_locator.spreadsheet_token, safe=""),
-        range=quote(range_name, safe="!:"),
+    actual_range, raw_values = await _read_sheet_range_values(
+        db,
+        project_id,
+        resolved_locator,
+        range_name,
     )
-    payload = await _request_feishu_json(db, project_id, "GET", path)
-    data = _ensure_dict(payload.get("data"), "data")
-    value_range = _ensure_dict(data.get("valueRange"), "valueRange")
-    raw_values = _normalize_values(value_range.get("values"))
     columns = _normalize_columns(raw_values[0] if raw_values else [])
     rows = _build_rows(columns, raw_values[1:] if raw_values else [])
 
     return FeishuSheetTable(
-        spreadsheet_token=_as_str(
-            data.get("spreadsheetToken"),
-            fallback=resolved_locator.spreadsheet_token,
-        ),
+        spreadsheet_token=resolved_locator.spreadsheet_token,
         sheet_id=selected_sheet.sheet_id,
         sheet_title=selected_sheet.title,
-        range=_as_str(value_range.get("range"), fallback=range_name),
+        range=actual_range,
         columns=columns,
         rows=rows,
         raw_values=raw_values,
     )
+
+
+async def read_sheet_header_columns(
+    db: AsyncSession,
+    project_id: int,
+    locator: FeishuSheetLocator | str,
+    *,
+    sheet: FeishuSheetMetadata | None = None,
+    sheet_id: str | None = None,
+) -> list[str]:
+    """只读取指定工作表首行表头，供元数据下拉快速构建列结构。"""
+    resolved_locator = await resolve_wiki_sheet_locator(db, project_id, locator)
+    selected_sheet = sheet
+    if selected_sheet is None:
+        sheets = await list_spreadsheet_sheets(db, project_id, resolved_locator)
+        selected_sheet = _select_sheet(
+            sheets,
+            requested_sheet_id=sheet_id or resolved_locator.sheet_id,
+        )
+
+    if selected_sheet.column_count <= 0:
+        return []
+
+    _actual_range, raw_values = await _read_sheet_range_values(
+        db,
+        project_id,
+        resolved_locator,
+        _build_sheet_header_range(selected_sheet),
+    )
+    return _normalize_non_empty_columns(raw_values[0] if raw_values else [])
 
 
 async def read_sheet_columns(
@@ -391,13 +417,12 @@ async def read_sheet_columns(
     sheet_id: str | None = None,
 ) -> list[str]:
     """读取指定工作表首行列结构。"""
-    table = await read_sheet_values(
+    return await read_sheet_header_columns(
         db,
         project_id,
         locator,
         sheet_id=sheet_id,
     )
-    return table.columns
 
 
 async def _request_feishu_json(
@@ -662,11 +687,36 @@ def _select_sheet(
     return sorted(candidates, key=lambda item: item.index)[0]
 
 
+async def _read_sheet_range_values(
+    db: AsyncSession,
+    project_id: int,
+    locator: FeishuSheetLocator,
+    range_name: str,
+) -> tuple[str, list[list[Any]]]:
+    path = SHEET_VALUES_PATH.format(
+        spreadsheet_token=quote(locator.spreadsheet_token, safe=""),
+        range=quote(range_name, safe="!:"),
+    )
+    payload = await _request_feishu_json(db, project_id, "GET", path)
+    data = _ensure_dict(payload.get("data"), "data")
+    value_range = _ensure_dict(data.get("valueRange"), "valueRange")
+    return (
+        _as_str(value_range.get("range"), fallback=range_name),
+        _normalize_values(value_range.get("values")),
+    )
+
+
 def _build_sheet_range(sheet: FeishuSheetMetadata) -> str:
     row_count = max(1, sheet.row_count)
     column_count = max(1, sheet.column_count)
     end_column = _column_index_to_letters(column_count)
     return f"{sheet.sheet_id}!A1:{end_column}{row_count}"
+
+
+def _build_sheet_header_range(sheet: FeishuSheetMetadata) -> str:
+    column_count = max(1, sheet.column_count)
+    end_column = _column_index_to_letters(column_count)
+    return f"{sheet.sheet_id}!A1:{end_column}1"
 
 
 def _column_index_to_letters(index: int) -> str:
@@ -691,6 +741,21 @@ def _normalize_columns(header_row: list[Any]) -> list[str]:
         duplicate_count = seen_counts.get(base_name, 0)
         seen_counts[base_name] = duplicate_count + 1
         columns.append(base_name if duplicate_count == 0 else f"{base_name}.{duplicate_count}")
+    return columns
+
+
+def _normalize_non_empty_columns(header_row: list[Any]) -> list[str]:
+    columns: list[str] = []
+    seen_counts: dict[str, int] = {}
+
+    for value in header_row:
+        raw_name = "" if value is None else str(value).strip()
+        if not raw_name:
+            continue
+
+        duplicate_count = seen_counts.get(raw_name, 0)
+        seen_counts[raw_name] = duplicate_count + 1
+        columns.append(raw_name if duplicate_count == 0 else f"{raw_name}.{duplicate_count}")
     return columns
 
 

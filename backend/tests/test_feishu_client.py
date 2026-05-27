@@ -159,6 +159,23 @@ def _values_response(range_name: str = "gid001!A1:AB3") -> httpx.Response:
     )
 
 
+def _header_values_response(range_name: str = "gid001!A1:AB1") -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "code": 0,
+            "msg": "success",
+            "data": {
+                "spreadsheetToken": "shtcnabc123",
+                "valueRange": {
+                    "range": range_name,
+                    "values": [["test1", "test2", "", None]],
+                },
+            },
+        },
+    )
+
+
 @pytest.mark.anyio
 async def test_get_feishu_tenant_access_token_reuses_bot_config_and_cache(
     test_db,
@@ -410,14 +427,17 @@ async def test_read_sheet_columns_returns_first_row_columns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     await _seed_feishu_config(test_project_id)
+    captured_values_path = ""
 
     def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_values_path
         if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
             return _token_response()
         if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query":
             return _sheets_response()
         if request.url.path.startswith("/open-apis/sheets/v2/"):
-            return _values_response()
+            captured_values_path = request.url.path
+            return _header_values_response()
         return httpx.Response(404)
 
     _install_mock_transport(monkeypatch, handler)
@@ -427,9 +447,10 @@ async def test_read_sheet_columns_returns_first_row_columns(
             session,
             test_project_id,
             "https://demo.feishu.cn/sheets/shtcnabc123",
-        )
+    )
 
-    assert columns == ["姓名", "Unnamed: 2", "姓名.1"]
+    assert captured_values_path.endswith("/values/gid001!A1:AB1")
+    assert columns == ["test1", "test2"]
 
 
 @pytest.mark.anyio

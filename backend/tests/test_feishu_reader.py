@@ -11,6 +11,7 @@ from backend.app.loaders.feishu_reader import (
     FeishuSheetLocator,
     load_feishu_variables_by_source,
     parse_feishu_sheet_url,
+    preview_feishu_source_column,
 )
 
 
@@ -199,6 +200,35 @@ def test_load_feishu_variables_by_source_requires_project_id() -> None:
     assert "项目上下文不可用" in str(exc_info.value)
 
 
+@pytest.mark.anyio
+async def test_preview_feishu_source_column_skips_empty_target_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_feishu_preview_stubs(monkeypatch)
+
+    preview = await preview_feishu_source_column(
+        DataSource(
+            id="src_feishu",
+            type="feishu",
+            pathOrUrl="https://demo.feishu.cn/sheets/shtcnabc123",
+        ),
+        sheet_name="Items",
+        column_name="Name",
+        db=None,  # mocked Feishu client does not touch the session
+        project_id=1,
+    )
+
+    assert preview["preview_rows"] == [
+        {"row_index": 2, "value": "Alpha"},
+        {"row_index": 6, "value": 0},
+        {"row_index": 7, "value": False},
+        {"row_index": 8, "value": "Beta"},
+    ]
+    assert preview["total_rows"] == 4
+    assert preview["loaded_rows"] == 4
+    assert preview["loaded_all_rows"] is True
+
+
 def _install_feishu_loader_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
     from backend.app.integrations import feishu_client
 
@@ -228,6 +258,47 @@ def _install_feishu_loader_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
                 [1, "Alpha", "A"],
                 [1, "Beta", "B"],
                 ["", "", "C"],
+            ],
+        )
+
+    monkeypatch.setattr(feishu_client, "list_spreadsheet_sheets", _list_sheets)
+    monkeypatch.setattr(feishu_client, "read_sheet_values", _read_values)
+
+
+def _install_feishu_preview_stubs(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.app.integrations import feishu_client
+
+    async def _list_sheets(*_args, **_kwargs):
+        return [
+            FeishuSheetMetadata(
+                sheet_id="gid_items",
+                title="Items",
+                index=0,
+                row_count=9,
+                column_count=3,
+                hidden=False,
+                resource_type="sheet",
+            )
+        ]
+
+    async def _read_values(*_args, **_kwargs):
+        return FeishuSheetTable(
+            spreadsheet_token="shtcnabc123",
+            sheet_id="gid_items",
+            sheet_title="Items",
+            range="gid_items!A1:C9",
+            columns=["ID", "Name", "Group"],
+            rows=[],
+            raw_values=[
+                ["ID", "Name", "Group"],
+                [1, "Alpha", "A"],
+                [2, "", "B"],
+                [3, "   ", "C"],
+                [4, None, "D"],
+                [5, 0, "E"],
+                [6, False, "F"],
+                [7, "Beta"],
+                [8],
             ],
         )
 

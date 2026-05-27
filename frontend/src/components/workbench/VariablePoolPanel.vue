@@ -146,12 +146,43 @@ const compositeMetadata = computed(() => store.sourceMetadataMap[compositeDraft.
 const singleSheetOptions = computed(() => singleMetadata.value?.sheets ?? [])
 const compositeSheetOptions = computed(() => compositeMetadata.value?.sheets ?? [])
 const singleColumnOptions = computed(
-  () => singleSheetOptions.value.find((sheet) => sheet.name === singleDraft.sheet)?.columns ?? [],
+  () =>
+    filterSelectableColumns(
+      singleSheetOptions.value.find((sheet) => sheet.name === singleDraft.sheet)?.columns ?? [],
+      singleSource.value,
+    ),
 )
 const compositeColumnOptions = computed(
   () =>
-    compositeSheetOptions.value.find((sheet) => sheet.name === compositeDraft.sheet)?.columns ?? [],
+    filterSelectableColumns(
+      compositeSheetOptions.value.find((sheet) => sheet.name === compositeDraft.sheet)?.columns ?? [],
+      compositeSource.value,
+    ),
 )
+const singleMetadataLoadingText = computed(() =>
+  singleSource.value?.type === 'feishu' ? '正在读取飞书表格结构...' : '正在读取数据源结构...',
+)
+const compositeMetadataLoadingText = computed(() =>
+  compositeSource.value?.type === 'feishu' ? '正在读取飞书表格结构...' : '正在读取数据源结构...',
+)
+const singleSheetPlaceholder = computed(() =>
+  singleMetadataLoading.value ? singleMetadataLoadingText.value : '选择 Sheet',
+)
+const compositeSheetPlaceholder = computed(() =>
+  compositeMetadataLoading.value ? compositeMetadataLoadingText.value : '选择 Sheet',
+)
+const singleColumnPlaceholder = computed(() => {
+  if (singleMetadataLoading.value) return '请等待列名加载完成'
+  if (!singleDraft.sheet) return '先选择 Sheet'
+  if (!singleColumnOptions.value.length) return '当前 Sheet 没有可用列'
+  return '选择列名'
+})
+const compositeColumnsPlaceholder = computed(() => {
+  if (compositeMetadataLoading.value) return '请等待列名加载完成'
+  if (!compositeDraft.sheet) return '先选择 Sheet'
+  if (!compositeColumnOptions.value.length) return '当前 Sheet 没有可用列'
+  return '至少选择 2 列'
+})
 const compositeKeyOptions = computed(() =>
   compositeDraft.columns?.filter((item): item is string => typeof item === 'string' && !!item) ?? [],
 )
@@ -227,6 +258,25 @@ function shouldForceMetadataRefresh(source: DataSource | null | undefined): bool
 
 function getFirstSheet(metadata: { sheets: Array<{ name: string; columns: string[] }> }) {
   return metadata.sheets[0] ?? null
+}
+
+function getSelectableColumnsForSheet(
+  sheet: { columns: string[] } | null | undefined,
+  source: DataSource | null,
+): string[] {
+  return filterSelectableColumns(sheet?.columns ?? [], source)
+}
+
+function filterSelectableColumns(columns: string[], source: DataSource | null): string[] {
+  return columns.filter((column) => {
+    const normalized = column.trim()
+    if (!normalized) return false
+    return source?.type !== 'feishu' || !isSyntheticUnnamedColumn(normalized)
+  })
+}
+
+function isSyntheticUnnamedColumn(column: string): boolean {
+  return /^Unnamed:\s*\d+(?:\.\d+)?$/.test(column)
 }
 
 function syncSingleTag(): void {
@@ -317,14 +367,18 @@ async function prepareSingleEditorForSource(sourceId: string, preserve = false):
     if (!preserve || !matchedSheet) {
       if (shouldAutoSelect) {
         const firstSheet = getFirstSheet(metadata)
+        const selectableColumns = getSelectableColumnsForSheet(firstSheet, source)
         singleDraft.sheet = firstSheet?.name ?? ''
-        singleDraft.column = firstSheet?.columns[0] ?? ''
+        singleDraft.column = selectableColumns[0] ?? ''
       } else {
         singleDraft.sheet = ''
         singleDraft.column = ''
       }
-    } else if (!matchedSheet.columns.includes(singleDraft.column ?? '')) {
-      singleDraft.column = shouldAutoSelect ? matchedSheet.columns[0] ?? '' : ''
+    } else {
+      const selectableColumns = getSelectableColumnsForSheet(matchedSheet, source)
+      if (!selectableColumns.includes(singleDraft.column ?? '')) {
+        singleDraft.column = shouldAutoSelect ? selectableColumns[0] ?? '' : ''
+      }
     }
     if (!metadata.sheets.length) singleMetadataError.value = '当前数据源没有读取到可用的 Sheet。'
     syncSingleTag()
@@ -366,7 +420,7 @@ async function prepareCompositeEditorForSource(sourceId: string, preserve = fals
       compositeDraft.columns = []
       compositeDraft.key_column = ''
     } else {
-      const validColumns = new Set(matchedSheet.columns)
+      const validColumns = new Set(getSelectableColumnsForSheet(matchedSheet, source))
       compositeDraft.columns = (compositeDraft.columns ?? []).filter((item) => validColumns.has(item))
       if (!compositeDraft.columns.includes(compositeDraft.key_column ?? '')) {
         compositeDraft.key_column = ''
@@ -848,6 +902,12 @@ defineExpose({
       >
         {{ singleMetadataError }}
       </div>
+      <div
+        v-else-if="singleMetadataLoading"
+        class="rounded-card border border-line bg-canvas px-4 py-2.5 text-[12px] text-ink-600"
+      >
+        {{ singleMetadataLoadingText }}
+      </div>
 
       <div class="grid grid-cols-2 gap-4">
         <div>
@@ -874,9 +934,9 @@ defineExpose({
             :model-value="singleDraft.sheet"
             class="w-full"
             filterable
-            placeholder="选择 Sheet"
+            :placeholder="singleSheetPlaceholder"
             :loading="singleMetadataLoading"
-            :disabled="!singleDraft.source_id || !singleSheetOptions.length"
+            :disabled="singleMetadataLoading || !singleDraft.source_id || !singleSheetOptions.length"
             @update:model-value="handleSingleSheetChange"
           >
             <el-option
@@ -897,8 +957,9 @@ defineExpose({
             :model-value="singleDraft.column"
             class="w-full"
             filterable
-            placeholder="选择列名"
-            :disabled="!singleDraft.sheet || !singleColumnOptions.length"
+            :placeholder="singleColumnPlaceholder"
+            :loading="singleMetadataLoading"
+            :disabled="singleMetadataLoading || !singleDraft.sheet || !singleColumnOptions.length"
             @update:model-value="handleSingleColumnChange"
           >
             <el-option
@@ -985,6 +1046,12 @@ defineExpose({
         >
           {{ compositeMetadataError }}
         </div>
+        <div
+          v-else-if="compositeMetadataLoading"
+          class="rounded-card border border-line bg-canvas px-4 py-2.5 text-[12px] text-ink-600"
+        >
+          {{ compositeMetadataLoadingText }}
+        </div>
 
         <div class="grid grid-cols-2 gap-4">
           <div>
@@ -1011,9 +1078,9 @@ defineExpose({
               :model-value="compositeDraft.sheet"
               class="w-full"
               filterable
-              placeholder="选择 Sheet"
+              :placeholder="compositeSheetPlaceholder"
               :loading="compositeMetadataLoading"
-              :disabled="!compositeDraft.source_id || !compositeSheetOptions.length"
+              :disabled="compositeMetadataLoading || !compositeDraft.source_id || !compositeSheetOptions.length"
               @update:model-value="handleCompositeSheetChange"
             >
               <el-option
@@ -1036,8 +1103,9 @@ defineExpose({
             collapse-tags
             collapse-tags-tooltip
             class="w-full"
-            placeholder="至少选择 2 列"
-            :disabled="!compositeDraft.sheet || !compositeColumnOptions.length"
+            :placeholder="compositeColumnsPlaceholder"
+            :loading="compositeMetadataLoading"
+            :disabled="compositeMetadataLoading || !compositeDraft.sheet || !compositeColumnOptions.length"
             @update:model-value="handleCompositeColumnsChange"
           >
             <el-option

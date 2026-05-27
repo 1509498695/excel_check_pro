@@ -9,7 +9,7 @@ import secrets
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
@@ -67,7 +67,6 @@ APP_PERMISSION_MISSING_STATUS = "app_permission_missing"
 DOCUMENT_PERMISSION_DENIED_STATUS = "document_permission_denied"
 NOT_FOUND_STATUS = "not_found"
 BOT_NOT_CONFIGURED_STATUS = "bot_not_configured"
-CALLBACK_NOT_CONFIGURED_STATUS = "callback_not_configured"
 SEND_FAILED_STATUS = "send_failed"
 
 _PENDING_AUTHORIZATION_MESSAGE = "文档权限不足，请发送授权请求到群。"
@@ -177,6 +176,7 @@ async def check_feishu_source_permission(
 @router.post("/sources/send-authorization-card")
 async def send_feishu_source_authorization_card(
     payload: FeishuSendAuthorizationCardRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
     ctx: CurrentUserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
@@ -198,14 +198,7 @@ async def send_feishu_source_authorization_card(
             }
         )
 
-    callback_url = settings.feishu_oauth_callback_url.strip()
-    if not callback_url:
-        return _ok(
-            {
-                "status": CALLBACK_NOT_CONFIGURED_STATUS,
-                "message": "当前服务尚未配置飞书 OAuth callback 地址。",
-            }
-        )
+    callback_url = _resolve_feishu_oauth_callback_url(request)
 
     project_name = await _get_project_name(db, project_id)
     sheet_title = await _try_get_sheet_title(db, project_id, locator)
@@ -268,6 +261,7 @@ async def send_feishu_source_authorization_card(
 
 @router.get("/sources/oauth/callback", response_class=HTMLResponse)
 async def handle_feishu_source_oauth_callback(
+    request: Request,
     code: str | None = None,
     state: str | None = None,
     db: AsyncSession = Depends(get_db),
@@ -314,23 +308,7 @@ async def handle_feishu_source_oauth_callback(
         )
         return _authorization_failure_page(message)
 
-    callback_url = settings.feishu_oauth_callback_url.strip()
-    if not callback_url:
-        message = "授权失败：服务端尚未配置飞书 OAuth callback 地址。"
-        await mark_authorization_failed(
-            db,
-            record,
-            error_message=message,
-            status=AUTHORIZATION_STATUS_AUTHORIZATION_FAILED,
-        )
-        await db.commit()
-        await _send_authorization_notice(
-            db,
-            project_id=record.project_id,
-            chat_id=record.chat_id,
-            text=message,
-        )
-        return _authorization_failure_page(message)
+    callback_url = _resolve_feishu_oauth_callback_url(request)
 
     try:
         user_access_token = await exchange_oauth_code_for_user_token(
@@ -438,6 +416,14 @@ async def _resolve_record_locator_for_oauth_callback(
     if locator.url_type != "wiki":
         return locator
     return await resolve_wiki_sheet_locator_with_user_token(user_access_token, locator)
+
+
+def _resolve_feishu_oauth_callback_url(request: Request) -> str:
+    """返回飞书 OAuth callback URL，优先使用显式配置，缺省时按当前请求生成。"""
+    configured_callback_url = settings.feishu_oauth_callback_url.strip()
+    if configured_callback_url:
+        return configured_callback_url
+    return str(request.url_for("handle_feishu_source_oauth_callback"))
 
 
 def _build_feishu_oauth_url(

@@ -1,8 +1,8 @@
 # Excel Check
 
-文档更新时间：2026-05-21 17:48
+文档更新时间：2026-05-27 10:33
 
-> 当前稳定文档入口只保留 6 份：本 README、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/MODULES.md](docs/MODULES.md)、[docs/STANDARDS.md](docs/STANDARDS.md)、[frontend/README.md](frontend/README.md) 与 [CHANGELOG.md](CHANGELOG.md)。历史需求、分钟级进度和一次性重构方案见 [docs/archive/](docs/archive/)。
+> 当前稳定文档入口保留 7 份：本 README、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/MODULES.md](docs/MODULES.md)、[docs/STANDARDS.md](docs/STANDARDS.md)、[frontend/README.md](frontend/README.md)、[CHANGELOG.md](CHANGELOG.md) 与 [PROJECT_RECORD.md](PROJECT_RECORD.md)。历史需求、旧分钟级进度和一次性重构方案见 [docs/archive/](docs/archive/)。
 
 Excel Check 是面向配置表校验的多用户 Web 应用。系统把数据源、变量、规则和结果统一到 `TaskTree`，支持个人临时校验和项目长期规则复用。
 
@@ -12,10 +12,12 @@ Excel Check 是面向配置表校验的多用户 Web 应用。系统把数据源
 - 个人校验 `/`：数据源、变量池、规则编排、结果四步流程，统一走 `POST /api/v1/engine/execute`。
 - 项目校验 `/fixed-rules`：项目级规则配置、从个人校验导入、执行、分页结果和 Excel 导出。
 - 管理后台 `/admin`：项目、成员、角色、归属和密码管理。
-- 个人设置 `/profile`：账号信息、密码、项目切换和 AI 模型配置。
-- 数据源：本地 Excel、浏览器上传 Excel、SVN Excel；CSV 已下线，飞书仍为占位。
+- 个人设置 `/profile`：账号信息、密码、项目切换、AI 模型配置和使用说明入口。
+- 使用说明 `/user-guide`：面向业务用户的操作指引页。
+- 数据源：本地 Excel、浏览器上传 Excel、SVN Excel、飞书电子表格；CSV 已下线。
 - 规则能力：10 类规则，覆盖单字段、固定值、正则、顺序、跨表映射和多种组合变量校验。
 - AI 智能添加规则：在个人校验步骤 03 生成规则草稿，必须经预校验和用户确认后写入配置。
+- 飞书接入：项目管理员配置飞书机器人后，个人校验可检测表格权限、发送群授权卡片、通过 OAuth 回调为机器人追加只读协作者，并读取 Sheet 元数据、列预览和执行数据。
 
 ## 2. 技术栈与地址
 
@@ -77,7 +79,7 @@ $env:JWT_SECRET_KEY="替换为一段固定随机字符串"
 $env:DEFAULT_SUPER_ADMIN_PASSWORD="替换默认管理员密码"
 ```
 
-常用环境变量：`APP_HOST`、`APP_PORT`、`FRONTEND_DIST_DIR`、`CORS_ALLOW_ORIGINS`、`MAX_UPLOAD_MB`、`DB_URL`、`JWT_SECRET_KEY`、`DEFAULT_SUPER_ADMIN_PASSWORD`。
+常用环境变量：`APP_HOST`、`APP_PORT`、`FRONTEND_DIST_DIR`、`CORS_ALLOW_ORIGINS`、`MAX_UPLOAD_MB`、`DB_URL`、`JWT_SECRET_KEY`、`DEFAULT_SUPER_ADMIN_PASSWORD`、`SVN_URL_ALLOWLIST`、`FEISHU_OAUTH_CALLBACK_URL`。
 
 ## 5. 测试与构建
 
@@ -111,11 +113,12 @@ npm run build
 |---|---|
 | 健康检查 | `GET /health` |
 | 认证 | `POST /api/v1/auth/login`、`GET /api/v1/auth/me`、`POST /api/v1/auth/switch-project/{project_id}` |
-| 数据源 | `GET /api/v1/sources/capabilities`、`POST /api/v1/sources/upload`、`POST /api/v1/sources/metadata` |
+| 数据源 | `GET /api/v1/sources/capabilities`、`POST /api/v1/sources/upload`、`POST /api/v1/sources/metadata`、`POST /api/v1/sources/column-preview`、`POST /api/v1/sources/composite-preview` |
+| 飞书数据源 | `POST /api/v1/feishu/sources/check-permission`、`POST /api/v1/feishu/sources/send-authorization-card`、`GET /api/v1/feishu/sources/oauth/callback` |
 | 个人校验 | `GET/PUT /api/v1/workbench/config`、`POST /api/v1/workbench/svn-update`、`POST /api/v1/engine/execute` |
-| AI 规则助手 | `GET/PUT/DELETE /api/v1/ai/providers/me`、`POST /api/v1/ai/agents/rule-draft`、`POST /api/v1/ai/agents/rule-prompt-optimize` |
+| AI 规则助手 | `GET/PUT/DELETE /api/v1/ai/providers/me`、`POST /api/v1/ai/agents/rule-draft`、`POST /api/v1/ai/agents/rule-prompt-optimize`、`GET/DELETE /api/v1/ai/drafts`、`POST /api/v1/ai/drafts/{draft_id}/apply` |
 | 项目校验 | `GET/PUT /api/v1/fixed-rules/config`、`GET/POST /api/v1/fixed-rules/import/workbench/{draft,preview,commit}`、`POST /api/v1/fixed-rules/execute` |
-| 管理后台 | `/api/v1/admin/projects*`、`/api/v1/admin/projects/{id}/members*`、`POST /api/v1/admin/users/{id}/reset-password` |
+| 管理后台 | `/api/v1/admin/projects*`、`/api/v1/admin/projects/{id}/members*`、`POST /api/v1/admin/users/{id}/reset-password`、`/api/v1/admin/projects/{id}/feishu-bot*` |
 
 完整协议见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)。
 
@@ -126,4 +129,5 @@ npm run build
 - 开发规范：[docs/STANDARDS.md](docs/STANDARDS.md)
 - 前端说明：[frontend/README.md](frontend/README.md)
 - 版本日志：[CHANGELOG.md](CHANGELOG.md)
+- 项目进度：[PROJECT_RECORD.md](PROJECT_RECORD.md)
 - 历史归档：[docs/archive/](docs/archive/)

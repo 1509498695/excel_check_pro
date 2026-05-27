@@ -15,7 +15,7 @@ Excel Check 解决配置表规则校验的工程问题：把数据源、变量�
 
 - 不做 SaaS 化、容器编排、反代、HTTPS。
 - 不恢复 CSV 数据源。
-- 飞书数据源仍是占位，不承诺真实读取。
+- 飞书只支持电子表格和 wiki 电子表格链接；不支持多维表格、文档表格或任意 Drive 文件。
 - AI 不直接写底层执行配置，只生成草稿并由用户确认。
 - SVN 远端只支持白名单 host、`http(s)://`、单文件 `.xls/.xlsx`。
 
@@ -101,13 +101,16 @@ class TaskTree:
 | 模块 | 入口 |
 |---|---|
 | 认证 | `/auth/register`、`/auth/login`、`/auth/me`、`/auth/change-password`、`/auth/switch-project/{project_id}` |
-| 管理后台 | `/admin/projects*`、`/admin/projects/{id}/members*`、`/admin/users/{id}/reset-password` |
+| 管理后台 | `/admin/projects*`、`/admin/projects/{id}/members*`、`/admin/users/{id}/reset-password`、`/admin/projects/{id}/feishu-bot*` |
 | 数据源 | `/sources/capabilities`、`/sources/upload`、`/sources/local-pick`、`/sources/metadata`、`/sources/column-preview`、`/sources/composite-preview`、`/sources/svn-*` |
+| 飞书数据源 | `/feishu/sources/check-permission`、`/feishu/sources/send-authorization-card`、`/feishu/sources/oauth/callback` |
 | 个人校验 | `/workbench/config`、`/workbench/svn-update`、`/engine/execute` |
 | AI 规则助手 | `/ai/providers/me`、`/ai/agents/rule-draft`、`/ai/agents/rule-prompt-optimize`、`/ai/drafts` |
 | 项目校验 | `/fixed-rules/config`、`/fixed-rules/import/workbench/draft`、`/fixed-rules/import/workbench/preview`、`/fixed-rules/import/workbench/commit`、`/fixed-rules/execute`、`/fixed-rules/results/*` |
 
 SVN 鉴权失败使用 HTTP 403，不触发前端登录态过期逻辑；HTTP 401 只表达认证失效。
+
+飞书数据源权限不足时不直接失败为登录态问题：前端先调用权限检测接口，必要时通过项目飞书机器人向默认群发送授权卡片；有权限的飞书用户完成 OAuth 后，服务端把机器人加入表格只读协作者，再复用同一飞书电子表格读取链路获取元数据、列预览和执行数据。
 
 ## 5. AI 规则助手
 
@@ -137,12 +140,13 @@ flowchart LR
 - 项目校验配置按 `project_id` 隔离。
 - SVN 凭据按用户和 host 隔离，使用 Fernet 加密落盘。
 - SVN URL 受 `SVN_URL_ALLOWLIST` 限制。
+- 飞书机器人配置按项目隔离，`app_secret` 加密落库；飞书表格授权记录按 `project_id + source_id` 记录，并可按 spreadsheet token 复用已授权表格。
 
 ## 7. 已知限制
 
 | 限制 | 状态 |
 |---|---|
-| 飞书数据源 | 占位，未闭环。 |
+| 飞书数据源 | 仅支持飞书电子表格和 wiki 电子表格，依赖项目机器人、OAuth callback 和表格只读授权。 |
 | CSV 数据源 | 已下线，仅保留历史提示。 |
 | 多配置集切换 | 未开放。 |
 | SVN 远端 | 仅支持白名单 host、`http(s)://`、单文件 Excel。 |

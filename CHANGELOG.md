@@ -2,15 +2,18 @@
 
 本日志按 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/) 风格维护，记录版本级变化，不记录分钟级流水。
 
-- 分钟级历史日记：[docs/archive/PROJECT_RECORD.md](docs/archive/PROJECT_RECORD.md)
+- 当前活动进度记录：[PROJECT_RECORD.md](PROJECT_RECORD.md)
+- 历史分钟级日记：[docs/archive/PROJECT_RECORD.md](docs/archive/PROJECT_RECORD.md)
 - 本次文档精简前的长篇 `[Unreleased]` 明细快照：[docs/archive/changelog-unreleased-before-doc-cleanup-2026-05-19.md](docs/archive/changelog-unreleased-before-doc-cleanup-2026-05-19.md)
 
 ## [Unreleased]
 
 ### 文档治理
 
-- 二次精简当前稳定文档：保留 6 份入口但压缩重复段落，明确 README、架构、模块、规范、前端说明和更新日志的职责边界，并修正个人规则导入项目校验的当前 API 路径。
-- 精简当前文档入口：`README.md`、`docs/ARCHITECTURE.md`、`docs/MODULES.md`、`docs/STANDARDS.md`、`frontend/README.md` 与本文件成为当前说明主入口。
+- 重新按当前代码梳理稳定文档，修正飞书数据源、飞书机器人授权、用户指南、AI 草稿、结果导出和当前进度记录入口的说明。
+- 新增当前活动进度记录 `PROJECT_RECORD.md`，旧分钟级进度继续保留在 `docs/archive/PROJECT_RECORD.md` 作为历史归档。
+- 早前二次精简稳定文档：当时保留 6 份入口并压缩重复段落，明确 README、架构、模块、规范、前端说明和更新日志的职责边界，并修正个人规则导入项目校验的当前 API 路径。
+- 早前精简文档入口：`README.md`、`docs/ARCHITECTURE.md`、`docs/MODULES.md`、`docs/STANDARDS.md`、`frontend/README.md` 与本文件成为当前说明主入口。
 - 压缩 README、架构、模块和前端说明中的重复段落，将历史需求、分钟级进度、一次性重构方案和长篇变更流水收口到 `docs/archive/`。
 
 ### AI 智能添加规则
@@ -29,8 +32,9 @@
 
 ### 数据源与部署
 
-- CSV 数据源入口已下线，历史 CSV 配置提示改用 Excel 或 SVN Excel；飞书仍为占位入口。
-- 本地 Excel、浏览器上传 Excel、SVN Excel 统一接入变量池、元数据读取和执行链路。
+- CSV 数据源入口已下线，历史 CSV 配置提示改用 Excel、SVN Excel 或飞书电子表格。
+- 本地 Excel、浏览器上传 Excel、SVN Excel、飞书电子表格统一接入变量池、元数据读取、列预览和执行链路。
+- 飞书电子表格支持项目机器人配置、权限检测、群授权卡片、OAuth 回调追加只读协作者和授权记录复用；多维表格与文档表格仍不支持。
 - SVN HTTP 数据源支持目录浏览、凭据加密、缓存刷新、个人校验和项目校验更新；鉴权失败使用 HTTP 403，避免误触登录态过期。
 - 本机共享部署支持前端构建后由 FastAPI 单服务托管，并通过环境变量配置监听地址、端口、CORS、上传大小、JWT 密钥和默认管理员密码。
 

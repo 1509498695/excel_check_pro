@@ -45,7 +45,17 @@ frontend/src
 
 更细的代码定位见 [../docs/MODULES.md](../docs/MODULES.md)。
 
-## 4. 设计与代码约定
+## 4. 当前页面
+
+| 路由 | 说明 |
+|---|---|
+| `/` | 个人校验四步工作流，含数据源、变量、规则、结果和 AI 规则助手。 |
+| `/fixed-rules` | 项目校验配置、导入个人规则、执行、结果分页和导出。 |
+| `/admin` | 项目、成员、角色、密码和项目飞书机器人配置。 |
+| `/profile` | 账号信息、密码、项目切换、AI 配置和使用说明入口。 |
+| `/user-guide` | 登录后使用说明。 |
+
+## 5. 设计与代码约定
 
 - 页面布局优先复用 `components/shell/`。
 - 业务组件只处理当前业务域，不复制全局按钮、表格和状态样式。
@@ -54,6 +64,6 @@ frontend/src
 - 历史 wire 字段保持原名，例如 `pathOrUrl`、`source_id`、`rule_type`。
 - `corePlugins.preflight = false`，避免 Tailwind reset 与 Element Plus 冲突。
 
-## 5. 联调入口
+## 6. 联调入口
 
-完整联调步骤见 [../README.md](../README.md) 的“最短联调”。规则能力、AI 智能添加规则、SVN 和接口契约见 [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)。
+完整联调步骤见 [../README.md](../README.md) 的“最短联调”。规则能力、AI 智能添加规则、SVN、飞书电子表格和接口契约见 [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)。

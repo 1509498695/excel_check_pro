@@ -499,13 +499,28 @@ async def test_authorization_service_upsert_and_query_helpers(
 
 
 @pytest.mark.anyio
-async def test_send_authorization_card_returns_callback_not_configured(
+async def test_send_authorization_card_uses_request_callback_when_not_configured(
     auth_client: AsyncClient,
     test_project_id: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     await _seed_feishu_bot_config(test_project_id, default_chat_id="oc_default")
     object.__setattr__(settings, "feishu_oauth_callback_url", "")
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnperm123":
+            return _spreadsheet_response("配置校验表")
+        return httpx.Response(404)
+
+    async def _fake_send_card(*, db, project_id, chat_id, card):  # noqa: ANN001
+        captured["card"] = card
+        return {"message_id": "om_auth_card", "raw": {}}
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("backend.app.api.feishu_api.send_card_to_chat", _fake_send_card)
 
     response = await auth_client.post(
         "/api/v1/feishu/sources/send-authorization-card",
@@ -516,10 +531,12 @@ async def test_send_authorization_card_returns_callback_not_configured(
     )
 
     assert response.status_code == 200
-    assert response.json()["data"] == {
-        "status": "callback_not_configured",
-        "message": "当前服务尚未配置飞书 OAuth callback 地址。",
-    }
+    assert response.json()["data"]["status"] == AUTHORIZATION_STATUS_SENT
+    button_url = captured["card"]["elements"][1]["actions"][0]["url"]
+    query = parse_qs(urlparse(button_url).query)
+    assert query["redirect_uri"] == [
+        "http://testserver/api/v1/feishu/sources/oauth/callback"
+    ]
 
 
 @pytest.mark.anyio
@@ -1000,6 +1017,58 @@ async def test_oauth_callback_adds_sheet_viewer_and_marks_authorized(
     assert record.state_hash == ""
     assert record.state_expires_at is None
     assert by_state is None
+
+
+@pytest.mark.anyio
+async def test_oauth_callback_uses_request_callback_when_not_configured(
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id, default_chat_id="oc_default")
+    await _seed_authorization_sent(test_project_id, state="state-auto-callback")
+    object.__setattr__(settings, "feishu_oauth_callback_url", "")
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/open-apis/authen/v2/oauth/token":
+            body = json.loads(request.content.decode("utf-8"))
+            captured["redirect_uri"] = body["redirect_uri"]
+            assert body == {
+                "grant_type": "authorization_code",
+                "client_id": "perm_app",
+                "client_secret": "perm_secret",
+                "code": "oauth-code",
+                "redirect_uri": "http://testserver/api/v1/feishu/sources/oauth/callback",
+            }
+            return httpx.Response(200, json={"access_token": "u_perm"})
+        if request.url.path == "/open-apis/authen/v1/user_info":
+            return httpx.Response(200, json={"code": 0, "data": {"open_id": "ou_user"}})
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        if request.url.path == "/open-apis/bot/v3/info":
+            return httpx.Response(200, json={"code": 0, "data": {"bot": {"open_id": "ou_bot"}}})
+        if request.url.path == "/open-apis/drive/v1/permissions/shtcnperm123/members":
+            return httpx.Response(200, json={"code": 0, "data": {}})
+        return httpx.Response(404)
+
+    async def _fake_send_text(*, db, project_id, chat_id, text):  # noqa: ANN001
+        return {"message_id": "om_notice", "raw": {}}
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("backend.app.api.feishu_api.send_text_to_chat", _fake_send_text)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/v1/feishu/sources/oauth/callback",
+            params={"code": "oauth-code", "state": "state-auto-callback"},
+        )
+
+    assert response.status_code == 200
+    assert "飞书表格授权成功" in response.text
+    assert captured["redirect_uri"] == "http://testserver/api/v1/feishu/sources/oauth/callback"
 
 
 @pytest.mark.anyio

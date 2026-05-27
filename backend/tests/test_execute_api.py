@@ -1193,7 +1193,7 @@ async def test_source_metadata_returns_feishu_sheet_and_columns(
             return _feishu_token_response()
         if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query":
             return _feishu_sheets_response()
-        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid001!A1:B2":
+        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid001!A1:B1":
             return httpx.Response(
                 200,
                 json={
@@ -1202,13 +1202,13 @@ async def test_source_metadata_returns_feishu_sheet_and_columns(
                     "data": {
                         "spreadsheetToken": "shtcnabc123",
                         "valueRange": {
-                            "range": "gid001!A1:B2",
-                            "values": [["id", "name"], [1, "张三"]],
+                            "range": "gid001!A1:B1",
+                            "values": [["id", "name"]],
                         },
                     },
                 },
             )
-        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid002!A1:A2":
+        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid002!A1:A1":
             return httpx.Response(
                 200,
                 json={
@@ -1217,8 +1217,8 @@ async def test_source_metadata_returns_feishu_sheet_and_columns(
                     "data": {
                         "spreadsheetToken": "shtcnabc123",
                         "valueRange": {
-                            "range": "gid002!A1:A2",
-                            "values": [["status"], ["ok"]],
+                            "range": "gid002!A1:A1",
+                            "values": [["status"]],
                         },
                     },
                 },
@@ -1445,7 +1445,7 @@ async def test_feishu_column_preview_returns_rows_with_real_row_index(
     test_project_id: int,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """飞书单列预览应以首行为表头，数据第一行 row_index=2。"""
+    """飞书单列预览应过滤目标列空值，并保留真实表格行号。"""
     await _seed_feishu_bot_config(test_project_id)
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -1461,6 +1461,7 @@ async def test_feishu_column_preview_returns_rows_with_real_row_index(
                     [2, "", "B"],
                     [3, None, "C"],
                     [4, "   ", "D"],
+                    [5, "Omega", "E"],
                 ]
             )
         return httpx.Response(404, json={"code": 404, "msg": "not found"})
@@ -1489,13 +1490,12 @@ async def test_feishu_column_preview_returns_rows_with_real_row_index(
     assert payload["sheet"] == "Preview"
     assert payload["column"] == "name"
     assert payload["preview_limit"] == 3
-    assert payload["total_rows"] == 4
-    assert payload["loaded_rows"] == 3
-    assert payload["loaded_all_rows"] is False
+    assert payload["total_rows"] == 2
+    assert payload["loaded_rows"] == 2
+    assert payload["loaded_all_rows"] is True
     assert payload["preview_rows"] == [
         {"row_index": 2, "value": "Alpha"},
-        {"row_index": 3, "value": None},
-        {"row_index": 4, "value": None},
+        {"row_index": 6, "value": "Omega"},
     ]
 
 

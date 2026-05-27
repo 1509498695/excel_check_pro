@@ -1074,7 +1074,7 @@ watch(
     <el-dialog
       v-model="dialogVisible"
       :title="editingId ? '编辑数据源' : '新增数据源'"
-      width="520px"
+      width="min(760px, calc(100vw - 32px))"
       destroy-on-close
     >
       <div class="flex flex-col gap-4">
@@ -1130,11 +1130,11 @@ watch(
 
         <div>
           <label class="mb-1.5 block text-[12px] font-medium text-ink-500">{{ getPathLabel(draft.type) }}</label>
-          <div class="flex items-center gap-2">
+          <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
             <el-autocomplete
               v-if="isSvnSource && svnSubMode === 'remote'"
               v-model="draft.pathOrUrl"
-              class="flex-1"
+              class="w-full min-w-0 flex-1"
               :fetch-suggestions="querySavedSvnDirectories"
               :trigger-on-focus="true"
               clearable
@@ -1146,7 +1146,7 @@ watch(
             <el-input
               v-else
               v-model="draft.pathOrUrl"
-              class="flex-1"
+              class="w-full min-w-0 flex-1"
               :placeholder="
                 localSource
                   ? '上传文件，或输入服务器本机/共享盘文件路径'
@@ -1169,7 +1169,7 @@ watch(
             <button
               v-if="localSource"
               type="button"
-              class="ec-btn ec-btn-primary shrink-0"
+              class="ec-btn ec-btn-primary w-full shrink-0 justify-center sm:w-auto"
               :disabled="!canUploadLocalFile"
               @click="triggerUploadFile"
             >
@@ -1178,7 +1178,7 @@ watch(
             <button
               v-if="localSource"
               type="button"
-              class="ec-btn ec-btn-secondary shrink-0"
+              class="ec-btn ec-btn-secondary w-full shrink-0 justify-center sm:w-auto"
               :disabled="!canPickLocalFile"
               @click="chooseLocalFile"
             >
@@ -1190,7 +1190,7 @@ watch(
             <button
               v-if="isSvnSource && svnSubMode === 'remote'"
               type="button"
-              class="ec-btn ec-btn-secondary shrink-0"
+              class="ec-btn ec-btn-secondary w-full shrink-0 justify-center sm:w-auto"
               :disabled="!canBrowseSvnDirectory"
               :title="canBrowseSvnDirectory ? '' : '请先输入合法的 http(s) 目录 URL'"
               @click="openSvnPicker"
@@ -1216,12 +1216,12 @@ watch(
           </div>
           <div
             v-else-if="isSvnSource && svnSubMode === 'remote'"
-            class="mt-1 flex items-center gap-3 text-[12px] text-ink-500"
+            class="mt-1 flex flex-col gap-1 text-[12px] text-ink-500 sm:flex-row sm:items-center sm:justify-between sm:gap-3"
           >
-            <span>点击输入框可选择已保存 SVN 目录；选中文件后会自动写回完整文件 URL。</span>
+            <span class="min-w-0 flex-1">点击输入框可选择已保存 SVN 目录；选中文件后会自动写回完整文件 URL。</span>
             <button
               type="button"
-              class="ec-action-link"
+              class="ec-action-link shrink-0 self-start whitespace-nowrap sm:self-auto"
               :disabled="!draft.pathOrUrl?.trim()"
               @click="handleManageSvnCredential"
             >

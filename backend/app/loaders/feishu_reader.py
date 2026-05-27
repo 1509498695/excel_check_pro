@@ -150,7 +150,8 @@ async def read_feishu_source_metadata(
         FEISHU_INVALID_URL,
         FeishuClientError,
         list_spreadsheet_sheets,
-        read_sheet_columns,
+        read_sheet_header_columns,
+        resolve_wiki_sheet_locator,
     )
 
     raw_url = source.pathOrUrl or source.url or source.path or ""
@@ -159,14 +160,15 @@ async def read_feishu_source_metadata(
     except FeishuSheetError as exc:
         raise FeishuClientError(FEISHU_INVALID_URL, str(exc)) from exc
 
+    locator = await resolve_wiki_sheet_locator(db, project_id, locator)
     sheets = await list_spreadsheet_sheets(db, project_id, locator)
     metadata_sheets: list[dict[str, Any]] = []
     for sheet in sheets:
-        columns = await read_sheet_columns(
+        columns = await read_sheet_header_columns(
             db,
             project_id,
             locator,
-            sheet_id=sheet.sheet_id,
+            sheet=sheet,
         )
         metadata_sheets.append(
             {
@@ -218,8 +220,11 @@ async def preview_feishu_source_column(
         column_name,
         table.columns,
     )
-    data_rows = table.raw_values[1:] if table.raw_values else []
-    total_rows = len(data_rows)
+    indexed_data_rows = _filter_feishu_rows_with_non_empty_column(
+        table.raw_values[1:] if table.raw_values else [],
+        column_index=column_index,
+    )
+    total_rows = len(indexed_data_rows)
     preview_limit = max(1, limit) if limit is not None else total_rows
     preview_rows = [
         {
@@ -229,7 +234,7 @@ async def preview_feishu_source_column(
             ),
         }
         for row_number, row in _iter_feishu_preview_rows(
-            data_rows,
+            indexed_data_rows,
             limit=limit,
         )
     ]
@@ -460,6 +465,20 @@ def _build_feishu_dataframe(
     return dataframe.where(pd.notna(dataframe), None)
 
 
+def _filter_feishu_rows_with_non_empty_column(
+    data_rows: list[list[Any]],
+    *,
+    column_index: int,
+) -> list[tuple[int, list[Any]]]:
+    return [
+        (index + 2, row)
+        for index, row in enumerate(data_rows)
+        if not _is_empty_feishu_preview_value(
+            _normalize_feishu_preview_value(_get_feishu_row_value(row, column_index))
+        )
+    ]
+
+
 def _merge_feishu_loaded_variables(
     target: dict[str, pd.DataFrame],
     *,
@@ -656,15 +675,12 @@ def _resolve_feishu_columns(
 
 
 def _iter_feishu_preview_rows(
-    data_rows: list[list[Any]],
+    data_rows: list[tuple[int, list[Any]]],
     *,
     limit: int | None,
 ) -> list[tuple[int, list[Any]]]:
     preview_count = max(1, limit) if limit is not None else len(data_rows)
-    return [
-        (index + 2, row)
-        for index, row in enumerate(data_rows[:preview_count])
-    ]
+    return data_rows[:preview_count]
 
 
 def _normalize_feishu_preview_value(value: Any) -> Any:

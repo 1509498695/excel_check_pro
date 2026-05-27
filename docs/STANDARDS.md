@@ -63,11 +63,13 @@ npm run build
 | `docs/STANDARDS.md` | 本文档：开发与文档维护规则。 |
 | `frontend/README.md` | 前端子项目启动、构建、目录和约定。 |
 | `CHANGELOG.md` | 版本级变化，不记录分钟级流水。 |
-| `docs/archive/` | 历史需求、进度日记、一次性方案和快照，不再追加。 |
+| `PROJECT_RECORD.md` | 当前执行进度记录，按次追加本次完成和项目整体状态。 |
+| `docs/archive/` | 历史需求、旧进度日记、一次性方案和快照，不再追加。 |
 
 维护规则：
 
 - 当前说明不得复制历史流水；需要追溯时链接到 `docs/archive/`。
 - `README.md` 修改时更新 `文档更新时间：YYYY-MM-DD HH:mm`。
+- 每次文档或代码治理后追加 `PROJECT_RECORD.md`，不再追加 `docs/archive/PROJECT_RECORD.md`。
 - 文档中出现 API 路径时，以代码路由为准。
-- 仅文档治理不要求更新归档进度日记。
+- 仅文档治理不要求改动业务代码或归档旧进度日记。
