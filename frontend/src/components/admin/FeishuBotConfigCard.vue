@@ -307,7 +307,7 @@ function formatUpdatedAt(value: string | null): string {
 
             <div>
               <label class="mb-1.5 block text-[12px] font-medium text-ink-500">
-                SVN 工作副本根目录（每行或英文逗号分隔）
+                SVN 下载根目录 / 工作副本目录（每行或英文逗号分隔）
               </label>
               <el-input
                 v-model="form.svnDownloadRoots"

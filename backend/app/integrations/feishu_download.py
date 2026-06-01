@@ -131,8 +131,10 @@ def resolve_query_listing(
         if not _is_relative_to(target, root):
             raise ValueError("查询目录不在后台配置的下载根目录范围内。")
         try:
-            update_target = None if str(relative_dir) in {"", "."} else target
-            update_working_copy(root, update_target=update_target)
+            _update_svn_query_directory(
+                update_working_copy,
+                target_dir=target,
+            )
             entries = _list_query_entries(
                 target,
                 relative_dir=relative_dir,
@@ -248,9 +250,8 @@ def _resolve_absolute_candidate(
     resolved = candidate.resolve(strict=False)
     svn_root = _find_containing_root(resolved, svn_roots)
     if svn_root is not None:
-        update_result = _update_svn_root(
+        update_result = _update_svn_file(
             update_working_copy,
-            svn_root,
             target_file=resolved,
         )
         resolved = resolved.resolve(strict=False)
@@ -289,9 +290,8 @@ def _resolve_relative_candidate(
     if not svn_matches and svn_roots:
         updated_outputs: dict[Path, str] = {}
         for root in svn_roots:
-            update_result = _update_svn_root(
+            update_result = _update_svn_file(
                 update_working_copy,
-                root,
                 target_file=(root / relative_path).resolve(strict=False),
             )
             updated_outputs[root] = str(update_result.get("output") or "")
@@ -309,9 +309,8 @@ def _resolve_relative_candidate(
         matched_paths_by_root = {root: path for path, root in svn_matches}
         updated_outputs = {
             root: str(
-                _update_svn_root(
+                _update_svn_file(
                     update_working_copy,
-                    root,
                     target_file=matched_paths_by_root[root],
                 ).get("output")
                 or ""
@@ -362,18 +361,56 @@ def _finalize_unique_match(
     )
 
 
-def _update_svn_root(
+def _update_svn_file(
     update_working_copy: Callable[..., dict[str, Any]],
-    root: Path,
     *,
     target_file: Path,
 ) -> dict[str, Any]:
+    working_copy = _find_svn_working_copy_root(target_file.parent)
     return update_working_copy(
-        root,
+        working_copy,
+        update_target=target_file,
         target_file=target_file,
         close_target_file=True,
         cleanup_on_lock=True,
     )
+
+
+def _update_svn_query_directory(
+    update_working_copy: Callable[..., dict[str, Any]],
+    *,
+    target_dir: Path,
+) -> dict[str, Any]:
+    working_copy = _find_svn_working_copy_root(target_dir)
+    update_target = None if _same_path(working_copy, target_dir) else target_dir
+    return update_working_copy(working_copy, update_target=update_target)
+
+
+def _find_svn_working_copy_root(start: Path) -> Path:
+    start_dir = _nearest_existing_directory(start)
+    if start_dir is None:
+        raise ValueError("未找到目标文件所属的 SVN 工作副本，请检查后台 SVN 下载根目录配置。")
+
+    current = start_dir.resolve(strict=False)
+    while True:
+        if (current / ".svn").exists():
+            return current
+        parent = current.parent
+        if parent == current:
+            break
+        current = parent
+    raise ValueError("未找到目标文件所属的 SVN 工作副本，请检查后台 SVN 下载根目录配置。")
+
+
+def _nearest_existing_directory(path: Path) -> Path | None:
+    current = path.expanduser().resolve(strict=False)
+    while True:
+        if current.exists():
+            return current if current.is_dir() else current.parent
+        parent = current.parent
+        if parent == current:
+            return None
+        current = parent
 
 
 def _finalize_file(
@@ -525,6 +562,12 @@ def _is_relative_to(path: Path, root: Path) -> bool:
     except ValueError:
         return False
     return True
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return str(left.expanduser().resolve(strict=False)).lower() == str(
+        right.expanduser().resolve(strict=False)
+    ).lower()
 
 
 def _reject_relative_escape(path: Path) -> None:

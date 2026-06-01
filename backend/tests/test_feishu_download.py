@@ -48,6 +48,7 @@ def test_resolve_query_listing_groups_roots_and_filters_entries(tmp_path: Path) 
     svn_root = tmp_path / "svn"
     local_root = tmp_path / "local"
     svn_root.mkdir()
+    (svn_root / ".svn").mkdir()
     local_root.mkdir()
     (svn_root / "Zoo").mkdir()
     (svn_root / "Alpha.xlsx").write_bytes(b"x")
@@ -109,6 +110,7 @@ def test_resolve_query_listing_updates_only_requested_svn_directory(
     root = tmp_path / "svn"
     target = root / "datas_qa88"
     target.mkdir(parents=True)
+    (root / ".svn").mkdir()
     (target / "about.xlsx").write_bytes(b"x")
     calls: list[tuple[Path, Path | None]] = []
 
@@ -131,6 +133,38 @@ def test_resolve_query_listing_updates_only_requested_svn_directory(
         )
     ]
     assert groups[0].entries == [r"datas_qa88\about.xlsx"]
+
+
+def test_resolve_query_listing_finds_nested_svn_working_copy(
+    tmp_path: Path,
+) -> None:
+    download_root = tmp_path / "download"
+    working_copy = download_root / "datas_qa88"
+    target = working_copy / "configs"
+    target.mkdir(parents=True)
+    (working_copy / ".svn").mkdir()
+    (target / "about.xlsx").write_bytes(b"x")
+    calls: list[tuple[Path, Path | None]] = []
+
+    def fake_update(root_path: Path, *, update_target: Path | None = None) -> dict[str, str]:
+        calls.append((root_path, update_target))
+        return {"output": "updated"}
+
+    groups = resolve_query_listing(
+        QueryRequest(directory="datas_qa88/configs", prefix="a"),
+        local_roots=[],
+        svn_roots=[str(download_root)],
+        allowed_suffixes=[".xlsx"],
+        update_working_copy=fake_update,
+    )
+
+    assert calls == [
+        (
+            working_copy.resolve(strict=False),
+            target.resolve(strict=False),
+        )
+    ]
+    assert groups[0].entries == [r"datas_qa88\configs\about.xlsx"]
 
 
 def test_resolve_query_listing_lists_directories_before_files(tmp_path: Path) -> None:
@@ -286,18 +320,20 @@ def test_resolve_reports_ambiguous_relative_matches(tmp_path: Path) -> None:
 def test_resolve_updates_svn_root_before_returning_file(tmp_path: Path) -> None:
     svn_root = tmp_path / "svn"
     svn_root.mkdir()
+    (svn_root / ".svn").mkdir()
     file_path = svn_root / "a.xlsx"
     file_path.write_bytes(b"x")
-    calls: list[tuple[Path, Path, bool, bool]] = []
+    calls: list[tuple[Path, Path, Path, bool, bool]] = []
 
     def fake_update(
         root: Path,
         *,
+        update_target: Path,
         target_file: Path,
         close_target_file: bool,
         cleanup_on_lock: bool,
     ) -> dict[str, str]:
-        calls.append((root, target_file, close_target_file, cleanup_on_lock))
+        calls.append((root, update_target, target_file, close_target_file, cleanup_on_lock))
         return {"output": "updated"}
 
     result = resolve_download_file(
@@ -313,6 +349,7 @@ def test_resolve_updates_svn_root_before_returning_file(tmp_path: Path) -> None:
         (
             svn_root.resolve(strict=False),
             file_path.resolve(strict=False),
+            file_path.resolve(strict=False),
             True,
             True,
         )
@@ -321,16 +358,67 @@ def test_resolve_updates_svn_root_before_returning_file(tmp_path: Path) -> None:
     assert result.svn_update_output == "updated"
 
 
+def test_resolve_updates_nested_svn_working_copy_file_only(tmp_path: Path) -> None:
+    download_root = tmp_path / "download"
+    working_copy = download_root / "datas_qa88"
+    working_copy.mkdir(parents=True)
+    (working_copy / ".svn").mkdir()
+    file_path = working_copy / "world_cup.xls"
+    file_path.write_bytes(b"x")
+    calls: list[tuple[Path, Path, Path, bool, bool]] = []
+
+    def fake_update(
+        root: Path,
+        *,
+        update_target: Path,
+        target_file: Path,
+        close_target_file: bool,
+        cleanup_on_lock: bool,
+    ) -> dict[str, str]:
+        calls.append((root, update_target, target_file, close_target_file, cleanup_on_lock))
+        return {"output": "updated file"}
+
+    result = resolve_download_file(
+        "datas_qa88/world_cup.xls",
+        local_roots=[],
+        svn_roots=[str(download_root)],
+        allowed_suffixes=[".xls"],
+        max_file_bytes=1024,
+        update_working_copy=fake_update,
+    )
+
+    assert calls == [
+        (
+            working_copy.resolve(strict=False),
+            file_path.resolve(strict=False),
+            file_path.resolve(strict=False),
+            True,
+            True,
+        )
+    ]
+    assert result.path == file_path.resolve(strict=False)
+    assert result.root == download_root.resolve(strict=False)
+    assert result.source_kind == "svn"
+    assert result.svn_update_output == "updated file"
+
+
 def test_resolve_updates_svn_relative_path_even_when_file_missing_before_update(
     tmp_path: Path,
 ) -> None:
     svn_root = tmp_path / "svn"
     svn_root.mkdir()
+    (svn_root / ".svn").mkdir()
     file_path = svn_root / "generated.xlsx"
-    calls: list[Path] = []
+    calls: list[tuple[Path, Path, Path]] = []
 
-    def fake_update(root: Path, *, target_file: Path, **kwargs) -> dict[str, str]:  # noqa: ANN003
-        calls.append(target_file)
+    def fake_update(
+        root: Path,
+        *,
+        update_target: Path,
+        target_file: Path,
+        **kwargs,  # noqa: ANN003
+    ) -> dict[str, str]:
+        calls.append((root, update_target, target_file))
         file_path.write_bytes(b"x")
         return {"output": "updated"}
 
@@ -343,9 +431,93 @@ def test_resolve_updates_svn_relative_path_even_when_file_missing_before_update(
         update_working_copy=fake_update,
     )
 
-    assert calls == [file_path.resolve(strict=False)]
+    assert calls == [
+        (
+            svn_root.resolve(strict=False),
+            file_path.resolve(strict=False),
+            file_path.resolve(strict=False),
+        )
+    ]
     assert result.path == file_path.resolve(strict=False)
     assert result.source_kind == "svn"
+
+
+def test_resolve_updates_nested_svn_missing_file_only(tmp_path: Path) -> None:
+    download_root = tmp_path / "download"
+    working_copy = download_root / "datas_qa88"
+    working_copy.mkdir(parents=True)
+    (working_copy / ".svn").mkdir()
+    file_path = working_copy / "generated.xlsx"
+    calls: list[tuple[Path, Path, Path]] = []
+
+    def fake_update(
+        root: Path,
+        *,
+        update_target: Path,
+        target_file: Path,
+        **kwargs,  # noqa: ANN003
+    ) -> dict[str, str]:
+        calls.append((root, update_target, target_file))
+        file_path.write_bytes(b"x")
+        return {"output": "pulled file"}
+
+    result = resolve_download_file(
+        "datas_qa88/generated.xlsx",
+        local_roots=[],
+        svn_roots=[str(download_root)],
+        allowed_suffixes=[".xlsx"],
+        max_file_bytes=1024,
+        update_working_copy=fake_update,
+    )
+
+    assert calls == [
+        (
+            working_copy.resolve(strict=False),
+            file_path.resolve(strict=False),
+            file_path.resolve(strict=False),
+        )
+    ]
+    assert result.path == file_path.resolve(strict=False)
+    assert result.svn_update_output == "pulled file"
+
+
+def test_resolve_absolute_svn_path_updates_target_file_only(tmp_path: Path) -> None:
+    download_root = tmp_path / "download"
+    working_copy = download_root / "datas_qa88"
+    working_copy.mkdir(parents=True)
+    (working_copy / ".svn").mkdir()
+    file_path = working_copy / "absolute.xlsx"
+    file_path.write_bytes(b"x")
+    calls: list[tuple[Path, Path, Path]] = []
+
+    def fake_update(
+        root: Path,
+        *,
+        update_target: Path,
+        target_file: Path,
+        **kwargs,  # noqa: ANN003
+    ) -> dict[str, str]:
+        calls.append((root, update_target, target_file))
+        return {"output": "updated absolute"}
+
+    result = resolve_download_file(
+        str(file_path),
+        local_roots=[],
+        svn_roots=[str(download_root)],
+        allowed_suffixes=[".xlsx"],
+        max_file_bytes=1024,
+        update_working_copy=fake_update,
+    )
+
+    assert calls == [
+        (
+            working_copy.resolve(strict=False),
+            file_path.resolve(strict=False),
+            file_path.resolve(strict=False),
+        )
+    ]
+    assert result.path == file_path.resolve(strict=False)
+    assert result.svn_update_output == "updated absolute"
 
 
 def test_resolve_local_root_does_not_call_svn_update(tmp_path: Path) -> None:
