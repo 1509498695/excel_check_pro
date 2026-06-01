@@ -104,6 +104,7 @@ export type LocalDirectoryValidateResponse = ApiResponse<{
 export interface SourceSheetMetadata {
   name: string
   columns: string[]
+  sheet_id?: string
 }
 
 export interface SourceMetadata {

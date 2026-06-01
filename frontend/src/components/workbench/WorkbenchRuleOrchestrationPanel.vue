@@ -9,6 +9,10 @@ import {
   useRuleDialog,
   useRuleForm,
 } from '../../features/rule-orchestration'
+import PackageItemsRuleDialog, {
+  type PackageItemsRuleDialogDraft,
+  type PackageItemsRuleDialogPreview,
+} from '../fixed-rules/PackageItemsRuleDialog.vue'
 import type {
   CompositeAssertionOperator,
   CompositeBranch,
@@ -94,6 +98,8 @@ const isGroupDialogVisible = ref(false)
 const groupDialogMode = ref<'create' | 'rename'>('create')
 const groupForm = reactive<{ id: string; name: string }>({ id: '', name: '' })
 const isSubmittingGroup = ref(false)
+const isPackageItemsRuleDialogVisible = ref(false)
+const isRefreshingPackageItemsSheets = ref(false)
 
 const ruleSelectionOptions = RULE_SELECTION_OPTIONS
 const ruleEntryTypeOptions = RULE_ENTRY_TYPE_OPTIONS
@@ -119,6 +125,20 @@ const singleVariableOptions = computed(() =>
 const compositeVariableOptions = computed(() =>
   store.variables.filter((variable) => (variable.variable_kind ?? 'single') === 'composite'),
 )
+const packageItemsFeishuSources = computed(() =>
+  store.sources.filter((source): source is DataSource => source.type === 'feishu'),
+)
+const packageItemsRuleDraft = computed<Partial<PackageItemsRuleDialogDraft>>(() => ({
+  group_id: store.selectedRuleGroup.group_id,
+  rule_name: 'IAP礼包配置校验',
+  parse_strategy: 'auto',
+  ai_parse_mode: 'auto',
+  validation_scope: 'all',
+  package_id_filter: '',
+}))
+const packageItemsRulePreview = computed<PackageItemsRuleDialogPreview>(() => ({
+  status: 'idle',
+}))
 const isSingleRuleEntry = computed(() => ruleForm.rule_entry_type === 'single')
 const isCompositeRuleEntry = computed(() => !isSingleRuleEntry.value)
 const isCompositeBranchRule = computed(() => ruleForm.rule_entry_type === 'composite')
@@ -2396,6 +2416,36 @@ function handleToggleVisibleSelection(checked: string | number | boolean): void 
 function handleToggleSingleSelection(ruleId: string): void {
   emit('toggle-rule-selection', ruleId)
 }
+
+function openPackageItemsRuleDialog(): void {
+  isPackageItemsRuleDialogVisible.value = true
+}
+
+function closePackageItemsRuleDialog(): void {
+  isPackageItemsRuleDialogVisible.value = false
+}
+
+function showPackageItemsBackendPlaceholder(): void {
+  ElMessage.info('IAP礼包校验后端暂未接入，暂不可预览或保存。')
+}
+
+async function handleRefreshPackageItemsSheets(
+  sourceId: string,
+  forceRefresh = false,
+): Promise<void> {
+  const normalizedSourceId = sourceId.trim()
+  if (!normalizedSourceId) {
+    return
+  }
+  isRefreshingPackageItemsSheets.value = true
+  try {
+    await store.loadSourceMetadata(normalizedSourceId, forceRefresh)
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '刷新 Sheet 列表失败。')
+  } finally {
+    isRefreshingPackageItemsSheets.value = false
+  }
+}
 </script>
 
 <template>
@@ -2436,17 +2486,37 @@ function handleToggleSingleSelection(ruleId: string): void {
       :build-rule-source-path-summary="buildRuleSourcePathSummary"
       :build-rule-selection-summary="buildRuleSelectionSummary"
       :build-rule-compare-value-summary="buildRuleCompareValueSummary"
+      :show-package-items-rule-button="true"
       @update:keyword="store.groupKeyword = $event"
       @select-group="store.setSelectedOrchestrationGroup"
       @create-group="openCreateGroupDialog"
       @rename-group="openRenameGroupDialog"
       @remove-group="handleRemoveGroup"
+      @create-package-items-rule="openPackageItemsRuleDialog"
       @create-rule="openCreateRuleDialog"
       @edit-rule="openEditRuleDialog"
       @remove-rule="handleRemoveRule"
       @toggle-rule="handleToggleSingleSelection"
       @toggle-visible-rules="handleToggleVisibleSelection"
       @page-change="store.setOrchestrationCurrentPage"
+    />
+
+    <PackageItemsRuleDialog
+      :visible="isPackageItemsRuleDialogVisible"
+      mode="create"
+      :draft="packageItemsRuleDraft"
+      :groups="store.allRuleGroups"
+      :feishu-sources="packageItemsFeishuSources"
+      :source-metadata-map="store.sourceMetadataMap"
+      :detail-variables="compositeVariableOptions"
+      :composite-variables="compositeVariableOptions"
+      :preview="packageItemsRulePreview"
+      :backend-ready="false"
+      :refreshing-sheets="isRefreshingPackageItemsSheets"
+      @close="closePackageItemsRuleDialog"
+      @preview="showPackageItemsBackendPlaceholder"
+      @save="showPackageItemsBackendPlaceholder"
+      @refresh-sheets="handleRefreshPackageItemsSheets"
     />
 
     <!-- Dialog 4：新建规则组 / 重命名规则组 -->

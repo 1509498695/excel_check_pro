@@ -30,6 +30,7 @@ const props = withDefaults(
     currentGroupVariableCount: number
     tableLabel: string
     emptyMode?: 'panel' | 'table'
+    showPackageItemsRuleButton?: boolean
     buildRuleCondition: (rule: FixedRuleDefinition) => string
     buildRuleVariableSummary: (rule: FixedRuleDefinition) => string
     buildRuleSourcePathSummary: (rule: FixedRuleDefinition) => string
@@ -38,6 +39,7 @@ const props = withDefaults(
   }>(),
   {
     emptyMode: 'table',
+    showPackageItemsRuleButton: false,
   },
 )
 
@@ -47,6 +49,7 @@ const emit = defineEmits<{
   (event: 'create-group'): void
   (event: 'rename-group'): void
   (event: 'remove-group'): void
+  (event: 'create-package-items-rule'): void
   (event: 'create-rule'): void
   (event: 'edit-rule', rule: FixedRuleDefinition): void
   (event: 'remove-rule', rule: FixedRuleDefinition): void
@@ -115,6 +118,14 @@ const partiallySelectedVisibleRules = computed(() => {
               @click="emit('remove-group')"
             >
               删除组
+            </SecondaryButton>
+            <SecondaryButton
+              v-if="showPackageItemsRuleButton"
+              size="sm"
+              :disabled="!canCreateRule"
+              @click="emit('create-package-items-rule')"
+            >
+              IAP礼包校验
             </SecondaryButton>
             <PrimaryButton
               size="sm"

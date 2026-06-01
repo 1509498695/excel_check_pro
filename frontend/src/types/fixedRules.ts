@@ -19,6 +19,8 @@ export type PipelineAssertionOperator =
 export type CompositeValueSource = 'literal' | 'field'
 export type ExpectedValueMode = 'single' | 'set'
 export type DualCompositeKeyCheckMode = 'baseline_only' | 'bidirectional'
+export type PackageParseStrategy = 'auto' | 'rule' | 'ai'
+export type PackageAiParseMode = 'auto' | 'enabled' | 'disabled'
 export type FixedRuleType =
   | 'fixed_value_compare'
   | 'regex_check'
@@ -30,6 +32,7 @@ export type FixedRuleType =
   | 'dual_composite_compare'
   | 'multi_composite_pipeline_check'
   | 'multi_composite_mapping_check'
+  | 'package_items_compare'
 export type FixedRuleSelection =
   | FixedRuleOperator
   | 'regex_check'
@@ -124,6 +127,22 @@ export interface MultiCompositeMappingConfig {
   nodes: MultiCompositeMappingNode[]
 }
 
+export interface PackageItemsFieldMapping {
+  package_id?: string
+  item_id?: string
+  count?: string
+}
+
+export interface PackageItemsParseConfig {
+  feishu_source_id?: string
+  feishu_sheet_id?: string
+  feishu_sheet_name?: string
+  parse_strategy?: PackageParseStrategy
+  ai_parse_mode?: PackageAiParseMode
+  validation_scope?: 'all' | 'specified'
+  package_id_filter?: string
+}
+
 export interface FixedRuleGroup {
   group_id: string
   group_name: string
@@ -154,6 +173,7 @@ export interface FixedRuleDefinition {
   right_filters?: CompositeCondition[]
   pipeline_config?: MultiCompositePipelineConfig
   mapping_config?: MultiCompositeMappingConfig
+  package_parse_config?: PackageItemsParseConfig
 }
 
 export interface FixedRulesConfig {
