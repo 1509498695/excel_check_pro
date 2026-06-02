@@ -1,6 +1,6 @@
 # Excel Check
 
-文档更新时间：2026-05-27 10:33
+文档更新时间：2026-06-02 16:33
 
 > 当前稳定文档入口保留 7 份：本 README、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/MODULES.md](docs/MODULES.md)、[docs/STANDARDS.md](docs/STANDARDS.md)、[frontend/README.md](frontend/README.md)、[CHANGELOG.md](CHANGELOG.md) 与 [PROJECT_RECORD.md](PROJECT_RECORD.md)。历史需求、旧分钟级进度和一次性重构方案见 [docs/archive/](docs/archive/)。
 
@@ -15,7 +15,8 @@ Excel Check 是面向配置表校验的多用户 Web 应用。系统把数据源
 - 个人设置 `/profile`：账号信息、密码、项目切换、AI 模型配置和使用说明入口。
 - 使用说明 `/user-guide`：面向业务用户的操作指引页。
 - 数据源：本地 Excel、浏览器上传 Excel、SVN Excel、飞书电子表格；CSV 已下线。
-- 规则能力：10 类规则，覆盖单字段、固定值、正则、顺序、跨表映射和多种组合变量校验。
+- 规则能力：11 类规则，覆盖单字段、固定值、正则、顺序、跨表映射、多种组合变量校验和 IAP 礼包校验。
+- IAP 礼包校验：个人校验 03 规则页签可从飞书 Sheet 预览礼包规划明细，保存 `package_items_compare` 规则，并在执行时与结构化配置变量中的 `STR_Items` 做无序道具比对。
 - AI 智能添加规则：在个人校验步骤 03 生成规则草稿，必须经预校验和用户确认后写入配置。
 - 飞书接入：项目管理员配置飞书机器人后，个人校验可检测表格权限、发送群授权卡片、通过 OAuth 回调为机器人追加只读协作者，并读取 Sheet 元数据、列预览和执行数据。
 
@@ -115,7 +116,7 @@ npm run build
 | 认证 | `POST /api/v1/auth/login`、`GET /api/v1/auth/me`、`POST /api/v1/auth/switch-project/{project_id}` |
 | 数据源 | `GET /api/v1/sources/capabilities`、`POST /api/v1/sources/upload`、`POST /api/v1/sources/metadata`、`POST /api/v1/sources/column-preview`、`POST /api/v1/sources/composite-preview` |
 | 飞书数据源 | `POST /api/v1/feishu/sources/check-permission`、`POST /api/v1/feishu/sources/send-authorization-card`、`GET /api/v1/feishu/sources/oauth/callback` |
-| 个人校验 | `GET/PUT /api/v1/workbench/config`、`POST /api/v1/workbench/svn-update`、`POST /api/v1/engine/execute` |
+| 个人校验 | `GET/PUT /api/v1/workbench/config`、`POST /api/v1/workbench/svn-update`、`POST /api/v1/workbench/package-items/preview`、`POST /api/v1/engine/execute` |
 | AI 规则助手 | `GET/PUT/DELETE /api/v1/ai/providers/me`、`POST /api/v1/ai/agents/rule-draft`、`POST /api/v1/ai/agents/rule-prompt-optimize`、`GET/DELETE /api/v1/ai/drafts`、`POST /api/v1/ai/drafts/{draft_id}/apply` |
 | 项目校验 | `GET/PUT /api/v1/fixed-rules/config`、`GET/POST /api/v1/fixed-rules/import/workbench/{draft,preview,commit}`、`POST /api/v1/fixed-rules/execute` |
 | 管理后台 | `/api/v1/admin/projects*`、`/api/v1/admin/projects/{id}/members*`、`POST /api/v1/admin/users/{id}/reset-password`、`/api/v1/admin/projects/{id}/feishu-bot*` |

@@ -8,7 +8,7 @@ Excel Check 解决配置表规则校验的工程问题：把数据源、变量�
 
 | 业务线 | 路由 | 持久化边界 | 用途 |
 |---|---|---|---|
-| 个人校验 | `/` | `project_id + user_id` | 临时排查、个人编排、AI 草稿确认。 |
+| 个人校验 | `/` | `project_id + user_id` | 临时排查、个人编排、AI 草稿确认、IAP 礼包校验。 |
 | 项目校验 | `/fixed-rules` | `project_id` | 长期规则配置、导入个人规则、周期性复用。 |
 
 明确不做：
@@ -39,6 +39,8 @@ class TaskTree:
 - `ValidationRule`: `rule_id / rule_type / params`
 
 执行入参模型默认拒绝未知字段；历史字段兼容只在配置读取、迁移或导入层处理。
+
+个人校验中的 `package_items_compare` 规则是 `TaskTree` 的兼容扩展：规则保存时携带 `package_parse_config`，执行前由运行时预处理读取飞书 Sheet，解析为临时组合变量 `__runtime_package_plan__:{rule_id}`，再交给既有规则 handler 与右侧礼包配置组合变量比对。这个过程不改变 `TaskTree` 顶层结构，也不新增第二套执行入口。
 
 ### 2.2 项目校验配置
 
@@ -77,7 +79,7 @@ class TaskTree:
 
 ## 3. 规则能力
 
-当前规则库支持 10 类规则：
+当前规则库支持 11 类规则：
 
 | 规则类型 | 说明 |
 |---|---|
@@ -91,8 +93,11 @@ class TaskTree:
 | `dual_composite_compare` | 两组组合变量筛选、Key 对齐和字段比较。 |
 | `multi_composite_pipeline_check` | 多组串行节点，失败短路。 |
 | `multi_composite_mapping_check` | 多组映射节点，独立汇总异常。 |
+| `package_items_compare` | IAP 礼包校验：飞书礼包规划明细与配置变量 `STR_Items` 按礼包 ID、道具 ID 无序比对。 |
 
 规则引擎由注册调度、领域工具和 handler 三层组成。旧路径 shim 仅为兼容保留。
+
+`package_items_compare` 只解析 `STR_Items` 中的 `{item,道具ID,数量}`，忽略 `{asgift,...}`；`[]` 表示右侧空道具列表。异常结果会按礼包和道具输出缺失、多余、数量不一致、重复道具、礼包不存在和格式错误等结构化明细。
 
 ## 4. API 边界
 
@@ -104,7 +109,7 @@ class TaskTree:
 | 管理后台 | `/admin/projects*`、`/admin/projects/{id}/members*`、`/admin/users/{id}/reset-password`、`/admin/projects/{id}/feishu-bot*` |
 | 数据源 | `/sources/capabilities`、`/sources/upload`、`/sources/local-pick`、`/sources/metadata`、`/sources/column-preview`、`/sources/composite-preview`、`/sources/svn-*` |
 | 飞书数据源 | `/feishu/sources/check-permission`、`/feishu/sources/send-authorization-card`、`/feishu/sources/oauth/callback` |
-| 个人校验 | `/workbench/config`、`/workbench/svn-update`、`/engine/execute` |
+| 个人校验 | `/workbench/config`、`/workbench/svn-update`、`/workbench/package-items/preview`、`/engine/execute` |
 | AI 规则助手 | `/ai/providers/me`、`/ai/agents/rule-draft`、`/ai/agents/rule-prompt-optimize`、`/ai/drafts` |
 | 项目校验 | `/fixed-rules/config`、`/fixed-rules/import/workbench/draft`、`/fixed-rules/import/workbench/preview`、`/fixed-rules/import/workbench/commit`、`/fixed-rules/execute`、`/fixed-rules/results/*` |
 
@@ -151,4 +156,5 @@ flowchart LR
 | 多配置集切换 | 未开放。 |
 | SVN 远端 | 仅支持白名单 host、`http(s)://`、单文件 Excel。 |
 | SVN 缓存清理 | 暂无定时清理策略。 |
-| AI 能力 | 只覆盖当前 10 类规则；聚合、公式、平均值等复杂规则返回 `rejected`。 |
+| IAP 礼包校验 | 当前重点接在个人校验 03 规则页签；固定规则侧保留预览与运行时兼容能力，但不作为主要业务入口。 |
+| AI 能力 | 只覆盖当前规则库中的确定性规则场景；聚合、公式、平均值等复杂规则返回 `rejected`。 |

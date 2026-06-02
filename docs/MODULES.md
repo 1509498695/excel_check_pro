@@ -57,6 +57,7 @@
 | AI 规则助手 | `components/workbench/ai/`、`api/ai.ts`、`store/ai.ts` | `api/ai_api.py`、`ai/` |
 | 数据源 | `api/workbench.ts`、数据源面板组件 | `api/source_api.py`、`loaders/` |
 | 飞书接入 | `components/admin/FeishuBotConfigCard.vue`、`components/workbench/DataSourcePanel.vue`、`api/admin.ts`、`api/workbench.ts` | `admin/router.py`、`api/feishu_api.py`、`integrations/feishu_*`、`loaders/feishu_reader.py`、`services/feishu_sheet_authorization_service.py` |
+| IAP 礼包校验 | `components/fixed-rules/PackageItemsRuleDialog.vue`、`components/workbench/WorkbenchRuleOrchestrationPanel.vue`、`api/workbench.ts`、`utils/taskTree.ts` | `api/workbench_api.py`、`api/execute_api.py`、`services/package_items_parser.py`、`fixed_rules/package_items_runtime.py`、`rules/handlers/fixed/package_items.py` |
 
 ## 5. 文档入口
 
