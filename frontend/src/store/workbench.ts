@@ -651,7 +651,9 @@ export const useWorkbenchStore = defineStore('workbench', {
             ? normalizeExpectedValueMode(rule.expected_value_mode)
             : undefined,
         reference_variable_tag:
-          rule.rule_type === 'cross_table_mapping' || rule.rule_type === 'dual_composite_compare'
+          rule.rule_type === 'cross_table_mapping' ||
+          rule.rule_type === 'dual_composite_compare' ||
+          rule.rule_type === 'package_items_compare'
             ? rule.reference_variable_tag?.trim() || undefined
             : undefined,
         sequence_direction:
@@ -702,6 +704,48 @@ export const useWorkbenchStore = defineStore('workbench', {
           rule.rule_type === 'dual_composite_compare'
             ? normalizeDualCompositeFilters(rule.right_filters, referenceFields)
             : [],
+        package_parse_config:
+          rule.rule_type === 'package_items_compare'
+            ? {
+                feishu_source_id: rule.package_parse_config?.feishu_source_id?.trim() ?? '',
+                feishu_sheet_id: rule.package_parse_config?.feishu_sheet_id?.trim() ?? '',
+                feishu_sheet_name: rule.package_parse_config?.feishu_sheet_name?.trim() || undefined,
+                parse_strategy: rule.package_parse_config?.parse_strategy ?? 'auto',
+                ai_parse_mode: rule.package_parse_config?.ai_parse_mode ?? 'auto',
+                validation_scope: rule.package_parse_config?.validation_scope ?? 'all',
+                package_id_filter:
+                  rule.package_parse_config?.validation_scope === 'specified'
+                    ? rule.package_parse_config?.package_id_filter?.trim() || undefined
+                    : undefined,
+              }
+            : undefined,
+        left_package_field:
+          rule.rule_type === 'package_items_compare'
+            ? rule.left_package_field?.trim() || '礼包id'
+            : undefined,
+        left_item_field:
+          rule.rule_type === 'package_items_compare'
+            ? rule.left_item_field?.trim() || '道具ID'
+            : undefined,
+        left_count_field:
+          rule.rule_type === 'package_items_compare'
+            ? rule.left_count_field?.trim() || '个数'
+            : undefined,
+        right_package_field:
+          rule.rule_type === 'package_items_compare'
+            ? rule.right_package_field?.trim() || 'INT_PackageId'
+            : undefined,
+        right_items_field:
+          rule.rule_type === 'package_items_compare'
+            ? rule.right_items_field?.trim() || 'STR_Items'
+            : undefined,
+        package_id_filter:
+          rule.rule_type === 'package_items_compare' &&
+          rule.package_parse_config?.validation_scope === 'specified'
+            ? rule.package_id_filter?.trim() ||
+              rule.package_parse_config?.package_id_filter?.trim() ||
+              undefined
+            : undefined,
       }
 
       const index = this.orchestrationRules.findIndex((item) => item.rule_id === nextRule.rule_id)
@@ -913,6 +957,10 @@ export const useWorkbenchStore = defineStore('workbench', {
 
     triggerAutoSave(): void {
       this._scheduleAutoSave()
+    },
+
+    async retryAutoSave(): Promise<void> {
+      await this.saveConfigNow()
     },
 
     async loadFromServer(): Promise<void> {

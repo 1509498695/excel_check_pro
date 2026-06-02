@@ -839,7 +839,7 @@ class FeishuLongConnSupervisor:
                     event_handler=event_handler,
                     log_level=lark.LogLevel.INFO,
                 )
-            except Exception as exc:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 logger.exception(
                     "构造 lark.ws.Client 失败 project_id=%s",
                     project_id,
@@ -850,7 +850,7 @@ class FeishuLongConnSupervisor:
 
             try:
                 await client._connect()
-            except Exception as exc:  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 logger.exception(
                     "飞书长连接 _connect 失败 project_id=%s",
                     project_id,

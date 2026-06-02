@@ -8,9 +8,14 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.api.fixed_rules_schemas import FixedRulesConfig, FixedRulesExecuteRequest
+from backend.app.api.fixed_rules_schemas import (
+    FixedRulesConfig,
+    FixedRulesExecuteRequest,
+    PackageItemsPreviewRequest,
+)
 from backend.app.auth.dependencies import CurrentUserContext, get_current_user
 from backend.app.database import get_db
+from backend.app.integrations.feishu_client import FeishuClientError
 from backend.app.fixed_rules.db_service import (
     load_fixed_rules_config_from_db,
     save_fixed_rules_config_to_db,
@@ -39,6 +44,7 @@ from backend.app.result_exporter import (
     RESULT_EXPORT_MIME_TYPE,
     build_execution_result_workbook,
 )
+from backend.app.services.package_items_parser import preview_package_items_from_feishu
 from backend.app.utils.formatter import build_execution_response
 
 
@@ -210,6 +216,54 @@ async def get_fixed_rules_config(
     return response
 
 
+@router.post("/package-items/preview")
+async def preview_package_items_endpoint(
+    payload: PackageItemsPreviewRequest,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """预览飞书礼包规划表解析结果。"""
+    project_id = ctx.require_project_member()
+    try:
+        raw = await load_fixed_rules_config_from_db(db, project_id)
+        if raw is None:
+            raise ValueError("当前项目尚未配置固定规则")
+        parsed = parse_raw_fixed_rules_config(raw)
+        config, _ = load_fixed_rules_config_with_issues(
+            parsed,
+            allow_legacy_mapping_config=True,
+        )
+        source = next(
+            (
+                item
+                for item in config.sources
+                if item.id == payload.feishu_source_id
+            ),
+            None,
+        )
+        if source is None:
+            raise ValueError(f"未找到飞书数据源：{payload.feishu_source_id}")
+        if source.type != "feishu":
+            raise ValueError(f"数据源 '{payload.feishu_source_id}' 不是飞书数据源")
+        preview = await preview_package_items_from_feishu(
+            source,
+            sheet_id=payload.sheet_id,
+            parse_strategy=payload.parse_strategy,
+            ai_parse_mode=payload.ai_parse_mode,
+            db=db,
+            project_id=project_id,
+            user_id=ctx.user_id,
+        )
+    except (ValueError, FileNotFoundError, ImportError, FeishuClientError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "code": 200,
+        "msg": "ok",
+        "data": preview.model_dump(mode="json", exclude_none=True),
+    }
+
+
 @router.put("/config")
 async def put_fixed_rules_config(
     payload: FixedRulesConfig,
@@ -307,7 +361,7 @@ async def execute_fixed_rules_endpoint(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     abnormal_results = execution_summary["abnormal_results"]
-    return build_execution_response(
+    response = build_execution_response(
         abnormal_results=abnormal_results,
         execution_time_ms=execution_summary["execution_time_ms"],
         total_rows_scanned=execution_summary["total_rows_scanned"],
@@ -319,6 +373,9 @@ async def execute_fixed_rules_endpoint(
         total=len(abnormal_results),
         result_list=paginate_abnormal_results(abnormal_results, page, size),
     )
+    if execution_summary.get("package_items_parse"):
+        response["meta"]["package_items_parse"] = execution_summary["package_items_parse"]
+    return response
 
 
 @router.get("/results/{result_id}")

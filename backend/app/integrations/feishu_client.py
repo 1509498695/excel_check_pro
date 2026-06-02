@@ -353,6 +353,7 @@ async def read_sheet_values(
     locator: FeishuSheetLocator | str,
     *,
     sheet_id: str | None = None,
+    value_render_option: str | None = None,
 ) -> FeishuSheetTable:
     """读取指定工作表整表数据；第一行为表头，第二行开始为数据。"""
     resolved_locator = await resolve_wiki_sheet_locator(db, project_id, locator)
@@ -364,6 +365,7 @@ async def read_sheet_values(
         project_id,
         resolved_locator,
         range_name,
+        value_render_option=value_render_option,
     )
     columns = _normalize_columns(raw_values[0] if raw_values else [])
     rows = _build_rows(columns, raw_values[1:] if raw_values else [])
@@ -692,12 +694,25 @@ async def _read_sheet_range_values(
     project_id: int,
     locator: FeishuSheetLocator,
     range_name: str,
+    *,
+    value_render_option: str | None = None,
 ) -> tuple[str, list[list[Any]]]:
     path = SHEET_VALUES_PATH.format(
         spreadsheet_token=quote(locator.spreadsheet_token, safe=""),
         range=quote(range_name, safe="!:"),
     )
-    payload = await _request_feishu_json(db, project_id, "GET", path)
+    params = (
+        {"valueRenderOption": value_render_option}
+        if value_render_option
+        else None
+    )
+    payload = await _request_feishu_json(
+        db,
+        project_id,
+        "GET",
+        path,
+        params=params,
+    )
     data = _ensure_dict(payload.get("data"), "data")
     value_range = _ensure_dict(data.get("valueRange"), "valueRange")
     return (

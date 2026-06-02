@@ -111,6 +111,7 @@ class Settings:
         / ".svn-key"
     )
     svn_cache_ttl_seconds: int = 60
+    package_items_ai_parse_cache_ttl_seconds: int = 600
     svn_url_allowlist: tuple[str, ...] = field(
         default_factory=lambda: tuple(
             host.strip()

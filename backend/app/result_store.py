@@ -14,6 +14,15 @@ from backend.app.models import ExecutionResultItemRecord, ExecutionRunRecord
 ExecutionScope = Literal["workbench", "fixed_rules"]
 DEFAULT_RESULT_PAGE_SIZE = 20
 MAX_RESULT_PAGE_SIZE = 200
+_BASE_RESULT_FIELDS = {
+    "level",
+    "rule_name",
+    "location",
+    "row_index",
+    "raw_value",
+    "display_value",
+    "message",
+}
 
 
 def normalize_result_page(page: int | None, size: int | None) -> tuple[int, int]:
@@ -86,6 +95,7 @@ async def persist_execution_result(
                 row_index=int(item.get("row_index", 0)),
                 raw_value_json=_serialize_raw_value(item.get("raw_value")),
                 display_value_json=_serialize_raw_value(item.get("display_value")),
+                extra_json=_serialize_result_extra(item),
                 message=str(item.get("message", "")),
             )
         )
@@ -134,18 +144,7 @@ async def fetch_execution_result_page(
         "total": run.total_results,
         "page": page,
         "size": size,
-        "list": [
-            {
-                "level": row.level,
-                "rule_name": row.rule_name,
-                "location": row.location,
-                "row_index": row.row_index,
-                "raw_value": _deserialize_raw_value(row.raw_value_json),
-                "display_value": _deserialize_raw_value(row.display_value_json),
-                "message": row.message,
-            }
-            for row in rows
-        ],
+        "list": [_build_result_item(row) for row in rows],
         "execution_time_ms": run.execution_time_ms,
         "total_rows_scanned": run.total_rows_scanned,
         "failed_sources": _deserialize_failed_sources(run.failed_sources_json),
@@ -189,18 +188,7 @@ async def fetch_execution_result_export(
         "execution_time_ms": run.execution_time_ms,
         "total_rows_scanned": run.total_rows_scanned,
         "failed_sources": _deserialize_failed_sources(run.failed_sources_json),
-        "list": [
-            {
-                "level": row.level,
-                "rule_name": row.rule_name,
-                "location": row.location,
-                "row_index": row.row_index,
-                "raw_value": _deserialize_raw_value(row.raw_value_json),
-                "display_value": _deserialize_raw_value(row.display_value_json),
-                "message": row.message,
-            }
-            for row in rows
-        ],
+        "list": [_build_result_item(row) for row in rows],
     }
 
 
@@ -230,11 +218,42 @@ def _serialize_raw_value(value: Any) -> str:
         return json.dumps(str(value), ensure_ascii=False)
 
 
-def _deserialize_raw_value(raw_value_json: str) -> Any:
+def _serialize_result_extra(item: dict[str, Any]) -> str:
+    extra = {
+        key: value
+        for key, value in item.items()
+        if key not in _BASE_RESULT_FIELDS
+    }
+    return _serialize_raw_value(extra)
+
+
+def _build_result_item(row: ExecutionResultItemRecord) -> dict[str, Any]:
+    item = {
+        "level": row.level,
+        "rule_name": row.rule_name,
+        "location": row.location,
+        "row_index": row.row_index,
+        "raw_value": _deserialize_raw_value(row.raw_value_json),
+        "display_value": _deserialize_raw_value(row.display_value_json),
+        "message": row.message,
+    }
+    extra = _deserialize_result_extra(row.extra_json)
+    item.update(extra)
+    return item
+
+
+def _deserialize_raw_value(raw_value_json: str | None) -> Any:
+    if not isinstance(raw_value_json, str):
+        return raw_value_json
     try:
         return json.loads(raw_value_json)
     except json.JSONDecodeError:
         return raw_value_json
+
+
+def _deserialize_result_extra(extra_json: str | None) -> dict[str, Any]:
+    payload = _deserialize_raw_value(extra_json)
+    return payload if isinstance(payload, dict) else {}
 
 
 def _deserialize_failed_sources(failed_sources_json: str) -> list[str]:

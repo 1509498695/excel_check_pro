@@ -96,6 +96,24 @@ async def _execute_package_compare(payload: dict[str, Any]) -> list[dict[str, An
     return body["data"]["abnormal_results"]
 
 
+def _find_error(
+    results: list[dict[str, Any]],
+    error_type: str,
+    *,
+    package_id: str | None = None,
+    item_id: str | None = None,
+) -> dict[str, Any]:
+    for result in results:
+        if result.get("error_type") != error_type:
+            continue
+        if package_id is not None and result.get("package_id") != package_id:
+            continue
+        if item_id is not None and result.get("item_id") != item_id:
+            continue
+        return result
+    raise AssertionError(f"未找到结构化错误：{error_type} package={package_id} item={item_id}")
+
+
 def test_parse_str_items_extracts_item_triples_and_ignores_non_item() -> None:
     items, errors = parse_str_items(
         "[{asgift,2,1},{item,16001,3},{item,62,10},{item,58,50}]"
@@ -109,12 +127,35 @@ def test_parse_str_items_extracts_item_triples_and_ignores_non_item() -> None:
     }
 
 
+def test_parse_str_items_accepts_empty_array_as_no_items() -> None:
+    for raw_value in ("[]", "[ ]"):
+        items, errors = parse_str_items(raw_value)
+
+        assert items == {}
+        assert errors == []
+
+
 def test_parse_str_items_reports_malformed_and_duplicate_item() -> None:
     items, errors = parse_str_items("[{item,16001,3},{item,16001,4},{item,62}]")
 
     assert {item_id: item.count for item_id, item in items.items()} == {"16001": 3}
     assert "STR_Items 道具重复：16001" in errors
     assert "STR_Items 片段格式错误：{item,62}" in errors
+
+
+def test_parse_str_items_reports_invalid_item_id_and_count() -> None:
+    items, errors = parse_str_items("[{item,,3},{item,16002,abc},{item,16003,7}]")
+
+    assert {item_id: item.count for item_id, item in items.items()} == {"16003": 7}
+    assert any("道具 ID 为空" in error for error in errors)
+    assert any("道具数量 必须是整数" in error for error in errors)
+
+
+def test_parse_str_items_keeps_other_non_empty_text_as_format_error() -> None:
+    items, errors = parse_str_items("[invalid]")
+
+    assert items == {}
+    assert errors == ["STR_Items 格式错误：[invalid]"]
 
 
 @pytest.mark.anyio
@@ -154,6 +195,30 @@ async def test_execute_engine_package_items_compare_passes_sample_package(
 
 
 @pytest.mark.anyio
+async def test_execute_engine_package_items_compare_passes_with_different_order(
+    tmp_path: Path,
+) -> None:
+    workbook_path = _create_package_compare_workbook(
+        tmp_path / "package_compare_order.xlsx",
+        left_rows=[
+            {"礼包id": 26042411, "道具ID": 39, "个数": 8},
+            {"礼包id": 26042411, "道具ID": 48, "个数": 25},
+            {"礼包id": 26042411, "道具ID": 47, "个数": 145},
+        ],
+        right_rows=[
+            {
+                "INT_PackageId": 26042411,
+                "STR_Items": "[{item,47,145},{item,39,8},{item,48,25}]",
+            }
+        ],
+    )
+
+    abnormal_results = await _execute_package_compare(_build_payload(workbook_path))
+
+    assert abnormal_results == []
+
+
+@pytest.mark.anyio
 async def test_execute_engine_package_items_compare_reports_mismatch_missing_and_extra(
     tmp_path: Path,
 ) -> None:
@@ -177,6 +242,30 @@ async def test_execute_engine_package_items_compare_reports_mismatch_missing_and
     assert any("数量不一致" in message and "16001" in message for message in messages)
     assert any("STR_Items 缺少道具" in message and "62" in message for message in messages)
     assert any("STR_Items 多出道具" in message and "99" in message for message in messages)
+    mismatch = _find_error(
+        abnormal_results,
+        "count_mismatch",
+        package_id="26042411",
+        item_id="16001",
+    )
+    assert mismatch["left_value"] == 3
+    assert mismatch["right_value"] == 4
+    missing = _find_error(
+        abnormal_results,
+        "right_missing_item",
+        package_id="26042411",
+        item_id="62",
+    )
+    assert missing["left_value"] == 10
+    assert missing["right_value"] is None
+    extra = _find_error(
+        abnormal_results,
+        "left_missing_item",
+        package_id="26042411",
+        item_id="99",
+    )
+    assert extra["left_value"] is None
+    assert extra["right_value"] == 1
 
 
 @pytest.mark.anyio
@@ -197,6 +286,60 @@ async def test_execute_engine_package_items_compare_ignores_non_item_types(
     abnormal_results = await _execute_package_compare(_build_payload(workbook_path))
 
     assert abnormal_results == []
+
+
+@pytest.mark.anyio
+async def test_execute_engine_package_items_compare_empty_array_reports_missing_items(
+    tmp_path: Path,
+) -> None:
+    workbook_path = _create_package_compare_workbook(
+        tmp_path / "package_compare_empty_array_missing_items.xlsx",
+        left_rows=[
+            {"礼包id": 26042411, "道具ID": 16001, "个数": 3},
+            {"礼包id": 26042411, "道具ID": 16002, "个数": 5},
+        ],
+        right_rows=[
+            {"INT_PackageId": 26042411, "STR_Items": "[]"},
+        ],
+    )
+
+    abnormal_results = await _execute_package_compare(_build_payload(workbook_path))
+
+    assert not any(item.get("error_type") == "str_items_format_error" for item in abnormal_results)
+    assert _find_error(
+        abnormal_results,
+        "right_missing_item",
+        package_id="26042411",
+        item_id="16001",
+    )["left_value"] == 3
+    assert _find_error(
+        abnormal_results,
+        "right_missing_item",
+        package_id="26042411",
+        item_id="16002",
+    )["left_value"] == 5
+
+
+@pytest.mark.anyio
+async def test_execute_engine_package_items_compare_empty_array_on_unmatched_right_package(
+    tmp_path: Path,
+) -> None:
+    workbook_path = _create_package_compare_workbook(
+        tmp_path / "package_compare_empty_array_missing_left_package.xlsx",
+        left_rows=[{"礼包id": 26042411, "道具ID": 16001, "个数": 3}],
+        right_rows=[
+            {"INT_PackageId": 26042412, "STR_Items": "[]"},
+        ],
+    )
+
+    abnormal_results = await _execute_package_compare(_build_payload(workbook_path))
+
+    assert not any(item.get("error_type") == "str_items_format_error" for item in abnormal_results)
+    assert _find_error(
+        abnormal_results,
+        "left_missing_package",
+        package_id="26042412",
+    )
 
 
 @pytest.mark.anyio
@@ -263,9 +406,24 @@ async def test_execute_engine_package_items_compare_reports_missing_package(
 
     abnormal_results = await _execute_package_compare(_build_payload(workbook_path))
 
-    assert len(abnormal_results) == 1
-    assert "INT_PackageId 缺失" in abnormal_results[0]["message"]
-    assert abnormal_results[0]["row_index"] == 2
+    assert len(abnormal_results) == 2
+    right_missing = _find_error(
+        abnormal_results,
+        "right_missing_package",
+        package_id="26042411",
+    )
+    assert "INT_PackageId 缺失" in right_missing["message"]
+    assert right_missing["row_index"] == 2
+    assert right_missing["left_value"] == "26042411"
+    assert right_missing["right_value"] is None
+    left_missing = _find_error(
+        abnormal_results,
+        "left_missing_package",
+        package_id="26042412",
+    )
+    assert "飞书 Sheet 中不存在" in left_missing["message"]
+    assert left_missing["left_value"] is None
+    assert left_missing["right_value"] == "26042412"
 
 
 @pytest.mark.anyio
@@ -288,6 +446,80 @@ async def test_execute_engine_package_items_compare_reports_str_items_format_err
 
     assert any("STR_Items 道具重复：16001" in message for message in messages)
     assert any("STR_Items 片段格式错误：{item,62}" in message for message in messages)
+    assert _find_error(
+        abnormal_results,
+        "right_duplicate_item",
+        package_id="26042411",
+        item_id="16001",
+    )
+    assert _find_error(
+        abnormal_results,
+        "str_items_format_error",
+        package_id="26042411",
+    )
+
+
+@pytest.mark.anyio
+async def test_execute_engine_package_items_compare_reports_left_duplicate_item(
+    tmp_path: Path,
+) -> None:
+    workbook_path = _create_package_compare_workbook(
+        tmp_path / "package_compare_left_duplicate.xlsx",
+        left_rows=[
+            {"礼包id": 26042411, "道具ID": 16001, "个数": 3},
+            {"礼包id": 26042411, "道具ID": 16001, "个数": 4},
+        ],
+        right_rows=[
+            {"INT_PackageId": 26042411, "STR_Items": "[{item,16001,3}]"},
+        ],
+    )
+
+    abnormal_results = await _execute_package_compare(_build_payload(workbook_path))
+
+    duplicate = _find_error(
+        abnormal_results,
+        "left_duplicate_item",
+        package_id="26042411",
+        item_id="16001",
+    )
+    assert "左侧道具重复配置" in duplicate["message"]
+    assert duplicate["left_value"] == 4
+
+
+@pytest.mark.anyio
+async def test_execute_engine_package_items_compare_reports_invalid_ids_and_counts(
+    tmp_path: Path,
+) -> None:
+    workbook_path = _create_package_compare_workbook(
+        tmp_path / "package_compare_invalid_values.xlsx",
+        left_rows=[
+            {"礼包id": 26042411, "道具ID": "", "个数": 3},
+            {"礼包id": 26042411, "道具ID": 16001, "个数": "三个"},
+        ],
+        right_rows=[
+            {
+                "INT_PackageId": 26042411,
+                "STR_Items": "[{item,,3},{item,16002,abc}]",
+            },
+        ],
+    )
+
+    abnormal_results = await _execute_package_compare(_build_payload(workbook_path))
+
+    assert _find_error(abnormal_results, "left_invalid_item_id", package_id="26042411")
+    assert _find_error(
+        abnormal_results,
+        "left_invalid_count",
+        package_id="26042411",
+        item_id="16001",
+    )
+    assert _find_error(abnormal_results, "right_invalid_item_id", package_id="26042411")
+    assert _find_error(
+        abnormal_results,
+        "right_invalid_count",
+        package_id="26042411",
+        item_id="16002",
+    )
 
 
 def test_fixed_rules_config_normalizes_package_items_compare_params(tmp_path: Path) -> None:

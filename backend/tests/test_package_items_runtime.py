@@ -20,7 +20,9 @@ from backend.app.fixed_rules.config_normalizer import validate_and_normalize_fix
 from backend.app.fixed_rules.package_items_runtime import (
     RUNTIME_PACKAGE_TAG_PREFIX,
     prepare_package_items_runtime_config,
+    prepare_package_items_runtime_task_tree,
 )
+from backend.app.api.schemas import TaskTree
 from backend.app.database import async_session_factory
 from backend.app.integrations.feishu_client import FeishuSheetTable
 from backend.app.services.package_items_ai_parse_cache import clear_package_items_ai_parse_cache
@@ -212,6 +214,142 @@ async def test_package_parse_config_generates_runtime_variable(
         "个数",
         "_row_index",
     ]
+    assert preparation.preloaded_variable_frames[temp_tag].to_dict("records") == [
+        {
+            "__key__": "26042411_0",
+            "礼包id": "26042411",
+            "道具ID": "16001",
+            "个数": 3,
+            "_row_index": 2,
+        }
+    ]
+
+
+@pytest.mark.anyio
+async def test_task_tree_runtime_variables_are_stable_and_isolated(
+    monkeypatch: pytest.MonkeyPatch,
+    test_project_id: int,
+) -> None:
+    previews = {
+        "gid_plan_a": _success_preview(include_second_package=False),
+        "gid_plan_b": PackageItemsPreviewResult(
+            parse_status="success",
+            parse_mode="rule",
+            ai_used=False,
+            header_rows=[1],
+            detail_ranges=[PackageDetailRange(header_row=1, start_row=2, end_row=2)],
+            package_ids=["26049999"],
+            package_count=1,
+            detail_row_count=1,
+            field_mapping={"package_id": "packageId", "item_id": "itemId", "count": "num"},
+            rows=[
+                PackagePlanItemRow(
+                    row_index=2,
+                    package_id="26049999",
+                    item_id="18001",
+                    count=9,
+                    raw_row=["26049999", "18001", "9"],
+                )
+            ],
+        ),
+    }
+
+    async def _preview_package_items_from_feishu(*_args, **kwargs):
+        return previews[kwargs["sheet_id"]]
+
+    monkeypatch.setattr(
+        package_items_runtime,
+        "preview_package_items_from_feishu",
+        _preview_package_items_from_feishu,
+    )
+    task_tree = TaskTree.model_validate(
+        {
+            "sources": [
+                {
+                    "id": "feishu-plan",
+                    "type": "feishu",
+                    "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+                },
+                {
+                    "id": "config-src",
+                    "type": "local_excel",
+                    "path": "D:/tmp/package.xlsx",
+                },
+            ],
+            "variables": [
+                {
+                    "tag": "[package-config-a]",
+                    "source_id": "config-src",
+                    "sheet": "package_config_a",
+                    "variable_kind": "composite",
+                    "columns": ["INT_PackageId", "STR_Items"],
+                    "key_column": "INT_PackageId",
+                },
+                {
+                    "tag": "[package-config-b]",
+                    "source_id": "config-src",
+                    "sheet": "package_config_b",
+                    "variable_kind": "composite",
+                    "columns": ["INT_PackageId", "STR_Items"],
+                    "key_column": "INT_PackageId",
+                },
+            ],
+            "rules": [
+                {
+                    "rule_id": "rule-package-a",
+                    "rule_type": "package_items_compare",
+                    "params": {
+                        "reference_variable_tag": "[package-config-a]",
+                        "right_package_field": "INT_PackageId",
+                        "right_items_field": "STR_Items",
+                        "package_parse_config": {
+                            "feishu_source_id": "feishu-plan",
+                            "feishu_sheet_id": "gid_plan_a",
+                            "parse_strategy": "auto",
+                            "ai_parse_mode": "auto",
+                            "validation_scope": "all",
+                        },
+                    },
+                },
+                {
+                    "rule_id": "rule-package-b",
+                    "rule_type": "package_items_compare",
+                    "params": {
+                        "reference_variable_tag": "[package-config-b]",
+                        "right_package_field": "INT_PackageId",
+                        "right_items_field": "STR_Items",
+                        "package_parse_config": {
+                            "feishu_source_id": "feishu-plan",
+                            "feishu_sheet_id": "gid_plan_b",
+                            "parse_strategy": "auto",
+                            "ai_parse_mode": "auto",
+                            "validation_scope": "all",
+                        },
+                    },
+                },
+            ],
+        }
+    )
+
+    async with async_session_factory() as db:
+        preparation = await prepare_package_items_runtime_task_tree(
+            task_tree,
+            db=db,
+            project_id=test_project_id,
+        )
+
+    assert set(preparation.preloaded_variable_frames) == {
+        "__runtime_package_plan__:rule-package-a",
+        "__runtime_package_plan__:rule-package-b",
+    }
+    assert preparation.task_tree.rules[0].params["left_tag"] == "__runtime_package_plan__:rule-package-a"
+    assert preparation.task_tree.rules[1].params["left_tag"] == "__runtime_package_plan__:rule-package-b"
+    assert preparation.preloaded_variable_frames[
+        "__runtime_package_plan__:rule-package-a"
+    ].iloc[0]["礼包id"] == "26042411"
+    assert preparation.preloaded_variable_frames[
+        "__runtime_package_plan__:rule-package-b"
+    ].iloc[0]["礼包id"] == "26049999"
 
 
 @pytest.mark.anyio
@@ -300,6 +438,32 @@ async def test_execute_runtime_package_rule_checks_all_parsed_packages(
     assert len(abnormal_results) == 1
     assert "INT_PackageId 缺失：礼包 26042412" in abnormal_results[0]["message"]
     assert abnormal_results[0]["row_index"] == 3
+
+
+@pytest.mark.anyio
+async def test_execute_runtime_package_rule_skips_right_packages_outside_feishu_sheet(
+    auth_client,
+    test_project_id: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workbook_path = _create_package_config_workbook(
+        tmp_path / "runtime_all_feishu_scope.xlsx",
+        [
+            {"INT_PackageId": 26042411, "STR_Items": "[{item,16001,3}]"},
+            {
+                "INT_PackageId": 26049999,
+                "STR_Items": "[{asgift,2,1},{item,10113,5}}]",
+            },
+        ],
+    )
+    await seed_fixed_rules_config(_build_runtime_config(workbook_path), test_project_id)
+    _patch_package_preview(monkeypatch, _success_preview(include_second_package=False))
+
+    response = await auth_client.post("/api/v1/fixed-rules/execute", json={})
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["abnormal_results"] == []
 
 
 @pytest.mark.anyio

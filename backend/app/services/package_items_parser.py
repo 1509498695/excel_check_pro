@@ -120,9 +120,9 @@ async def preview_package_items_from_feishu(
         project_id,
         locator,
         sheet_id=sheet_id,
-        value_render_option="ToString",
+        value_render_option="FormattedValue",
     )
-    return await parse_package_items_sheet_async(
+    result = await parse_package_items_sheet_async(
         table.raw_values,
         sheet_name=table.sheet_title,
         parse_strategy=parse_strategy,
@@ -135,6 +135,8 @@ async def preview_package_items_from_feishu(
             sheet_revision_or_hash=build_sheet_matrix_hash(table.raw_values),
         ),
     )
+    result.raw_sheet_name = table.sheet_title
+    return result
 
 
 async def parse_package_items_sheet_async(
@@ -203,6 +205,15 @@ def parse_package_items_sheet(
 ) -> PackageItemsPreviewResult:
     """从二维数组中扫描礼包明细区域，保留原始 Sheet 行号。"""
     del parse_strategy, ai_parse_mode
+    if not raw_values:
+        return PackageItemsPreviewResult(
+            parse_status="failed",
+            parse_mode="rule",
+            ai_used=False,
+            confidence=0.0,
+            errors=["Sheet 为空"],
+        )
+
     warnings: list[str] = []
     errors: list[str] = []
     header_rows: list[int] = []
@@ -211,6 +222,7 @@ def parse_package_items_sheet(
     rows: list[PackagePlanItemRow] = []
     package_ids: list[str] = []
     seen_package_ids: set[str] = set()
+    seen_item_rows: dict[tuple[str, str], int] = {}
     complete_headers: list[_HeaderDetection] = []
     partial_headers: list[_HeaderDetection] = []
     active_header: _HeaderDetection | None = None
@@ -243,11 +255,22 @@ def parse_package_items_sheet(
         if _is_empty_row(row):
             continue
 
-        parsed_row = _parse_detail_row(row, row_index=row_index, header=active_header)
+        parsed_row, row_warning = _parse_detail_row(
+            row,
+            row_index=row_index,
+            header=active_header,
+        )
         if parsed_row is None:
-            warnings.append(f"跳过第 {row_index} 行：缺少礼包 ID、道具 ID 或数量字段。")
+            warnings.append(row_warning or f"跳过第 {row_index} 行：缺少礼包 ID、道具 ID 或数量字段。")
             continue
 
+        _append_duplicate_item_warning(
+            warnings,
+            seen_item_rows=seen_item_rows,
+            package_id=parsed_row.package_id,
+            item_id=parsed_row.item_id,
+            row_index=parsed_row.row_index,
+        )
         rows.append(parsed_row)
         preview_detail_rows.append(
             PackageItemsPreviewDetailRow(
@@ -297,6 +320,35 @@ def parse_package_items_sheet(
     )
 
 
+def build_package_items_map(
+    rows: list[PackagePlanItemRow],
+) -> dict[str, dict[str, int]]:
+    """将解析出的礼包明细行转换为 package_id -> item_id -> count。"""
+    result: dict[str, dict[str, int]] = {}
+    for row in rows:
+        result.setdefault(row.package_id, {})[row.item_id] = row.count
+    return result
+
+
+def _append_duplicate_item_warning(
+    warnings: list[str],
+    *,
+    seen_item_rows: dict[tuple[str, str], int],
+    package_id: str,
+    item_id: str,
+    row_index: int,
+) -> None:
+    key = (package_id, item_id)
+    first_row_index = seen_item_rows.get(key)
+    if first_row_index is None:
+        seen_item_rows[key] = row_index
+        return
+    warnings.append(
+        f"识别到重复道具 ID：礼包 {package_id} 的道具 {item_id} "
+        f"在第 {first_row_index} 行和第 {row_index} 行重复。"
+    )
+
+
 def extract_package_items_by_ai_suggestion(
     sheet_matrix: list[list[Any]],
     suggestion: Any,
@@ -312,6 +364,7 @@ def extract_package_items_by_ai_suggestion(
     rows: list[PackagePlanItemRow] = []
     package_ids: list[str] = []
     seen_package_ids: set[str] = set()
+    seen_item_rows: dict[tuple[str, str], int] = {}
     first_resolved_mapping: PackageFieldMapping | None = None
 
     if not header_rows:
@@ -351,6 +404,13 @@ def extract_package_items_by_ai_suggestion(
             if parsed_row is None:
                 continue
 
+            _append_duplicate_item_warning(
+                warnings,
+                seen_item_rows=seen_item_rows,
+                package_id=parsed_row.package_id,
+                item_id=parsed_row.item_id,
+                row_index=parsed_row.row_index,
+            )
             rows.append(parsed_row)
             if parsed_row.package_id not in seen_package_ids:
                 seen_package_ids.add(parsed_row.package_id)
@@ -534,19 +594,31 @@ def _parse_detail_row(
     *,
     row_index: int,
     header: _HeaderDetection,
-) -> PackagePlanItemRow | None:
-    package_id = _cell_text(_get_cell(row, header.mapping["package_id"]))
-    item_id = _cell_text(_get_cell(row, header.mapping["item_id"]))
+) -> tuple[PackagePlanItemRow | None, str | None]:
+    package_id, package_error = _parse_package_id(_get_cell(row, header.mapping["package_id"]))
+    item_id, item_error = _parse_item_id(_get_cell(row, header.mapping["item_id"]))
     raw_count = _get_cell(row, header.mapping["count"])
-    count = _parse_count(raw_count)
-    if not package_id or not item_id or count is None:
-        return None
-    return PackagePlanItemRow(
-        package_id=package_id,
-        item_id=item_id,
-        count=count,
-        row_index=row_index,
-        raw_row=list(row),
+    count, count_error = _parse_count(raw_count)
+    if package_error:
+        return None, f"跳过第 {row_index} 行：缺少礼包 ID 或道具 ID。"
+    if item_error:
+        if item_error == "道具 ID 为空。":
+            return None, f"跳过第 {row_index} 行：缺少礼包 ID 或道具 ID。"
+        return None, f"跳过第 {row_index} 行：{item_error}"
+    if count_error:
+        return None, f"跳过第 {row_index} 行：{count_error}"
+    assert package_id is not None
+    assert item_id is not None
+    assert count is not None
+    return (
+        PackagePlanItemRow(
+            package_id=package_id,
+            item_id=item_id,
+            count=count,
+            row_index=row_index,
+            raw_row=list(row),
+        ),
+        None,
     )
 
 
@@ -556,14 +628,21 @@ def _parse_ai_suggested_detail_row(
     row_index: int,
     column_mapping: dict[str, int],
 ) -> tuple[PackagePlanItemRow | None, str | None]:
-    package_id = _cell_text(_get_cell(row, column_mapping["package_id"]))
-    item_id = _cell_text(_get_cell(row, column_mapping["item_id"]))
+    package_id, package_error = _parse_package_id(_get_cell(row, column_mapping["package_id"]))
+    item_id, item_error = _parse_item_id(_get_cell(row, column_mapping["item_id"]))
     raw_count = _get_cell(row, column_mapping["count"])
-    count = _parse_count(raw_count)
-    if not package_id or not item_id:
+    count, count_error = _parse_count(raw_count)
+    if package_error:
         return None, f"跳过第 {row_index} 行：缺少礼包 ID 或道具 ID。"
-    if count is None:
-        return None, f"跳过第 {row_index} 行：数量无法转换为整数。"
+    if item_error:
+        if item_error == "道具 ID 为空。":
+            return None, f"跳过第 {row_index} 行：缺少礼包 ID 或道具 ID。"
+        return None, f"跳过第 {row_index} 行：{item_error}"
+    if count_error:
+        return None, f"跳过第 {row_index} 行：{count_error}"
+    assert package_id is not None
+    assert item_id is not None
+    assert count is not None
     return (
         PackagePlanItemRow(
             package_id=package_id,
@@ -821,16 +900,47 @@ def _has_exact_chinese_field_mapping(field_mapping: dict[str, str]) -> bool:
     )
 
 
-def _parse_count(value: Any) -> int | None:
+def _parse_package_id(value: Any) -> tuple[str | None, str | None]:
     if value is None or isinstance(value, bool):
-        return None
+        return None, "礼包 ID 为空。"
+    text = _cell_text(value)
+    if not text:
+        return None, "礼包 ID 为空。"
+    normalized = _try_normalize_integer_text(text)
+    return normalized or text, None
+
+
+def _parse_item_id(value: Any) -> tuple[str | None, str | None]:
+    if value is None or isinstance(value, bool):
+        return None, "道具 ID 为空。"
+    text = _cell_text(value)
+    if not text:
+        return None, "道具 ID 为空。"
+    normalized = _try_normalize_integer_text(text)
+    if normalized is None:
+        return None, "道具 ID 无法转换为整数。"
+    return normalized, None
+
+
+def _parse_count(value: Any) -> tuple[int | None, str | None]:
+    if value is None or isinstance(value, bool):
+        return None, "数量为空。"
     text = str(value).strip()
+    if not text:
+        return None, "数量为空。"
+    normalized = _try_normalize_integer_text(text)
+    if normalized is None:
+        return None, "数量无法转换为整数。"
+    return int(normalized), None
+
+
+def _try_normalize_integer_text(text: str) -> str | None:
     if not text:
         return None
     if re.fullmatch(r"[+-]?\d+", text):
-        return int(text)
+        return str(int(text))
     if re.fullmatch(r"[+-]?\d+\.0+", text):
-        return int(float(text))
+        return str(int(float(text)))
     return None
 
 

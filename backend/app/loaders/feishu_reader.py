@@ -220,11 +220,12 @@ async def preview_feishu_source_column(
         column_name,
         table.columns,
     )
+    data_rows = table.raw_values[1:] if table.raw_values else []
     indexed_data_rows = _filter_feishu_rows_with_non_empty_column(
-        table.raw_values[1:] if table.raw_values else [],
+        data_rows,
         column_index=column_index,
     )
-    total_rows = len(indexed_data_rows)
+    total_rows = len(data_rows)
     preview_limit = max(1, limit) if limit is not None else total_rows
     preview_rows = [
         {

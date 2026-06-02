@@ -26,7 +26,10 @@ describe('personal rule package items entry', () => {
       '@create-package-items-rule="openPackageItemsRuleDialog"',
     )
     expect(personalRulePanelSource).toContain('PackageItemsRuleDialog')
-    expect(personalRulePanelSource).toContain(':backend-ready="false"')
+    expect(personalRulePanelSource).toContain(':backend-ready="true"')
+    expect(personalRulePanelSource).toContain('@preview="handlePreviewPackageItemsRule"')
+    expect(personalRulePanelSource).toContain('@save="handleSavePackageItemsRule"')
+    expect(personalRulePanelSource).toContain('previewWorkbenchPackageItems')
   })
 
   it('does not add the IAP package entry to the project rule board', () => {

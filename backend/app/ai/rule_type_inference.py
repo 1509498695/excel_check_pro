@@ -70,6 +70,8 @@ def infer_hint_rule_type(
     if intent.rule_type:
         return intent.rule_type
     text = description.lower()
+    if "str_items" in text and any(keyword in description for keyword in ("礼包", "道具")):
+        return "package_items_compare"
     if any(keyword in description for keyword in ("两组", "两个配置", "两份配置", "是不是相等", "是否相等")):
         return "dual_composite_compare"
     if any(keyword in description for keyword in ("多组串行", "多节点串行", "多级链路", "链路")):

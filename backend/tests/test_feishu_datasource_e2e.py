@@ -957,6 +957,11 @@ def _build_sheet_openapi_handler() -> Callable[[httpx.Request], httpx.Response]:
             )
         if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query":
             return _sheets_response()
+        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid_items!A1:C1":
+            return _values_response(
+                "gid_items!A1:C1",
+                [["ID", "Name", "Group"]],
+            )
         if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid_items!A1:C5":
             return _values_response(
                 "gid_items!A1:C5",
@@ -967,6 +972,11 @@ def _build_sheet_openapi_handler() -> Callable[[httpx.Request], httpx.Response]:
                     [2, "Beta Duplicate", "B"],
                     ["", "", "C"],
                 ],
+            )
+        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid_lookup!A1:B1":
+            return _values_response(
+                "gid_lookup!A1:B1",
+                [["RefID", "Label"]],
             )
         if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid_lookup!A1:B3":
             return _values_response(

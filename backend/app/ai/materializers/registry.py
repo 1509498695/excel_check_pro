@@ -152,6 +152,26 @@ def materialize_rule_definition(
             mapping_config=intent.mapping_config,
         ), []
 
+    if rule_type == "package_items_compare":
+        if reference_variable is None:
+            return None, [
+                MissingItem(
+                    kind="variable",
+                    message="礼包道具配置校验需要选择礼包配置组合变量。",
+                    suggested_action="edit_description",
+                )
+            ]
+        return FixedRuleDefinition(
+            **base,
+            reference_variable_tag=reference_variable.tag,
+            left_package_field=(intent.left_package_field or "礼包id").strip(),
+            right_package_field=(intent.right_package_field or "INT_PackageId").strip(),
+            left_item_field=(intent.left_item_field or "道具ID").strip(),
+            left_count_field=(intent.left_count_field or "个数").strip(),
+            right_items_field=(intent.right_items_field or "STR_Items").strip(),
+            package_id_filter=(intent.package_id_filter or "").strip() or None,
+        ), []
+
     return FixedRuleDefinition(**base), []
 
 

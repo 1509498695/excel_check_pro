@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from backend.app.api.schemas import DataSource
-from backend.app.fixed_rules.config_common import SUPPORTED_LOCAL_SOURCE_SUFFIXES, _normalize_local_source_path
+from backend.app.fixed_rules.config_common import _normalize_local_source_path
 
 
 def _normalize_sources(

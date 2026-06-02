@@ -252,6 +252,12 @@ class RuleIntent(BaseModel):
     right_filters: list[dict[str, Any]] = Field(default_factory=list)
     pipeline_config: MultiCompositePipelineConfig | None = None
     mapping_config: MultiCompositeMappingConfig | None = None
+    left_package_field: str | None = None
+    left_item_field: str | None = None
+    left_count_field: str | None = None
+    right_package_field: str | None = None
+    right_items_field: str | None = None
+    package_id_filter: str | None = None
     missing: list["MissingItem"] = Field(default_factory=list)
     rejection_reason: str | None = None
 

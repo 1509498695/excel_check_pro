@@ -18,6 +18,27 @@ export function orchestrationRulesToValidationRules(
   const variableMap = new Map(variables.map((v) => [v.tag, v] as const))
 
   return rules.map((rule) => {
+    if (rule.rule_type === 'package_items_compare') {
+      return {
+        rule_id: rule.rule_id,
+        rule_type: 'package_items_compare',
+        params: {
+          reference_variable_tag: rule.reference_variable_tag?.trim() ?? '',
+          right_package_field: rule.right_package_field ?? 'INT_PackageId',
+          right_items_field: rule.right_items_field ?? 'STR_Items',
+          left_package_field: rule.left_package_field ?? '礼包id',
+          left_item_field: rule.left_item_field ?? '道具ID',
+          left_count_field: rule.left_count_field ?? '个数',
+          package_id_filter: rule.package_id_filter,
+          package_parse_config: rule.package_parse_config
+            ? JSON.parse(JSON.stringify(rule.package_parse_config))
+            : undefined,
+          rule_name: rule.rule_name,
+          display_field: rule.display_field,
+        },
+      }
+    }
+
     if (rule.rule_type === 'multi_composite_pipeline_check') {
       const firstNodeTag = rule.pipeline_config?.nodes[0]?.variable_tag.trim() ?? ''
       const variable = variableMap.get(firstNodeTag)

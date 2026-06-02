@@ -154,6 +154,20 @@ def _build_fixed_rule_params(
             else None,
         }
 
+    if rule.rule_type == "package_items_compare":
+        return {
+            "left_tag": target_variable.tag,
+            "right_tag": rule.reference_variable_tag,
+            "rule_name": rule.rule_name,
+            "left_package_field": rule.left_package_field,
+            "right_package_field": rule.right_package_field,
+            "left_item_field": rule.left_item_field,
+            "left_count_field": rule.left_count_field,
+            "right_items_field": rule.right_items_field,
+            "package_id_filter": rule.package_id_filter,
+            "display_field": rule.display_field,
+        }
+
     location = f"{target_variable.sheet} -> {target_variable.column}"
 
     if rule.rule_type == "fixed_value_compare":

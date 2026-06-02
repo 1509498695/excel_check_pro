@@ -1,4 +1,8 @@
 import type {
+  WorkbenchPackageItemsPreviewRequest,
+  WorkbenchPackageItemsPreviewResponse,
+} from '../types/fixedRules'
+import type {
   ApiResponse,
   ApiStatusResponse,
   ColumnPreviewRequest,
@@ -129,6 +133,15 @@ export async function saveWorkbenchConfig(
   return apiFetch('/api/v1/workbench/config', {
     method: 'PUT',
     body: JSON.stringify(config),
+  })
+}
+
+export async function previewWorkbenchPackageItems(
+  payload: WorkbenchPackageItemsPreviewRequest,
+): Promise<WorkbenchPackageItemsPreviewResponse> {
+  return apiFetch<WorkbenchPackageItemsPreviewResponse>('/api/v1/workbench/package-items/preview', {
+    method: 'POST',
+    body: JSON.stringify(payload),
   })
 }
 

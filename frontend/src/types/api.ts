@@ -15,6 +15,20 @@ export interface ExecutionMeta {
   total_rows_scanned: number
   failed_sources: string[]
   result_id?: number
+  package_items_parse?: PackageItemsParseMeta[]
+}
+
+export interface PackageItemsParseMeta {
+  rule_id?: string
+  parse_mode?: 'rule' | 'ai' | string
+  ai_used?: boolean
+  cache_hit?: boolean
+  confidence?: number
+  header_rows?: number[]
+  package_ids?: string[]
+  detail_row_count?: number
+  warnings?: string[]
+  errors?: string[]
 }
 
 export interface AbnormalResult {

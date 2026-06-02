@@ -27,16 +27,31 @@ const globalStubs = {
     props: ['modelValue', 'title'],
     template: '<section v-if="modelValue"><h2>{{ title }}</h2><slot /><footer><slot name="footer" /></footer></section>',
   },
-  'el-select': { template: '<div class="select-stub"><slot /></div>' },
+  'el-select': {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    template: '<div class="select-stub"><slot /></div>',
+  },
   'el-option': {
     props: ['label', 'value'],
     template: '<div class="option-stub" :data-value="value">{{ label }}</div>',
   },
   'el-input': {
     props: ['modelValue', 'placeholder', 'type'],
+    emits: ['update:modelValue'],
     template: `
-      <textarea v-if="type === 'textarea'" :value="modelValue" :placeholder="placeholder" />
-      <input v-else :value="modelValue" :placeholder="placeholder" />
+      <textarea
+        v-if="type === 'textarea'"
+        :value="modelValue"
+        :placeholder="placeholder"
+        @input="$emit('update:modelValue', $event.target.value)"
+      />
+      <input
+        v-else
+        :value="modelValue"
+        :placeholder="placeholder"
+        @input="$emit('update:modelValue', $event.target.value)"
+      />
     `,
   },
   'el-button': ElementButtonStub,
@@ -46,12 +61,34 @@ const globalStubs = {
   },
   'el-segmented': {
     props: ['options', 'modelValue'],
-    template: '<div><span v-for="option in options" :key="option.value">{{ option.label }}</span></div>',
+    emits: ['update:modelValue'],
+    template: `
+      <div>
+        <button
+          v-for="option in options"
+          :key="option.value"
+          type="button"
+          @click="$emit('update:modelValue', option.value)"
+        >
+          {{ option.label }}
+        </button>
+      </div>
+    `,
   },
-  'el-radio-group': { template: '<div><slot /></div>' },
+  'el-radio-group': {
+    props: ['modelValue'],
+    emits: ['update:modelValue'],
+    provide() {
+      return {
+        updateRadioGroup: (value: string) => this.$emit('update:modelValue', value),
+      }
+    },
+    template: '<div><slot /></div>',
+  },
   'el-radio-button': {
     props: ['label'],
-    template: '<button type="button">{{ label }}</button>',
+    inject: ['updateRadioGroup'],
+    template: '<button type="button" @click="updateRadioGroup(label)"><slot />{{ label }}</button>',
   },
 }
 
@@ -197,8 +234,7 @@ describe('PackageItemsRuleDialog', () => {
     expect(text).toContain('全部礼包')
     expect(text).toContain('指定礼包 ID')
     expect(text).toContain('解析预览')
-    expect(text).toContain('识别到礼包 ID（预览）：26042411、26042412、26042413、26042414、26042415')
-    expect(text).toContain('识别到明细行数：45 行')
+    expect(text).toContain('尚未生成当前配置的解析预览。')
     expect(text).toContain('规则说明')
     expect(wrapper.find('textarea').element.value).toBe('登峰礼包规划表与项目礼包配置表一致性校验规则')
     expect(text).toContain('22 / 500')
@@ -210,7 +246,23 @@ describe('PackageItemsRuleDialog', () => {
     expect(text).not.toContain('用户确认')
   })
 
-  it('shows loading, AI success state, warnings and errors in preview area', () => {
+  it('emits preview payload when clicking generate preview', async () => {
+    const wrapper = mountDialog()
+
+    await wrapper.findAll('button').find((button) => button.text().includes('生成预览'))?.trigger('click')
+
+    expect(wrapper.emitted('preview')?.[0][0]).toMatchObject({
+      feishu_source_id: 'feishu-plan',
+      feishu_sheet_id: 'gid_plan',
+      feishu_sheet_name: '礼包规划',
+      parse_strategy: 'auto',
+      ai_parse_mode: 'auto',
+      validation_scope: 'all',
+      package_id_filter: '',
+    })
+  })
+
+  it('shows loading, AI success state, mappings, preview rows, warnings and errors', () => {
     const loadingWrapper = mountDialog({ previewing: true })
     expect(loadingWrapper.text()).toContain('正在解析飞书礼包规划表')
 
@@ -222,6 +274,8 @@ describe('PackageItemsRuleDialog', () => {
         sheetId: 'gid_plan',
         parseStrategy: 'auto',
         aiParseMode: 'auto',
+        validationScope: 'all',
+        packageIdFilter: '',
         parseMode: 'ai',
         aiUsed: true,
         confidence: 0.92,
@@ -229,7 +283,18 @@ describe('PackageItemsRuleDialog', () => {
         detailRowCount: 3,
         warnings: ['识别到非标准表头'],
         errors: ['演示错误'],
-        fieldMapping: { package_id: '礼包', item_id: '道具', count: '数量' },
+        fieldMapping: {
+          package_id_column: '礼包',
+          item_id_column: '道具',
+          count_column: '数量',
+          header_row_index: 1,
+          detail_start_row_index: 2,
+          detail_end_row_index: 4,
+        },
+        previewRows: [
+          { row_index: 2, package_id: '26042411', item_id: '39', count: '8' },
+          { row_index: 3, package_id: '26042412', item_id: '48', count: '25' },
+        ],
       },
     })
     const text = wrapper.text()
@@ -240,6 +305,13 @@ describe('PackageItemsRuleDialog', () => {
     expect(text).toContain('是')
     expect(text).toContain('识别到礼包 ID（预览）：26042411、26042412')
     expect(text).toContain('识别到明细行数：3 行')
+    expect(text).toContain('礼包 ID 列：礼包')
+    expect(text).toContain('道具 ID 列：道具')
+    expect(text).toContain('数量列：数量')
+    expect(text).toContain('明细范围：2-4 行')
+    expect(text).toContain('26042411')
+    expect(text).toContain('39')
+    expect(text).toContain('8')
     expect(text).toContain('当前结果由 AI 辅助识别结构后，系统按识别区域重新抽取数据。')
     expect(text).toContain('识别到非标准表头')
     expect(text).toContain('演示错误')
@@ -254,6 +326,8 @@ describe('PackageItemsRuleDialog', () => {
         sheetId: 'gid_plan',
         parseStrategy: 'auto',
         aiParseMode: 'auto',
+        validationScope: 'all',
+        packageIdFilter: '',
         errorMessage: '未识别到表头',
         errors: ['未识别到表头'],
       },
@@ -282,6 +356,36 @@ describe('PackageItemsRuleDialog', () => {
     })
     expect(validWrapper.emitted('save')?.[0][0]).not.toHaveProperty('enabled')
     expect(validWrapper.emitted('save')?.[0][0]).not.toHaveProperty('ruleDescription')
+
+    const allWrapper = mountDialog({
+      draft: baseDraft({ validation_scope: 'all', package_id_filter: '26042411' }),
+    })
+    await allWrapper.findAll('button').find((button) => button.text().includes('保存规则'))?.trigger('click')
+    expect(allWrapper.emitted('save')?.[0][0]).toMatchObject({
+      validation_scope: 'all',
+      package_id_filter: '',
+    })
+  })
+
+  it('switches between all packages and specified package id mode', async () => {
+    const wrapper = mountDialog()
+
+    await wrapper.findAll('button').find((button) => button.text().includes('指定礼包 ID'))?.trigger('click')
+    await wrapper.find('input[placeholder="例如：26042411, 26042412"]').setValue('26042411，26042412')
+    await wrapper.findAll('button').find((button) => button.text().includes('保存规则'))?.trigger('click')
+
+    expect(wrapper.emitted('save')?.[0][0]).toMatchObject({
+      validation_scope: 'specified',
+      package_id_filter: '26042411, 26042412',
+    })
+
+    await wrapper.findAll('button').find((button) => button.text().includes('全部礼包'))?.trigger('click')
+    await wrapper.findAll('button').find((button) => button.text().includes('保存规则'))?.trigger('click')
+
+    expect(wrapper.emitted('save')?.[1][0]).toMatchObject({
+      validation_scope: 'all',
+      package_id_filter: '',
+    })
   })
 
   it('requests Feishu sheet metadata and allows manual sheet refresh without package backend', async () => {

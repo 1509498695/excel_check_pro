@@ -224,9 +224,9 @@ async def test_preview_feishu_source_column_skips_empty_target_values(
         {"row_index": 7, "value": False},
         {"row_index": 8, "value": "Beta"},
     ]
-    assert preview["total_rows"] == 4
+    assert preview["total_rows"] == 8
     assert preview["loaded_rows"] == 4
-    assert preview["loaded_all_rows"] is True
+    assert preview["loaded_all_rows"] is False
 
 
 def _install_feishu_loader_stubs(monkeypatch: pytest.MonkeyPatch) -> None:

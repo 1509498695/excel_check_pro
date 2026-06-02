@@ -42,6 +42,9 @@ export interface WorkbenchState {
   selectedLocalPathReplacementPreset: string | null
   svnPathReplacementPresets: string[]
   selectedSvnPathReplacementPreset: string | null
+  autoSaveStatus: 'idle' | 'saving' | 'saved' | 'failed'
+  autoSaveError: string
+  autoSaveSavedAt: number | null
 }
 
 export function createWorkbenchState(): WorkbenchState {
@@ -76,5 +79,8 @@ export function createWorkbenchState(): WorkbenchState {
     selectedLocalPathReplacementPreset: null,
     svnPathReplacementPresets: [],
     selectedSvnPathReplacementPreset: null,
+    autoSaveStatus: 'idle',
+    autoSaveError: '',
+    autoSaveSavedAt: null,
   }
 }

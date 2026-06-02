@@ -2,6 +2,7 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
+import { previewWorkbenchPackageItems } from '../../api/workbench'
 import { useWorkbenchStore } from '../../store/workbench'
 import {
   RuleOrchestrationContainer,
@@ -31,6 +32,7 @@ import type {
   MultiCompositePipelineConfig,
   MultiCompositePipelineNode,
   PipelineAssertionOperator,
+  WorkbenchPackageItemsPreviewData,
 } from '../../types/fixedRules'
 import type { DataSource, VariableTag } from '../../types/workbench'
 import {
@@ -99,7 +101,12 @@ const groupDialogMode = ref<'create' | 'rename'>('create')
 const groupForm = reactive<{ id: string; name: string }>({ id: '', name: '' })
 const isSubmittingGroup = ref(false)
 const isPackageItemsRuleDialogVisible = ref(false)
+const packageItemsRuleDialogMode = ref<'create' | 'edit'>('create')
+const packageItemsEditingRule = ref<FixedRuleDefinition | null>(null)
 const isRefreshingPackageItemsSheets = ref(false)
+const isPreviewingPackageItemsRule = ref(false)
+const isSavingPackageItemsRule = ref(false)
+const packageItemsRulePreview = ref<PackageItemsRuleDialogPreview>({ status: 'idle' })
 
 const ruleSelectionOptions = RULE_SELECTION_OPTIONS
 const ruleEntryTypeOptions = RULE_ENTRY_TYPE_OPTIONS
@@ -128,17 +135,37 @@ const compositeVariableOptions = computed(() =>
 const packageItemsFeishuSources = computed(() =>
   store.sources.filter((source): source is DataSource => source.type === 'feishu'),
 )
-const packageItemsRuleDraft = computed<Partial<PackageItemsRuleDialogDraft>>(() => ({
-  group_id: store.selectedRuleGroup.group_id,
-  rule_name: 'IAP礼包配置校验',
-  parse_strategy: 'auto',
-  ai_parse_mode: 'auto',
-  validation_scope: 'all',
-  package_id_filter: '',
-}))
-const packageItemsRulePreview = computed<PackageItemsRuleDialogPreview>(() => ({
-  status: 'idle',
-}))
+const packageItemsRuleDraft = computed<Partial<PackageItemsRuleDialogDraft>>(() => {
+  const editingRule = packageItemsEditingRule.value
+  if (editingRule?.rule_type === 'package_items_compare') {
+    const parseConfig = editingRule.package_parse_config
+    const sourceId = parseConfig?.feishu_source_id ?? ''
+    const sheetId = parseConfig?.feishu_sheet_id ?? ''
+    const sheetName = parseConfig?.feishu_sheet_name ?? ''
+    return {
+      rule_id: editingRule.rule_id,
+      group_id: editingRule.group_id,
+      rule_name: editingRule.rule_name,
+      feishu_source_id: sourceId,
+      feishu_sheet_id: sheetId,
+      feishu_sheet_name: sheetName,
+      detail_variable_tag: findPackageItemsDetailVariableTag(sourceId, sheetId, sheetName),
+      config_variable_tag: editingRule.reference_variable_tag ?? '',
+      parse_strategy: parseConfig?.parse_strategy ?? 'auto',
+      ai_parse_mode: parseConfig?.ai_parse_mode ?? 'auto',
+      validation_scope: parseConfig?.validation_scope ?? 'all',
+      package_id_filter: parseConfig?.package_id_filter ?? editingRule.package_id_filter ?? '',
+    }
+  }
+  return {
+    group_id: store.selectedRuleGroup.group_id,
+    rule_name: 'IAP礼包配置校验',
+    parse_strategy: 'auto',
+    ai_parse_mode: 'auto',
+    validation_scope: 'all',
+    package_id_filter: '',
+  }
+})
 const isSingleRuleEntry = computed(() => ruleForm.rule_entry_type === 'single')
 const isCompositeRuleEntry = computed(() => !isSingleRuleEntry.value)
 const isCompositeBranchRule = computed(() => ruleForm.rule_entry_type === 'composite')
@@ -179,6 +206,26 @@ function buildCompositeFieldOptions(variable: VariableTag | null): FieldOption[]
 function buildDisplayFieldOptions(variable: VariableTag | null): FieldOption[] {
   return buildSharedDisplayFieldOptions(variable)
 }
+
+function findPackageItemsDetailVariableTag(
+  sourceId: string,
+  sheetId: string,
+  sheetName: string,
+): string {
+  const normalizedSourceId = sourceId.trim()
+  const normalizedSheetId = sheetId.trim()
+  const normalizedSheetName = sheetName.trim()
+  return (
+    compositeVariableOptions.value.find(
+      (variable) =>
+        (!normalizedSourceId || variable.source_id === normalizedSourceId) &&
+        (variable.sheet === normalizedSheetName || variable.sheet === normalizedSheetId),
+    )?.tag ??
+    compositeVariableOptions.value[0]?.tag ??
+    ''
+  )
+}
+
 const expectedValueModeOptions = EXPECTED_VALUE_MODE_OPTIONS
 
 function resolveFieldOptionValue(
@@ -248,6 +295,9 @@ const currentGroupVariableCount = computed(() => {
         .filter(Boolean)
       if (mappingTags.length) {
         return mappingTags
+      }
+      if (rule.rule_type === 'package_items_compare') {
+        return [rule.reference_variable_tag?.trim() ?? ''].filter(Boolean)
       }
       return [rule.target_variable_tag.trim()].filter(Boolean)
     }),
@@ -1546,6 +1596,15 @@ function summarizeCondition(
 }
 
 function buildRuleCondition(rule: FixedRuleDefinition): string {
+  if (rule.rule_type === 'package_items_compare') {
+    const parseConfig = rule.package_parse_config
+    const packageScope =
+      parseConfig?.validation_scope === 'specified' && parseConfig.package_id_filter
+        ? `指定礼包：${parseConfig.package_id_filter}`
+        : '飞书页签全部礼包'
+    return `飞书礼包规划 ${parseConfig?.feishu_sheet_name || parseConfig?.feishu_sheet_id || '未绑定 Sheet'} 对比 ${rule.reference_variable_tag ?? '未绑定礼包配置变量'}（${packageScope}）`
+  }
+
   const variable = resolveRuleVariable(rule)
   const columnName =
     (variable?.variable_kind ?? 'single') === 'composite'
@@ -1649,6 +1708,9 @@ function buildRuleCondition(rule: FixedRuleDefinition): string {
 }
 
 function buildRuleSelectionSummary(rule: FixedRuleDefinition): string {
+  if (rule.rule_type === 'package_items_compare') {
+    return 'IAP礼包校验'
+  }
   if (rule.rule_type === 'dual_composite_compare') {
     return `跨组变量校验（${getDualCompositeKeyCheckModeLabel(rule.key_check_mode)}，${rule.comparisons?.length ?? 0} 条比较）`
   }
@@ -1678,6 +1740,10 @@ function buildRuleSelectionSummary(rule: FixedRuleDefinition): string {
 }
 
 function buildRuleVariableSummary(rule: FixedRuleDefinition): string {
+  if (rule.rule_type === 'package_items_compare') {
+    const parseConfig = rule.package_parse_config
+    return `飞书规划：${parseConfig?.feishu_source_id || '未绑定数据源'} / ${parseConfig?.feishu_sheet_name || parseConfig?.feishu_sheet_id || '未绑定 Sheet'}；配置变量：${rule.reference_variable_tag ?? '未绑定'}`
+  }
   const variable = resolveRuleVariable(rule)
   if (!variable) {
     return '目标变量已失效，请重新选择变量。'
@@ -1686,10 +1752,19 @@ function buildRuleVariableSummary(rule: FixedRuleDefinition): string {
 }
 
 function buildRuleSourcePathSummary(rule: FixedRuleDefinition): string {
+  if (rule.rule_type === 'package_items_compare') {
+    const sourceId = rule.package_parse_config?.feishu_source_id ?? ''
+    return getSourcePath(sourceMap.value.get(sourceId) ?? null) || '当前飞书数据源未记录地址'
+  }
   return getSourcePath(resolveRuleSource(rule)) || '当前数据源未记录路径'
 }
 
 function buildRuleCompareValueSummary(rule: FixedRuleDefinition): string {
+  if (rule.rule_type === 'package_items_compare') {
+    return rule.package_parse_config?.validation_scope === 'specified'
+      ? rule.package_parse_config.package_id_filter || '未填写指定礼包 ID'
+      : '飞书页签全部礼包'
+  }
   if (rule.rule_type === 'fixed_value_compare') {
     return rule.expected_value ?? ''
   }
@@ -1726,10 +1801,16 @@ function buildRuleCompareValueSummary(rule: FixedRuleDefinition): string {
 }
 
 async function persistConfig(successMessage?: string, silent = true): Promise<boolean> {
-  if (!silent && successMessage) {
-    ElMessage.success(successMessage)
+  try {
+    await store.saveConfigNow()
+    if (!silent && successMessage) {
+      ElMessage.success(successMessage)
+    }
+    return true
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '保存个人校验配置失败。')
+    return false
   }
-  return true
 }
 
 function openCreateGroupDialog(): void {
@@ -1827,6 +1908,11 @@ async function openCreateRuleDialog(): Promise<void> {
 }
 
 async function openEditRuleDialog(rule: FixedRuleDefinition): Promise<void> {
+  if (rule.rule_type === 'package_items_compare') {
+    openPackageItemsRuleDialog(rule)
+    return
+  }
+
   isInitializingRuleDialog.value = true
   ruleDialogMode.value = 'edit'
   ruleForm.rule_id = rule.rule_id
@@ -2417,16 +2503,130 @@ function handleToggleSingleSelection(ruleId: string): void {
   emit('toggle-rule-selection', ruleId)
 }
 
-function openPackageItemsRuleDialog(): void {
+function openPackageItemsRuleDialog(rule?: FixedRuleDefinition): void {
+  packageItemsRuleDialogMode.value = rule?.rule_type === 'package_items_compare' ? 'edit' : 'create'
+  packageItemsEditingRule.value = rule?.rule_type === 'package_items_compare' ? rule : null
+  packageItemsRulePreview.value = { status: 'idle' }
   isPackageItemsRuleDialogVisible.value = true
 }
 
 function closePackageItemsRuleDialog(): void {
   isPackageItemsRuleDialogVisible.value = false
+  packageItemsEditingRule.value = null
+  packageItemsRulePreview.value = { status: 'idle' }
 }
 
-function showPackageItemsBackendPlaceholder(): void {
-  ElMessage.info('IAP礼包校验后端暂未接入，暂不可预览或保存。')
+function buildPackageItemsPreviewModel(
+  draft: PackageItemsRuleDialogDraft,
+  data: WorkbenchPackageItemsPreviewData,
+): PackageItemsRuleDialogPreview {
+  const packageFilter = draft.validation_scope === 'specified' ? draft.package_id_filter.trim() : ''
+  return {
+    status: data.success ? 'success' : 'failed',
+    parseStatus: data.success ? 'success' : 'failed',
+    fieldMapping: data.field_mapping ?? undefined,
+    warnings: data.warnings ?? [],
+    errorMessage: data.success ? '' : data.message || data.errors?.[0] || '解析预览失败。',
+    sourceId: draft.feishu_source_id,
+    sheetId: draft.feishu_sheet_id,
+    parseStrategy: draft.parse_strategy,
+    aiParseMode: draft.ai_parse_mode,
+    validationScope: draft.validation_scope,
+    packageIdFilter: packageFilter,
+    parseMode: data.parse_strategy_used === 'ai' ? 'ai' : 'rule',
+    aiUsed: data.ai_used,
+    packageIds: data.package_ids ?? [],
+    detailRowCount: data.detail_row_count ?? 0,
+    errors: data.errors ?? [],
+    previewRows: data.preview_rows ?? [],
+  }
+}
+
+async function handlePreviewPackageItemsRule(
+  draft: PackageItemsRuleDialogDraft,
+): Promise<void> {
+  const packageFilter = draft.validation_scope === 'specified' ? draft.package_id_filter.trim() : ''
+  isPreviewingPackageItemsRule.value = true
+  packageItemsRulePreview.value = {
+    status: 'idle',
+    sourceId: draft.feishu_source_id,
+    sheetId: draft.feishu_sheet_id,
+    parseStrategy: draft.parse_strategy,
+    aiParseMode: draft.ai_parse_mode,
+    validationScope: draft.validation_scope,
+    packageIdFilter: packageFilter,
+  }
+  try {
+    const response = await previewWorkbenchPackageItems({
+      feishu_source_id: draft.feishu_source_id,
+      feishu_sheet_id: draft.feishu_sheet_id,
+      feishu_sheet_name: draft.feishu_sheet_name || null,
+      parse_strategy: draft.parse_strategy,
+      ai_parse_mode: draft.ai_parse_mode,
+      validation_scope: draft.validation_scope,
+      package_id_filter: packageFilter || null,
+    })
+    packageItemsRulePreview.value = buildPackageItemsPreviewModel(draft, response.data)
+  } catch (error) {
+    packageItemsRulePreview.value = {
+      status: 'failed',
+      parseStatus: 'failed',
+      errorMessage: error instanceof Error ? error.message : '解析预览失败。',
+      sourceId: draft.feishu_source_id,
+      sheetId: draft.feishu_sheet_id,
+      parseStrategy: draft.parse_strategy,
+      aiParseMode: draft.ai_parse_mode,
+      validationScope: draft.validation_scope,
+      packageIdFilter: packageFilter,
+      errors: [error instanceof Error ? error.message : '解析预览失败。'],
+    }
+  } finally {
+    isPreviewingPackageItemsRule.value = false
+  }
+}
+
+async function handleSavePackageItemsRule(draft: PackageItemsRuleDialogDraft): Promise<void> {
+  const ruleId = draft.rule_id?.trim() || createId('wb-rule')
+  const packageFilter =
+    draft.validation_scope === 'specified' ? draft.package_id_filter.trim() : ''
+
+  isSavingPackageItemsRule.value = true
+  try {
+    store.upsertOrchestrationRule({
+      rule_id: ruleId,
+      group_id: draft.group_id,
+      rule_name: draft.rule_name,
+      target_variable_tag: `__runtime_package_plan__:${ruleId}`,
+      display_field: '礼包id',
+      rule_type: 'package_items_compare',
+      reference_variable_tag: draft.config_variable_tag,
+      left_package_field: '礼包id',
+      left_item_field: '道具ID',
+      left_count_field: '个数',
+      right_package_field: 'INT_PackageId',
+      right_items_field: 'STR_Items',
+      package_id_filter: packageFilter || undefined,
+      package_parse_config: {
+        feishu_source_id: draft.feishu_source_id,
+        feishu_sheet_id: draft.feishu_sheet_id,
+        feishu_sheet_name: draft.feishu_sheet_name || undefined,
+        parse_strategy: draft.parse_strategy,
+        ai_parse_mode: draft.ai_parse_mode,
+        validation_scope: draft.validation_scope,
+        package_id_filter: packageFilter || undefined,
+      },
+    })
+
+    const success = await persistConfig(
+      packageItemsRuleDialogMode.value === 'create' ? '礼包校验规则已创建并保存。' : '礼包校验规则已更新并保存。',
+      false,
+    )
+    if (success) {
+      closePackageItemsRuleDialog()
+    }
+  } finally {
+    isSavingPackageItemsRule.value = false
+  }
 }
 
 async function handleRefreshPackageItemsSheets(
@@ -2503,7 +2703,7 @@ async function handleRefreshPackageItemsSheets(
 
     <PackageItemsRuleDialog
       :visible="isPackageItemsRuleDialogVisible"
-      mode="create"
+      :mode="packageItemsRuleDialogMode"
       :draft="packageItemsRuleDraft"
       :groups="store.allRuleGroups"
       :feishu-sources="packageItemsFeishuSources"
@@ -2511,11 +2711,13 @@ async function handleRefreshPackageItemsSheets(
       :detail-variables="compositeVariableOptions"
       :composite-variables="compositeVariableOptions"
       :preview="packageItemsRulePreview"
-      :backend-ready="false"
+      :backend-ready="true"
+      :saving="isSavingPackageItemsRule"
+      :previewing="isPreviewingPackageItemsRule"
       :refreshing-sheets="isRefreshingPackageItemsSheets"
       @close="closePackageItemsRuleDialog"
-      @preview="showPackageItemsBackendPlaceholder"
-      @save="showPackageItemsBackendPlaceholder"
+      @preview="handlePreviewPackageItemsRule"
+      @save="handleSavePackageItemsRule"
       @refresh-sheets="handleRefreshPackageItemsSheets"
     />
 

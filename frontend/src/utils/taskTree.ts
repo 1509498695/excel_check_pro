@@ -307,6 +307,114 @@ function normalizeKnownRule(rule: ValidationRule, availableTags: Set<string>): V
     }
   }
 
+  if (rule.rule_type === 'package_items_compare') {
+    const referenceTag =
+      typeof rule.params.reference_variable_tag === 'string'
+        ? rule.params.reference_variable_tag.trim()
+        : typeof rule.params.right_tag === 'string'
+          ? rule.params.right_tag.trim()
+          : ''
+    const ruleName = typeof rule.params.rule_name === 'string' ? rule.params.rule_name.trim() : ''
+    const rightPackageField =
+      typeof rule.params.right_package_field === 'string'
+        ? rule.params.right_package_field.trim()
+        : ''
+    const rightItemsField =
+      typeof rule.params.right_items_field === 'string' ? rule.params.right_items_field.trim() : ''
+    const leftPackageField =
+      typeof rule.params.left_package_field === 'string'
+        ? rule.params.left_package_field.trim()
+        : '礼包id'
+    const leftItemField =
+      typeof rule.params.left_item_field === 'string' ? rule.params.left_item_field.trim() : '道具ID'
+    const leftCountField =
+      typeof rule.params.left_count_field === 'string' ? rule.params.left_count_field.trim() : '个数'
+    const packageIdFilter =
+      typeof rule.params.package_id_filter === 'string' ? rule.params.package_id_filter.trim() : ''
+    const parseConfig =
+      rule.params.package_parse_config != null && typeof rule.params.package_parse_config === 'object'
+        ? (rule.params.package_parse_config as Record<string, unknown>)
+        : null
+    const feishuSourceId =
+      typeof parseConfig?.feishu_source_id === 'string' ? parseConfig.feishu_source_id.trim() : ''
+    const feishuSheetId =
+      typeof parseConfig?.feishu_sheet_id === 'string' ? parseConfig.feishu_sheet_id.trim() : ''
+    const feishuSheetName =
+      typeof parseConfig?.feishu_sheet_name === 'string' ? parseConfig.feishu_sheet_name.trim() : ''
+    const parseStrategy =
+      typeof parseConfig?.parse_strategy === 'string' ? parseConfig.parse_strategy.trim() : 'auto'
+    const aiParseMode =
+      typeof parseConfig?.ai_parse_mode === 'string' ? parseConfig.ai_parse_mode.trim() : 'auto'
+    const validationScope =
+      typeof parseConfig?.validation_scope === 'string' ? parseConfig.validation_scope.trim() : 'all'
+    const parseConfigPackageIdFilter =
+      typeof parseConfig?.package_id_filter === 'string'
+        ? parseConfig.package_id_filter.trim()
+        : ''
+
+    if (!referenceTag) {
+      throw new Error('规则 "package_items_compare" 缺少礼包配置组合变量。')
+    }
+    if (!availableTags.has(referenceTag)) {
+      throw new Error(`规则 "package_items_compare" 引用了不存在的变量 "${referenceTag}"。`)
+    }
+    if (!rightPackageField || !rightItemsField) {
+      throw new Error('规则 "package_items_compare" 缺少右侧礼包字段配置。')
+    }
+    if (!leftPackageField || !leftItemField || !leftCountField) {
+      throw new Error('规则 "package_items_compare" 缺少左侧礼包字段配置。')
+    }
+    if (!ruleName) {
+      throw new Error('规则 "package_items_compare" 缺少 rule_name。')
+    }
+    if (!feishuSourceId || !feishuSheetId) {
+      throw new Error('规则 "package_items_compare" 缺少飞书礼包规划解析配置。')
+    }
+    if (!['auto', 'rule', 'ai'].includes(parseStrategy)) {
+      throw new Error('规则 "package_items_compare" 的 parse_strategy 无效。')
+    }
+    if (!['auto', 'enabled', 'disabled'].includes(aiParseMode)) {
+      throw new Error('规则 "package_items_compare" 的 ai_parse_mode 无效。')
+    }
+    if (!['all', 'specified'].includes(validationScope)) {
+      throw new Error('规则 "package_items_compare" 的 validation_scope 无效。')
+    }
+    if (validationScope === 'specified' && !parseConfigPackageIdFilter && !packageIdFilter) {
+      throw new Error('规则 "package_items_compare" 缺少指定礼包 ID。')
+    }
+
+    const effectivePackageIdFilter =
+      validationScope === 'specified' ? packageIdFilter || parseConfigPackageIdFilter : ''
+
+    return {
+      rule_id: rule.rule_id,
+      rule_type: 'package_items_compare',
+      params: createCleanObject({
+        reference_variable_tag: referenceTag,
+        right_package_field: rightPackageField,
+        right_items_field: rightItemsField,
+        left_package_field: leftPackageField,
+        left_item_field: leftItemField,
+        left_count_field: leftCountField,
+        package_id_filter: effectivePackageIdFilter || undefined,
+        rule_name: ruleName,
+        display_field:
+          typeof rule.params.display_field === 'string' && rule.params.display_field.trim()
+            ? rule.params.display_field.trim()
+            : undefined,
+        package_parse_config: createCleanObject({
+          feishu_source_id: feishuSourceId,
+          feishu_sheet_id: feishuSheetId,
+          feishu_sheet_name: feishuSheetName || undefined,
+          parse_strategy: parseStrategy,
+          ai_parse_mode: aiParseMode,
+          validation_scope: validationScope,
+          package_id_filter: effectivePackageIdFilter || undefined,
+        }),
+      }),
+    }
+  }
+
   if (rule.rule_type === 'multi_composite_pipeline_check') {
     const targetTag = typeof rule.params.target_tag === 'string' ? rule.params.target_tag.trim() : ''
     const ruleName = typeof rule.params.rule_name === 'string' ? rule.params.rule_name.trim() : ''

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from backend.app.api.schemas import DataSource, VariableTag
 
@@ -20,6 +20,7 @@ FixedRuleType = Literal[
     "dual_composite_compare",
     "multi_composite_pipeline_check",
     "multi_composite_mapping_check",
+    "package_items_compare",
 ]
 FixedRuleOperator = Literal["eq", "ne", "gt", "lt"]
 ExpectedValueMode = Literal["single", "set"]
@@ -48,6 +49,15 @@ CompositeValueSource = Literal["literal", "field"]
 DualCompositeKeyCheckMode = Literal["baseline_only", "bidirectional"]
 DualCompositeOperator = Literal["eq", "ne", "gt", "lt", "not_null"]
 FixedRulesConfigIssueLevel = Literal["warning", "error"]
+PackageParseStrategy = Literal["auto", "rule", "ai"]
+PackageAiParseMode = Literal["auto", "enabled", "disabled"]
+PackageValidationScope = Literal["all", "specified"]
+PackageParseStatus = Literal["success", "failed"]
+PackageParseMode = Literal["rule", "ai"]
+PackagePreviewStrategyUsed = Literal["manual", "ai"]
+PackageItemsParseStrategy = PackageParseStrategy
+PackageItemsAiParseMode = PackageAiParseMode
+PackageItemsValidationScope = PackageValidationScope
 
 
 UNGROUPED_GROUP_ID = "ungrouped"
@@ -200,6 +210,240 @@ class DualCompositeComparison(BaseModel):
     right_field: str
 
 
+def _normalize_package_parse_strategy(value: object) -> object:
+    """兼容外部 manual 命名，内部继续使用现有 parser 的 rule。"""
+    if isinstance(value, str):
+        normalized = value.strip()
+        return "rule" if normalized == "manual" else normalized
+    return value
+
+
+def _normalize_package_ai_parse_mode(value: object) -> object:
+    """兼容外部 on/off 命名，内部继续使用 enabled/disabled。"""
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized == "on":
+            return "enabled"
+        if normalized == "off":
+            return "disabled"
+        return normalized
+    return value
+
+
+def _strip_optional_string(value: object) -> object:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return value
+
+
+class PackageItemsParseConfig(BaseModel):
+    """描述礼包规划表预解析配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feishu_source_id: str
+    feishu_sheet_id: str
+    feishu_sheet_name: str | None = None
+    parse_strategy: PackageParseStrategy = "auto"
+    ai_parse_mode: PackageAiParseMode = "auto"
+    validation_scope: PackageValidationScope | None = None
+    package_id_filter: str | None = None
+
+    @field_validator("feishu_source_id", "feishu_sheet_id", mode="before")
+    @classmethod
+    def _strip_required_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator("feishu_sheet_name", "package_id_filter", mode="before")
+    @classmethod
+    def _strip_optional_text(cls, value: object) -> object:
+        return _strip_optional_string(value)
+
+    @field_validator("parse_strategy", mode="before")
+    @classmethod
+    def _normalize_parse_strategy(cls, value: object) -> object:
+        return _normalize_package_parse_strategy(value)
+
+    @field_validator("ai_parse_mode", mode="before")
+    @classmethod
+    def _normalize_ai_parse_mode(cls, value: object) -> object:
+        return _normalize_package_ai_parse_mode(value)
+
+
+class PackageFieldMapping(BaseModel):
+    """parser 内部使用的礼包明细字段名映射。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    package_id: str = ""
+    item_id: str = ""
+    count: str = ""
+
+
+class PackageDetailRange(BaseModel):
+    """描述礼包明细区域的 Sheet 行号范围。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    header_row: int
+    start_row: int
+    end_row: int
+
+
+class PackagePlanItemRow(BaseModel):
+    """描述从礼包规划 Sheet 中抽取出的单条道具明细。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    row_index: int
+    package_id: str
+    item_id: str
+    count: int
+    raw_row: list[Any] = Field(default_factory=list)
+
+
+class PackageItemsPreviewDetailRow(BaseModel):
+    """描述礼包规划解析预览中的单条明细。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    row_index: int
+    package_id: str
+    item_id: str
+    count: str
+
+    @field_validator("count", mode="before")
+    @classmethod
+    def _stringify_count(cls, value: object) -> str:
+        return "" if value is None else str(value)
+
+
+class _PackageSheetParseBase(BaseModel):
+    """礼包 Sheet 解析结果的 parser 内部基础结构。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    parse_status: PackageParseStatus = "failed"
+    parse_mode: PackageParseMode = "rule"
+    ai_used: bool = False
+    cache_hit: bool = False
+    confidence: float = 0.0
+    header_rows: list[int] = Field(default_factory=list)
+    detail_ranges: list[PackageDetailRange] = Field(default_factory=list)
+    field_mapping: PackageFieldMapping = Field(default_factory=PackageFieldMapping)
+    package_ids: list[str] = Field(default_factory=list)
+    package_count: int = 0
+    detail_row_count: int = 0
+    rows: list[PackagePlanItemRow] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class PackageSheetParseResult(_PackageSheetParseBase):
+    """描述规则或 AI 结构识别后的确定性抽取结果。"""
+
+
+class PackageItemsPreviewResult(_PackageSheetParseBase):
+    """描述礼包规划表预解析结果，保留 parser 既有字段名。"""
+
+    detail_rows: list[PackageItemsPreviewDetailRow] = Field(default_factory=list)
+    raw_sheet_name: str | None = None
+
+
+class PackageItemsPreviewFieldMapping(BaseModel):
+    """面向个人礼包弹窗预览接口的字段映射结构。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    package_id_column: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("package_id_column", "package_id"),
+    )
+    item_id_column: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("item_id_column", "item_id"),
+    )
+    count_column: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("count_column", "count"),
+    )
+    header_row_index: int | None = None
+    detail_start_row_index: int | None = None
+    detail_end_row_index: int | None = None
+
+    @field_validator("package_id_column", "item_id_column", "count_column", mode="before")
+    @classmethod
+    def _strip_optional_column(cls, value: object) -> object:
+        return _strip_optional_string(value)
+
+
+class PackageItemsPreviewRequest(BaseModel):
+    """面向个人礼包弹窗的预览请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feishu_source_id: str
+    sheet_id: str = Field(validation_alias=AliasChoices("sheet_id", "feishu_sheet_id"))
+    feishu_sheet_name: str | None = None
+    parse_strategy: PackageParseStrategy = "auto"
+    ai_parse_mode: PackageAiParseMode = "auto"
+    validation_scope: PackageValidationScope = "all"
+    package_id_filter: str | None = None
+
+    @field_validator("feishu_source_id", "sheet_id", mode="before")
+    @classmethod
+    def _strip_required_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator("feishu_sheet_name", "package_id_filter", mode="before")
+    @classmethod
+    def _strip_optional_text(cls, value: object) -> object:
+        return _strip_optional_string(value)
+
+    @field_validator("parse_strategy", mode="before")
+    @classmethod
+    def _normalize_parse_strategy(cls, value: object) -> object:
+        return _normalize_package_parse_strategy(value)
+
+    @field_validator("ai_parse_mode", mode="before")
+    @classmethod
+    def _normalize_ai_parse_mode(cls, value: object) -> object:
+        return _normalize_package_ai_parse_mode(value)
+
+
+class PackageItemsPreviewResponse(BaseModel):
+    """面向个人礼包弹窗的预览响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+    message: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    field_mapping: PackageItemsPreviewFieldMapping | None = None
+    package_ids: list[str] = Field(default_factory=list)
+    detail_row_count: int = 0
+    preview_rows: list[PackageItemsPreviewDetailRow] = Field(default_factory=list)
+    raw_sheet_name: str | None = None
+    parse_strategy_used: PackagePreviewStrategyUsed | None = None
+    ai_used: bool = False
+
+    @field_validator("parse_strategy_used", mode="before")
+    @classmethod
+    def _normalize_parse_strategy_used(cls, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            normalized = value.strip()
+            return "manual" if normalized == "rule" else normalized
+        return value
+
+
 class FixedRuleDefinition(BaseModel):
     """描述一条固定规则定义。"""
 
@@ -229,6 +473,26 @@ class FixedRuleDefinition(BaseModel):
     right_filters: list[CompositeCondition] = Field(default_factory=list)
     pipeline_config: MultiCompositePipelineConfig | None = None
     mapping_config: MultiCompositeMappingConfig | None = None
+    package_parse_config: PackageItemsParseConfig | None = None
+    left_package_field: str | None = None
+    left_item_field: str | None = None
+    left_count_field: str | None = None
+    right_package_field: str | None = None
+    right_items_field: str | None = None
+    package_id_filter: str | None = None
+
+    @field_validator(
+        "left_package_field",
+        "left_item_field",
+        "left_count_field",
+        "right_package_field",
+        "right_items_field",
+        "package_id_filter",
+        mode="before",
+    )
+    @classmethod
+    def _strip_optional_package_string(cls, value: object) -> object:
+        return _strip_optional_string(value)
 
 
 class FixedRulesConfigIssue(BaseModel):

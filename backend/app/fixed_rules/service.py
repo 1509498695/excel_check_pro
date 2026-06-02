@@ -3,6 +3,7 @@
 真实加载、保存、归一化、TaskTree 构建、执行和 SVN 更新逻辑分布在同包
 模块中；本文件保留历史 import 路径和 monkeypatch 兼容点。
 """
+# ruff: noqa: F401
 
 from __future__ import annotations
 

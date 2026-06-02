@@ -54,6 +54,17 @@ def by_reference_and_target_tag(rule: ValidationRule) -> list[str]:
     return [reference_tag, target_tag]
 
 
+def by_left_and_right_tag(rule: ValidationRule) -> list[str]:
+    """``package_items_compare``：从 ``params.left_tag`` / ``right_tag`` 中提取双 tag。"""
+    left_tag = rule.params.get("left_tag")
+    right_tag = rule.params.get("right_tag")
+    if not isinstance(left_tag, str) or not left_tag:
+        raise ValueError("Rule 'package_items_compare' requires params.left_tag.")
+    if not isinstance(right_tag, str) or not right_tag:
+        raise ValueError("Rule 'package_items_compare' requires params.right_tag.")
+    return [left_tag, right_tag]
+
+
 def by_pipeline_node_tags(rule: ValidationRule) -> list[str]:
     """``multi_composite_pipeline_check``：从 ``params.pipeline_config.nodes`` 中提取全部节点 tag。"""
     return _by_config_node_tags(

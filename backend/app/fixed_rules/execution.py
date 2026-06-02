@@ -12,6 +12,7 @@ from backend.app.execution_pipeline import run_execution_pipeline
 from backend.app.fixed_rules.config_loader import load_fixed_rules_config, parse_raw_fixed_rules_config
 from backend.app.fixed_rules.config_normalizer import validate_and_normalize_fixed_rules_config
 from backend.app.fixed_rules.db_service import load_fixed_rules_config_from_db
+from backend.app.fixed_rules.package_items_runtime import prepare_package_items_runtime_config
 from backend.app.fixed_rules.task_tree_builder import build_fixed_rules_task_tree, _get_ordered_rules
 from backend.app.models import Project
 from backend.app.result_store import persist_execution_result
@@ -68,13 +69,23 @@ async def execute_fixed_rules_for_project(
 
     parsed = parse_raw_fixed_rules_config(raw)
     config = validate_and_normalize_fixed_rules_config(parsed)
-    task_tree = build_fixed_rules_task_tree(
+    runtime_preparation = await prepare_package_items_runtime_config(
         config,
+        db=db,
+        project_id=project_id,
+        selected_rule_ids=selected_rule_ids,
+    )
+    task_tree = build_fixed_rules_task_tree(
+        runtime_preparation.config,
         selected_rule_ids=selected_rule_ids,
     )
 
     start = time.perf_counter()
-    execution_artifacts = run_execution_pipeline(task_tree, project_id=project_id)
+    execution_artifacts = run_execution_pipeline(
+        task_tree,
+        project_id=project_id,
+        preloaded_variable_frames=runtime_preparation.preloaded_variable_frames,
+    )
     elapsed_ms = int((time.perf_counter() - start) * 1000)
 
     abnormal_results = execution_artifacts["abnormal_results"]
@@ -104,4 +115,5 @@ async def execute_fixed_rules_for_project(
         "abnormal_results": abnormal_results,
         "execution_time_ms": elapsed_ms,
         "project_name": project_name,
+        "package_items_parse": runtime_preparation.parse_metadata,
     }

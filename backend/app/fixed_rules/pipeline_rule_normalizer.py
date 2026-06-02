@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from backend.app.api.fixed_rules_schemas import CompositeCondition, MultiCompositePipelineConfig, MultiCompositePipelineNode
+from backend.app.api.fixed_rules_schemas import MultiCompositePipelineConfig, MultiCompositePipelineNode
 from backend.app.api.schemas import VariableTag
 from backend.app.fixed_rules.config_common import (
     SUPPORTED_COMPOSITE_FILTER_OPERATORS,

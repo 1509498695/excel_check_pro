@@ -21,6 +21,7 @@ export type ExpectedValueMode = 'single' | 'set'
 export type DualCompositeKeyCheckMode = 'baseline_only' | 'bidirectional'
 export type PackageParseStrategy = 'auto' | 'rule' | 'ai'
 export type PackageAiParseMode = 'auto' | 'enabled' | 'disabled'
+export type PackageItemsValidationScope = 'all' | 'specified'
 export type FixedRuleType =
   | 'fixed_value_compare'
   | 'regex_check'
@@ -131,6 +132,12 @@ export interface PackageItemsFieldMapping {
   package_id?: string
   item_id?: string
   count?: string
+  package_id_column?: string | null
+  item_id_column?: string | null
+  count_column?: string | null
+  header_row_index?: number | null
+  detail_start_row_index?: number | null
+  detail_end_row_index?: number | null
 }
 
 export interface PackageItemsParseConfig {
@@ -139,9 +146,43 @@ export interface PackageItemsParseConfig {
   feishu_sheet_name?: string
   parse_strategy?: PackageParseStrategy
   ai_parse_mode?: PackageAiParseMode
-  validation_scope?: 'all' | 'specified'
+  validation_scope?: PackageItemsValidationScope
   package_id_filter?: string
 }
+
+export interface PackageItemsPreviewRow {
+  row_index: number
+  package_id: string
+  item_id: string
+  count: string
+}
+
+export interface WorkbenchPackageItemsPreviewRequest {
+  feishu_source_id: string
+  feishu_sheet_id: string
+  feishu_sheet_name?: string | null
+  parse_strategy: PackageParseStrategy
+  ai_parse_mode: PackageAiParseMode
+  validation_scope: PackageItemsValidationScope
+  package_id_filter?: string | null
+}
+
+export interface WorkbenchPackageItemsPreviewData {
+  success: boolean
+  message: string
+  warnings: string[]
+  errors: string[]
+  field_mapping?: PackageItemsFieldMapping | null
+  package_ids: string[]
+  detail_row_count: number
+  preview_rows: PackageItemsPreviewRow[]
+  raw_sheet_name?: string | null
+  parse_strategy_used?: 'manual' | 'ai' | null
+  ai_used: boolean
+}
+
+export type WorkbenchPackageItemsPreviewResponse =
+  ApiResponse<WorkbenchPackageItemsPreviewData>
 
 export interface FixedRuleGroup {
   group_id: string
@@ -174,6 +215,12 @@ export interface FixedRuleDefinition {
   pipeline_config?: MultiCompositePipelineConfig
   mapping_config?: MultiCompositeMappingConfig
   package_parse_config?: PackageItemsParseConfig
+  left_package_field?: string
+  left_item_field?: string
+  left_count_field?: string
+  right_package_field?: string
+  right_items_field?: string
+  package_id_filter?: string
 }
 
 export interface FixedRulesConfig {

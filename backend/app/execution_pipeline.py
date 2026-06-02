@@ -20,6 +20,7 @@ def run_execution_pipeline(
     task_tree: TaskTree,
     *,
     project_id: int | None = None,
+    preloaded_variable_frames: dict[str, pd.DataFrame] | None = None,
 ) -> dict[str, Any]:
     """执行完整主干流程，并返回规则执行所需的中间结果。"""
     source_map = _build_source_map(task_tree.sources)
@@ -28,6 +29,7 @@ def run_execution_pipeline(
         source_map,
         grouped_variables,
         project_id=project_id,
+        preloaded_variable_frames=preloaded_variable_frames,
     )
     executable_rules = _filter_executable_rules(
         _filter_rules_by_selected_ids(task_tree.rules, task_tree.selected_rule_ids),
@@ -118,15 +120,26 @@ def _load_sources_concurrently(
     grouped_variables: dict[str, list[VariableTag]],
     *,
     project_id: int | None = None,
+    preloaded_variable_frames: dict[str, pd.DataFrame] | None = None,
 ) -> dict[str, Any]:
-    loaded_variables: dict[str, pd.DataFrame] = {}
+    loaded_variables: dict[str, pd.DataFrame] = dict(preloaded_variable_frames or {})
     failed_sources: list[str] = []
 
+    variables_to_load_by_source = {
+        source_id: [
+            variable
+            for variable in grouped_variables.get(source_id, [])
+            if variable.tag not in loaded_variables
+        ]
+        for source_id in source_map
+    }
     source_ids = [
-        source_id for source_id in source_map if grouped_variables.get(source_id)
+        source_id
+        for source_id, variables in variables_to_load_by_source.items()
+        if variables
     ]
     if not source_ids:
-        return {"loaded_variables": {}, "failed_sources": []}
+        return {"loaded_variables": loaded_variables, "failed_sources": []}
 
     with ThreadPoolExecutor(
         max_workers=settings.default_thread_pool_size
@@ -135,7 +148,7 @@ def _load_sources_concurrently(
             executor.submit(
                 _load_single_source,
                 source_map[source_id],
-                grouped_variables[source_id],
+                variables_to_load_by_source[source_id],
                 project_id,
             ): source_id
             for source_id in source_ids

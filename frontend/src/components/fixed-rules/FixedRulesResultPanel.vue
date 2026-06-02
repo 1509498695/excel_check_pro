@@ -80,6 +80,23 @@ const resultState = computed(() => {
   }
 })
 
+const packageItemsParseSummaries = computed(() =>
+  (store.executionMeta?.package_items_parse ?? []).map((item, index) => ({
+    key: item.rule_id || `package-items-${index}`,
+    ruleId: item.rule_id || '未记录规则 ID',
+    parseMode: item.parse_mode === 'ai' ? 'AI 辅助解析' : '规则解析',
+    confidence:
+      typeof item.confidence === 'number'
+        ? `置信度 ${item.confidence}`
+        : '置信度 未记录',
+    aiUsed: item.ai_used ? '是' : '否',
+    detailRowCount: item.detail_row_count ?? 0,
+    packageIds: item.package_ids ?? [],
+    warnings: item.warnings ?? [],
+    errors: item.errors ?? [],
+  })),
+)
+
 function getLevelType(level: string): 'danger' | 'warning' | 'success' | 'info' {
   if (level === 'error') {
     return 'danger'
@@ -180,6 +197,35 @@ function displayRawValue(value: unknown): string {
         {{ store.executionMeta.failed_sources.join('、') }}
       </template>
     </el-alert>
+
+    <section v-if="packageItemsParseSummaries.length" class="package-parse-summary">
+      <div class="panel-toolbar result-toolbar">
+        <div class="toolbar-copy">
+          <strong>礼包规划解析概览</strong>
+          <span>展示本轮礼包校验执行前的飞书规划表解析结果。</span>
+        </div>
+      </div>
+      <div class="package-parse-summary__list">
+        <article
+          v-for="summary in packageItemsParseSummaries"
+          :key="summary.key"
+          class="package-parse-summary__item"
+        >
+          <strong>{{ summary.ruleId }}</strong>
+          <p>
+            {{ summary.parseMode }} · {{ summary.confidence }} · AI 参与 {{ summary.aiUsed }} ·
+            明细 {{ summary.detailRowCount }} 行
+          </p>
+          <p v-if="summary.packageIds.length">礼包 {{ summary.packageIds.join('、') }}</p>
+          <p v-if="summary.warnings.length" class="package-parse-summary__warning">
+            {{ summary.warnings.join('；') }}
+          </p>
+          <p v-if="summary.errors.length" class="package-parse-summary__error">
+            {{ summary.errors.join('；') }}
+          </p>
+        </article>
+      </div>
+    </section>
 
     <div class="panel-toolbar result-toolbar">
       <div class="toolbar-copy">

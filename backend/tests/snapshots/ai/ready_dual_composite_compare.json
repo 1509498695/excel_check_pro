@@ -50,6 +50,7 @@
         "expected_value_mode": null,
         "group_id": "ungrouped",
         "key_check_mode": "baseline_only",
+        "left_count_field": null,
         "left_filters": [
           {
             "condition_id": "<dynamic>",
@@ -61,9 +62,13 @@
             "value_source": "literal"
           }
         ],
+        "left_item_field": null,
         "left_key_field": "INT_Level",
+        "left_package_field": null,
         "mapping_config": null,
         "operator": null,
+        "package_id_filter": null,
+        "package_parse_config": null,
         "pipeline_config": null,
         "reference_variable_tag": "bpcherks",
         "right_filters": [
@@ -77,7 +82,9 @@
             "value_source": "literal"
           }
         ],
+        "right_items_field": null,
         "right_key_field": "INT_Level",
+        "right_package_field": null,
         "rule_id": "<dynamic>",
         "rule_name": "level_reward-INT_Level-两组配置比对",
         "rule_type": "dual_composite_compare",

@@ -109,6 +109,9 @@ function isInvalidOrchestrationRule(
   if (rule.rule_type === 'multi_composite_mapping_check') {
     return !isValidMultiCompositeMappingConfig(rule.mapping_config, variableMap)
   }
+  if (rule.rule_type === 'package_items_compare') {
+    return isInvalidPackageItemsRule(rule, variableMap)
+  }
 
   const targetTag = rule.target_variable_tag.trim()
   const variable = variableMap.get(targetTag)
@@ -129,6 +132,43 @@ function isInvalidOrchestrationRule(
     return !isValidDualCompositeRule(rule, variableMap)
   }
   return true
+}
+
+function isInvalidPackageItemsRule(
+  rule: FixedRuleDefinition,
+  variableMap: Map<string, VariableTag>,
+): boolean {
+  if (!rule.rule_name.trim()) {
+    return true
+  }
+  const referenceTag = rule.reference_variable_tag?.trim() ?? ''
+  if (!referenceTag || !isCompositeVariable(variableMap.get(referenceTag))) {
+    return true
+  }
+  if (
+    !rule.left_package_field?.trim() ||
+    !rule.left_item_field?.trim() ||
+    !rule.left_count_field?.trim() ||
+    !rule.right_package_field?.trim() ||
+    !rule.right_items_field?.trim()
+  ) {
+    return true
+  }
+  const parseConfig = rule.package_parse_config
+  if (!parseConfig?.feishu_source_id?.trim() || !parseConfig.feishu_sheet_id?.trim()) {
+    return true
+  }
+  if (!['auto', 'rule', 'ai'].includes(parseConfig.parse_strategy ?? 'auto')) {
+    return true
+  }
+  if (!['auto', 'enabled', 'disabled'].includes(parseConfig.ai_parse_mode ?? 'auto')) {
+    return true
+  }
+  const validationScope = parseConfig.validation_scope ?? 'all'
+  if (!['all', 'specified'].includes(validationScope)) {
+    return true
+  }
+  return validationScope === 'specified' && !parseConfig.package_id_filter?.trim()
 }
 
 function isInvalidSingleVariableRule(

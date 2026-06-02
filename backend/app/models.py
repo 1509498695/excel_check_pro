@@ -194,6 +194,7 @@ class ExecutionResultItemRecord(Base):
     row_index: Mapped[int] = mapped_column(default=0)
     raw_value_json: Mapped[str] = mapped_column(Text, default="null")
     display_value_json: Mapped[str] = mapped_column(Text, default="null")
+    extra_json: Mapped[str] = mapped_column(Text, default="{}")
     message: Mapped[str] = mapped_column(Text, default="")
 
     run: Mapped[ExecutionRunRecord] = relationship(back_populates="items")

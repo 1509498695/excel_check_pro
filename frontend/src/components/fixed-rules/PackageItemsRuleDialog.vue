@@ -3,6 +3,7 @@ import type {
   PackageItemsFieldMapping,
   FixedRuleGroup,
   PackageAiParseMode,
+  PackageItemsPreviewRow,
   PackageParseStrategy,
 } from '../../types/fixedRules'
 import type { DataSource, SourceMetadata, SourceSheetMetadata, VariableTag } from '../../types/workbench'
@@ -35,12 +36,15 @@ export interface PackageItemsRuleDialogPreview {
   sheetId?: string
   parseStrategy?: PackageParseStrategy
   aiParseMode?: PackageAiParseMode
+  validationScope?: PackageItemsValidationScope
+  packageIdFilter?: string
   parseMode?: 'rule' | 'ai'
   aiUsed?: boolean
   confidence?: number
   packageIds?: string[]
   detailRowCount?: number
   errors?: string[]
+  previewRows?: PackageItemsPreviewRow[]
 }
 
 export interface PackageItemsRuleDialogProps {
@@ -61,7 +65,7 @@ export interface PackageItemsRuleDialogProps {
 </script>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, reactive, watch } from 'vue'
+import { computed, reactive, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 
 const props = withDefaults(defineProps<PackageItemsRuleDialogProps>(), {
@@ -85,7 +89,6 @@ const emit = defineEmits<{
   (event: 'refresh-sheets', sourceId: string, forceRefresh?: boolean): void
 }>()
 
-const PREVIEW_DEBOUNCE_MS = 450
 const DEFAULT_RULE_DESCRIPTION = '登峰礼包规划表与项目礼包配置表一致性校验规则'
 const RULE_DESCRIPTION_MAX_LENGTH = 500
 
@@ -94,7 +97,6 @@ const uiState = reactive({
   enabled: true,
   ruleDescription: DEFAULT_RULE_DESCRIPTION,
 })
-let previewTimer: ReturnType<typeof setTimeout> | null = null
 
 const dialogVisible = computed({
   get: () => props.visible,
@@ -218,11 +220,14 @@ const currentPreview = computed(() => {
   if (!preview) {
     return null
   }
+  const packageFilter = form.validation_scope === 'specified' ? normalizePackageIdFilter(form.package_id_filter) : ''
   if (
     preview.sourceId !== form.feishu_source_id ||
     preview.sheetId !== form.feishu_sheet_id ||
     preview.parseStrategy !== form.parse_strategy ||
-    preview.aiParseMode !== form.ai_parse_mode
+    preview.aiParseMode !== form.ai_parse_mode ||
+    preview.validationScope !== form.validation_scope ||
+    (preview.packageIdFilter ?? '') !== packageFilter
   ) {
     return null
   }
@@ -247,6 +252,33 @@ const previewWarnings = computed(() => currentPreview.value?.warnings ?? [])
 
 const previewErrors = computed(() => currentPreview.value?.errors ?? [])
 
+const previewRows = computed(() =>
+  isPreviewSuccessful.value ? currentPreview.value?.previewRows ?? [] : [],
+)
+
+const previewFieldMappingLines = computed(() => {
+  if (!isPreviewSuccessful.value) {
+    return []
+  }
+  const mapping = currentPreview.value?.fieldMapping
+  if (!mapping) {
+    return []
+  }
+  const packageColumn = mapping.package_id_column ?? mapping.package_id
+  const itemColumn = mapping.item_id_column ?? mapping.item_id
+  const countColumn = mapping.count_column ?? mapping.count
+  const lines = [
+    packageColumn ? `礼包 ID 列：${packageColumn}` : '',
+    itemColumn ? `道具 ID 列：${itemColumn}` : '',
+    countColumn ? `数量列：${countColumn}` : '',
+    mapping.header_row_index ? `表头行：${mapping.header_row_index}` : '',
+    mapping.detail_start_row_index && mapping.detail_end_row_index
+      ? `明细范围：${mapping.detail_start_row_index}-${mapping.detail_end_row_index} 行`
+      : '',
+  ].filter((line): line is string => Boolean(line))
+  return lines
+})
+
 const isAiPreviewMode = computed(() => currentPreview.value?.parseMode === 'ai')
 
 const ruleDescriptionCount = computed(() => uiState.ruleDescription.length)
@@ -261,16 +293,9 @@ const previewInfoLines = computed(() => {
     ]
   }
   if (previewErrorMessage.value) {
-    return [
-      previewErrorMessage.value,
-      '识别到礼包 ID（预览）：26042411、26042412、26042413、26042414、26042415',
-      '识别到明细行数：45 行',
-    ]
+    return [previewErrorMessage.value]
   }
-  return [
-    '识别到礼包 ID（预览）：26042411、26042412、26042413、26042414、26042415',
-    '识别到明细行数：45 行',
-  ]
+  return ['尚未生成当前配置的解析预览。']
 })
 
 const previewModeLabel = computed(() => {
@@ -383,23 +408,6 @@ watch(
   },
 )
 
-watch(
-  [
-    () => props.visible,
-    () => form.feishu_source_id,
-    () => form.feishu_sheet_id,
-    () => form.parse_strategy,
-    () => form.ai_parse_mode,
-  ],
-  () => {
-    schedulePreview()
-  },
-)
-
-onBeforeUnmount(() => {
-  clearPreviewTimer()
-})
-
 function createEmptyDraft(): PackageItemsRuleDialogDraft {
   return {
     group_id: '',
@@ -457,11 +465,7 @@ function resetForm(): void {
 function buildPayload(): PackageItemsRuleDialogDraft {
   const packageFilter =
     form.validation_scope === 'specified'
-      ? form.package_id_filter
-          .split(',')
-          .map((item) => item.trim())
-          .filter(Boolean)
-          .join(', ')
+      ? normalizePackageIdFilter(form.package_id_filter)
       : ''
 
   return {
@@ -509,12 +513,10 @@ function validateForSave(payload: PackageItemsRuleDialogDraft): boolean {
 }
 
 function handleClose(): void {
-  clearPreviewTimer()
   emit('close')
 }
 
 function handlePreview(): void {
-  clearPreviewTimer()
   if (!props.backendReady) {
     ElMessage.info('IAP礼包校验后端暂未接入，暂不可生成解析预览。')
     return
@@ -540,23 +542,6 @@ function handleSave(): void {
     return
   }
   emit('save', payload)
-}
-
-function schedulePreview(): void {
-  clearPreviewTimer()
-  if (!props.backendReady || !props.visible || !form.feishu_source_id || !form.feishu_sheet_id) {
-    return
-  }
-  previewTimer = setTimeout(() => {
-    emit('preview', buildPayload())
-  }, PREVIEW_DEBOUNCE_MS)
-}
-
-function clearPreviewTimer(): void {
-  if (previewTimer) {
-    clearTimeout(previewTimer)
-    previewTimer = null
-  }
 }
 
 function requestSheetRefreshIfNeeded(sourceId: string): void {
@@ -608,6 +593,15 @@ function getVariablePathSummary(
   return `${variable.source_id} · ${variable.sheet} · ${
     preferredSummary || getVariableFieldSummary(variable)
   }`
+}
+
+function normalizePackageIdFilter(value: string): string {
+  return value
+    .replace(/，/g, ',')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .join(', ')
 }
 </script>
 
@@ -825,11 +819,11 @@ function getVariablePathSummary(
         <div class="package-items-rule-dialog__section-head">
           <div>
             <h3>校验范围</h3>
-            <p>默认检查全部礼包，也可只检查指定礼包 ID</p>
+            <p>默认检查飞书页签全部礼包，也可只检查指定礼包 ID</p>
           </div>
         </div>
         <el-radio-group v-model="form.validation_scope">
-          <el-radio-button label="all">全部礼包</el-radio-button>
+          <el-radio-button label="all">飞书页签全部礼包</el-radio-button>
           <el-radio-button label="specified">指定礼包 ID</el-radio-button>
         </el-radio-group>
         <el-input
@@ -862,6 +856,27 @@ function getVariablePathSummary(
           <div v-for="line in previewInfoLines" :key="line">{{ line }}</div>
           <div v-if="isPreviewSuccessful" class="package-items-rule-dialog__preview-meta">
             解析方式：{{ previewModeLabel }} · 置信度：{{ previewConfidenceLabel }} · 是否使用 AI：{{ previewAiUsedLabel }}
+          </div>
+          <div v-if="previewFieldMappingLines.length" class="package-items-rule-dialog__preview-meta">
+            <div v-for="line in previewFieldMappingLines" :key="line">{{ line }}</div>
+          </div>
+          <div v-if="previewRows.length" class="package-items-rule-dialog__preview-rows">
+            <div class="package-items-rule-dialog__preview-row package-items-rule-dialog__preview-row--head">
+              <span>行号</span>
+              <span>礼包 ID</span>
+              <span>道具 ID</span>
+              <span>数量</span>
+            </div>
+            <div
+              v-for="row in previewRows"
+              :key="`${row.row_index}-${row.package_id}-${row.item_id}`"
+              class="package-items-rule-dialog__preview-row"
+            >
+              <span>{{ row.row_index }}</span>
+              <span>{{ row.package_id }}</span>
+              <span>{{ row.item_id }}</span>
+              <span>{{ row.count }}</span>
+            </div>
           </div>
         </div>
         <div v-if="isPreviewSuccessful && isAiPreviewMode" class="package-items-rule-dialog__ai-note">
@@ -1092,6 +1107,34 @@ function getVariablePathSummary(
   margin-top: 4px;
   color: var(--color-ink-500, #64748b);
   font-size: 12px;
+}
+
+.package-items-rule-dialog__preview-rows {
+  margin-top: 10px;
+  overflow: hidden;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+}
+
+.package-items-rule-dialog__preview-row {
+  display: grid;
+  grid-template-columns: 80px minmax(140px, 1fr) minmax(120px, 1fr) minmax(80px, 0.7fr);
+  gap: 10px;
+  border-top: 1px solid var(--color-border, #e5e7eb);
+  padding: 6px 10px;
+  color: var(--color-ink-700, #334155);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.package-items-rule-dialog__preview-row:first-child {
+  border-top: 0;
+}
+
+.package-items-rule-dialog__preview-row--head {
+  background: #eef2f7;
+  color: var(--color-ink-500, #64748b);
+  font-weight: 600;
 }
 
 .package-items-rule-dialog__textarea-wrap {

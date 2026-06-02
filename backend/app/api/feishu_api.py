@@ -7,7 +7,7 @@ import html
 import logging
 import secrets
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
@@ -34,6 +34,7 @@ from backend.app.integrations.feishu_client import (
     get_current_bot_open_id,
     get_oauth_user_info,
     get_spreadsheet_metadata,
+    resolve_wiki_sheet_locator,
     resolve_wiki_sheet_locator_with_user_token,
 )
 from backend.app.loaders.feishu_reader import (
@@ -131,24 +132,16 @@ async def check_feishu_source_permission(
     if source_status is not None:
         return _ok(source_status)
 
-    reusable_record = await get_success_authorization_by_token(
+    reusable_record = await _get_reusable_authorization_record(
         db,
         project_id,
-        locator.spreadsheet_token,
+        locator,
     )
     if reusable_record is not None:
-        return _ok(
-            {
-                "status": AUTHORIZED_STATUS,
-                "spreadsheet_token": reusable_record.spreadsheet_token,
-                "sheet_url": reusable_record.sheet_url or locator.normalized_url,
-                "title": reusable_record.sheet_title,
-                "reused_authorization": True,
-            }
-        )
+        return _ok(_build_reused_authorization_response(reusable_record, locator))
 
     try:
-        metadata = await get_spreadsheet_metadata(db, project_id, locator)
+        readable_sheet = await _read_authorized_sheet(db, project_id, locator)
     except FeishuClientError as exc:
         return _ok(_map_feishu_permission_error(exc))
 
@@ -156,21 +149,14 @@ async def check_feishu_source_permission(
         db,
         project_id=project_id,
         source_id=payload.source_id.strip(),
-        spreadsheet_token=metadata.token or locator.spreadsheet_token,
-        sheet_url=locator.normalized_url,
-        sheet_title=metadata.title,
+        spreadsheet_token=readable_sheet.spreadsheet_token,
+        sheet_url=readable_sheet.sheet_url,
+        sheet_title=readable_sheet.title,
         status=AUTHORIZATION_STATUS_AUTHORIZED,
     )
     await db.commit()
 
-    return _ok(
-        {
-            "status": AUTHORIZED_STATUS,
-            "spreadsheet_token": record.spreadsheet_token,
-            "sheet_url": record.sheet_url,
-            "title": record.sheet_title,
-        }
-    )
+    return _ok(_build_authorized_sheet_response(record))
 
 
 @router.post("/sources/send-authorization-card")
@@ -197,6 +183,24 @@ async def send_feishu_source_authorization_card(
                 "message": "当前项目尚未完整配置飞书机器人应用、密钥或默认群。",
             }
         )
+
+    try:
+        readable_sheet = await _read_authorized_sheet(db, project_id, locator)
+    except FeishuClientError:
+        readable_sheet = None
+
+    if readable_sheet is not None:
+        record = await upsert_authorization_record(
+            db,
+            project_id=project_id,
+            source_id=source_id,
+            spreadsheet_token=readable_sheet.spreadsheet_token,
+            sheet_url=readable_sheet.sheet_url,
+            sheet_title=readable_sheet.title,
+            status=AUTHORIZATION_STATUS_AUTHORIZED,
+        )
+        await db.commit()
+        return _ok(_build_authorized_sheet_response(record))
 
     callback_url = _resolve_feishu_oauth_callback_url(request)
 
@@ -331,6 +335,33 @@ async def handle_feishu_source_oauth_callback(
         record.spreadsheet_token = drive_locator.spreadsheet_token
         record.sheet_url = drive_locator.normalized_url
     except FeishuClientError as exc:
+        if _is_share_permission_error(exc):
+            readable_sheet = await _try_read_authorized_sheet(
+                db,
+                record.project_id,
+                drive_locator if "drive_locator" in locals() else record.sheet_url,
+            )
+            if readable_sheet is not None:
+                record.spreadsheet_token = readable_sheet.spreadsheet_token
+                record.sheet_url = readable_sheet.sheet_url
+                record.sheet_title = readable_sheet.title or record.sheet_title
+                await mark_authorization_success(
+                    db,
+                    record,
+                    authorized_by_open_id=(
+                        user_info.open_id if "user_info" in locals() else None
+                    ),
+                    bot_open_id=bot_open_id if "bot_open_id" in locals() else None,
+                )
+                await db.commit()
+                success_message = "飞书表格授权成功，机器人已可读取该配置表。"
+                await _send_authorization_notice(
+                    db,
+                    project_id=record.project_id,
+                    chat_id=record.chat_id,
+                    text=success_message,
+                )
+                return _authorization_success_page(success_message)
         message = _map_oauth_callback_error(exc)
         await mark_authorization_failed(
             db,
@@ -393,10 +424,132 @@ async def _get_project_name(db: AsyncSession, project_id: int) -> str:
 
 async def _try_get_sheet_title(db: AsyncSession, project_id: int, locator) -> str:
     try:
-        metadata = await get_spreadsheet_metadata(db, project_id, locator)
+        readable_sheet = await _read_authorized_sheet(db, project_id, locator)
     except FeishuClientError:
         return ""
-    return metadata.title
+    return readable_sheet.title
+
+
+class _AuthorizedSheet:
+    def __init__(
+        self,
+        *,
+        spreadsheet_token: str,
+        sheet_url: str,
+        title: str,
+    ) -> None:
+        self.spreadsheet_token = spreadsheet_token
+        self.sheet_url = sheet_url
+        self.title = title
+
+
+async def _read_authorized_sheet(
+    db: AsyncSession,
+    project_id: int,
+    locator: FeishuSheetLocator | str,
+) -> _AuthorizedSheet:
+    resolved_locator = await resolve_wiki_sheet_locator(db, project_id, locator)
+    metadata = await get_spreadsheet_metadata(db, project_id, resolved_locator)
+    spreadsheet_token = metadata.token or resolved_locator.spreadsheet_token
+    return _AuthorizedSheet(
+        spreadsheet_token=spreadsheet_token,
+        sheet_url=_build_authorized_sheet_url(
+            metadata.url,
+            resolved_locator,
+            spreadsheet_token,
+        ),
+        title=metadata.title,
+    )
+
+
+async def _try_read_authorized_sheet(
+    db: AsyncSession,
+    project_id: int,
+    locator: FeishuSheetLocator | str,
+) -> _AuthorizedSheet | None:
+    try:
+        return await _read_authorized_sheet(db, project_id, locator)
+    except FeishuClientError:
+        return None
+
+
+def _build_authorized_sheet_url(
+    metadata_url: str,
+    resolved_locator: FeishuSheetLocator,
+    spreadsheet_token: str,
+) -> str:
+    base_url = (metadata_url or "").strip() or resolved_locator.normalized_url
+    parsed = urlparse(base_url)
+    if not parsed.scheme or not parsed.netloc:
+        return resolved_locator.normalized_url
+    if not resolved_locator.sheet_id:
+        return base_url
+    query_pairs = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key != "sheet"
+    ]
+    query_pairs.append(("sheet", resolved_locator.sheet_id))
+    path = parsed.path or f"/sheets/{spreadsheet_token}"
+    return urlunparse(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            path,
+            "",
+            urlencode(query_pairs),
+            "",
+        )
+    )
+
+
+async def _get_reusable_authorization_record(
+    db: AsyncSession,
+    project_id: int,
+    locator: FeishuSheetLocator,
+) -> FeishuSheetAuthorizationRecord | None:
+    reusable_record = await get_success_authorization_by_token(
+        db,
+        project_id,
+        locator.spreadsheet_token,
+    )
+    if reusable_record is not None:
+        return reusable_record
+    try:
+        resolved_locator = await resolve_wiki_sheet_locator(db, project_id, locator)
+    except FeishuClientError:
+        return None
+    if resolved_locator.spreadsheet_token == locator.spreadsheet_token:
+        return None
+    return await get_success_authorization_by_token(
+        db,
+        project_id,
+        resolved_locator.spreadsheet_token,
+    )
+
+
+def _build_reused_authorization_response(
+    record: FeishuSheetAuthorizationRecord,
+    locator: FeishuSheetLocator,
+) -> dict[str, Any]:
+    return {
+        "status": AUTHORIZED_STATUS,
+        "spreadsheet_token": record.spreadsheet_token,
+        "sheet_url": record.sheet_url or locator.normalized_url,
+        "title": record.sheet_title,
+        "reused_authorization": True,
+    }
+
+
+def _build_authorized_sheet_response(
+    record: FeishuSheetAuthorizationRecord,
+) -> dict[str, Any]:
+    return {
+        "status": AUTHORIZED_STATUS,
+        "spreadsheet_token": record.spreadsheet_token,
+        "sheet_url": record.sheet_url,
+        "title": record.sheet_title,
+    }
 
 
 async def _resolve_record_locator_for_oauth_callback(
@@ -563,11 +716,6 @@ def _build_permission_response_from_source_record(
             "chat_id": record.chat_id,
             "message_id": record.message_id,
             "message": "授权请求已发送到群，等待有权限的成员完成授权。",
-        }
-    if record.status in {AUTHORIZATION_STATUS_AUTHORIZATION_FAILED, "failed"}:
-        return {
-            "status": "authorization_failed",
-            "message": record.error_message or "授权失败，请重新发送授权请求。",
         }
     return None
 

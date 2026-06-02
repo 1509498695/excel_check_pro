@@ -1490,9 +1490,9 @@ async def test_feishu_column_preview_returns_rows_with_real_row_index(
     assert payload["sheet"] == "Preview"
     assert payload["column"] == "name"
     assert payload["preview_limit"] == 3
-    assert payload["total_rows"] == 2
+    assert payload["total_rows"] == 5
     assert payload["loaded_rows"] == 2
-    assert payload["loaded_all_rows"] is True
+    assert payload["loaded_all_rows"] is False
     assert payload["preview_rows"] == [
         {"row_index": 2, "value": "Alpha"},
         {"row_index": 6, "value": "Omega"},

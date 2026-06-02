@@ -236,7 +236,7 @@ def test_build_project_check_card_truncates_abnormal_results() -> None:
     )
     contents = json.dumps(card, ensure_ascii=False)
     assert "[演示项目] 项目校验完成" in contents
-    assert f"更多 3 条" in contents
+    assert "更多 3 条" in contents
     # 每条预览仍应出现
     for i in range(_CARD_PREVIEW_LIMIT):
         assert f"R{i}" in contents
@@ -257,7 +257,7 @@ def test_build_project_check_card_truncates_failed_sources() -> None:
     )
     contents = json.dumps(card, ensure_ascii=False)
     assert "**失败数据源**" in contents
-    assert f"更多 2 条" in contents
+    assert "更多 2 条" in contents
 
 
 def test_build_project_check_card_omits_action_when_no_url() -> None:

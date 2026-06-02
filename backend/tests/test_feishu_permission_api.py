@@ -328,6 +328,147 @@ async def test_check_permission_reuses_authorized_record_without_calling_feishu(
 
 
 @pytest.mark.anyio
+async def test_check_permission_reuses_wiki_real_sheet_token_authorization(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id)
+    async with async_session_factory() as session:
+        session.add(
+            FeishuSheetAuthorizationRecord(
+                project_id=test_project_id,
+                source_id="old_wiki_source",
+                spreadsheet_token="shtcnreal456",
+                sheet_url="https://demo.feishu.cn/sheets/shtcnreal456?sheet=gid001",
+                sheet_title="Wiki 真实表",
+                status=AUTHORIZATION_STATUS_AUTHORIZED,
+            )
+        )
+        await session.commit()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        if request.url.path == "/open-apis/wiki/v2/spaces/get_node":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "node": {
+                            "node_token": "wikcnabc123",
+                            "obj_token": "shtcnreal456",
+                            "obj_type": "sheet",
+                        }
+                    },
+                },
+            )
+        raise AssertionError(f"不应读取真实 Sheet 元数据：{request.url}")
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/feishu/sources/check-permission",
+        json={
+            "source_id": "new_wiki_source",
+            "sheet_url": "https://demo.feishu.cn/wiki/wikcnabc123?sheet=gid001",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "status": "authorized",
+        "spreadsheet_token": "shtcnreal456",
+        "sheet_url": "https://demo.feishu.cn/sheets/shtcnreal456?sheet=gid001",
+        "title": "Wiki 真实表",
+        "reused_authorization": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_check_permission_repairs_failed_wiki_record_when_bot_can_read(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id)
+    async with async_session_factory() as session:
+        await upsert_authorization_record(
+            session,
+            project_id=test_project_id,
+            source_id="feishu_items",
+            spreadsheet_token="wikcnabc123",
+            sheet_url="https://demo.feishu.cn/wiki/wikcnabc123?sheet=gid001",
+            sheet_title="旧失败表",
+            status=AUTHORIZATION_STATUS_AUTHORIZATION_FAILED,
+            error_message="授权失败：Permission denied",
+        )
+        await session.commit()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        if request.url.path == "/open-apis/wiki/v2/spaces/get_node":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "node": {
+                            "node_token": "wikcnabc123",
+                            "obj_token": "shtcnreal456",
+                            "obj_type": "sheet",
+                        }
+                    },
+                },
+            )
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnreal456":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "spreadsheet": {
+                            "token": "shtcnreal456",
+                            "title": "已可读表",
+                            "url": "https://demo.feishu.cn/sheets/shtcnreal456",
+                        }
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/feishu/sources/check-permission",
+        json={
+            "source_id": "feishu_items",
+            "sheet_url": "https://demo.feishu.cn/wiki/wikcnabc123?sheet=gid001",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "status": "authorized",
+        "spreadsheet_token": "shtcnreal456",
+        "sheet_url": "https://demo.feishu.cn/sheets/shtcnreal456?sheet=gid001",
+        "title": "已可读表",
+    }
+    async with async_session_factory() as session:
+        record = await get_authorization_by_source(
+            session,
+            test_project_id,
+            "feishu_items",
+        )
+    assert record is not None
+    assert record.status == AUTHORIZATION_STATUS_AUTHORIZED
+    assert record.spreadsheet_token == "shtcnreal456"
+    assert record.error_message == ""
+
+
+@pytest.mark.anyio
 async def test_authorization_table_allows_multiple_source_ids_for_same_token(
     test_project_id: int,
 ) -> None:
@@ -512,7 +653,7 @@ async def test_send_authorization_card_uses_request_callback_when_not_configured
         if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
             return _token_response()
         if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnperm123":
-            return _spreadsheet_response("配置校验表")
+            return httpx.Response(403, json={"code": 1254030, "msg": "permission denied"})
         return httpx.Response(404)
 
     async def _fake_send_card(*, db, project_id, chat_id, card):  # noqa: ANN001
@@ -596,6 +737,73 @@ async def test_send_authorization_card_returns_invalid_url(
 
 
 @pytest.mark.anyio
+async def test_send_authorization_card_returns_authorized_when_bot_can_read(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id, default_chat_id="oc_default")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        if request.url.path == "/open-apis/wiki/v2/spaces/get_node":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "node": {
+                            "node_token": "wikcnabc123",
+                            "obj_token": "shtcnreal456",
+                            "obj_type": "sheet",
+                        }
+                    },
+                },
+            )
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnreal456":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "spreadsheet": {
+                            "token": "shtcnreal456",
+                            "title": "已授权 Wiki 表",
+                            "url": "https://demo.feishu.cn/sheets/shtcnreal456",
+                        }
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    async def _unexpected_send_card(*, db, project_id, chat_id, card):  # noqa: ANN001
+        raise AssertionError("机器人已可读时不应发送授权卡片")
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr(
+        "backend.app.api.feishu_api.send_card_to_chat",
+        _unexpected_send_card,
+    )
+
+    response = await auth_client.post(
+        "/api/v1/feishu/sources/send-authorization-card",
+        json={
+            "source_id": "feishu_items",
+            "sheet_url": "https://demo.feishu.cn/wiki/wikcnabc123?sheet=gid001",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "status": "authorized",
+        "spreadsheet_token": "shtcnreal456",
+        "sheet_url": "https://demo.feishu.cn/sheets/shtcnreal456?sheet=gid001",
+        "title": "已授权 Wiki 表",
+    }
+
+
+@pytest.mark.anyio
 async def test_send_authorization_card_sends_card_and_persists_state_hash(
     auth_client: AsyncClient,
     test_project_id: int,
@@ -623,7 +831,7 @@ async def test_send_authorization_card_sends_card_and_persists_state_hash(
         if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
             return _token_response()
         if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnperm123":
-            return _spreadsheet_response("配置校验表")
+            return httpx.Response(403, json={"code": 1254030, "msg": "permission denied"})
         return httpx.Response(404)
 
     async def _fake_send_card(*, db, project_id, chat_id, card):  # noqa: ANN001
@@ -657,7 +865,7 @@ async def test_send_authorization_card_sends_card_and_persists_state_hash(
     card_text = card["elements"][0]["text"]["content"]
     assert "**项目：** test-project" in card_text
     assert "**数据源：** feishu_items" in card_text
-    assert "**表格：** 配置校验表" in card_text
+    assert "**表格：** https://demo.feishu.cn/sheets/shtcnperm123?sheet=gid001" in card_text
     assert "仅申请 view 只读权限，不会修改表格内容" in card_text
     button_url = card["elements"][1]["actions"][0]["url"]
     parsed_url = urlparse(button_url)
@@ -685,7 +893,7 @@ async def test_send_authorization_card_sends_card_and_persists_state_hash(
     assert record.message_id == "om_auth_card"
     assert record.state_expires_at is not None
     assert record.sheet_url == "https://demo.feishu.cn/sheets/shtcnperm123?sheet=gid001"
-    assert record.sheet_title == "配置校验表"
+    assert record.sheet_title == ""
     assert record.state_hash == hash_authorization_state(state)
     assert record.state_hash != state
 
@@ -823,7 +1031,7 @@ async def test_send_authorization_card_returns_send_failed_without_leaking_state
         if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
             return _token_response()
         if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnperm123":
-            return _spreadsheet_response("配置校验表")
+            return httpx.Response(403, json={"code": 1254030, "msg": "permission denied"})
         return httpx.Response(404)
 
     async def _explode_send_card(*, db, project_id, chat_id, card):  # noqa: ANN001
@@ -1110,6 +1318,74 @@ async def test_oauth_callback_missing_code_marks_authorization_failed(
     assert record.error_message == message
     assert record.state_hash == ""
     assert record.state_expires_at is None
+
+
+@pytest.mark.anyio
+async def test_oauth_callback_permission_denied_marks_success_when_bot_can_read(
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id, default_chat_id="oc_default")
+    await _seed_authorization_sent(test_project_id, state="state-readable-denied")
+    object.__setattr__(
+        settings,
+        "feishu_oauth_callback_url",
+        "https://example.com/api/v1/feishu/sources/oauth/callback",
+    )
+    notices: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/open-apis/authen/v2/oauth/token":
+            return httpx.Response(200, json={"access_token": "u_perm"})
+        if request.url.path == "/open-apis/authen/v1/user_info":
+            return httpx.Response(200, json={"code": 0, "data": {"open_id": "ou_user"}})
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        if request.url.path == "/open-apis/bot/v3/info":
+            return httpx.Response(
+                200,
+                json={"code": 0, "data": {"open_id": "ou_bot"}},
+            )
+        if request.url.path == "/open-apis/drive/v1/permissions/shtcnperm123/members":
+            return httpx.Response(403, json={"code": 1063002, "msg": "Permission denied"})
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnperm123":
+            return _spreadsheet_response("已可读配置表")
+        return httpx.Response(404)
+
+    async def _fake_send_text(*, db, project_id, chat_id, text):  # noqa: ANN001
+        notices.append(text)
+        return {"message_id": "om_notice", "raw": {}}
+
+    _install_mock_transport(monkeypatch, handler)
+    monkeypatch.setattr("backend.app.api.feishu_api.send_text_to_chat", _fake_send_text)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+    ) as client:
+        response = await client.get(
+            "/api/v1/feishu/sources/oauth/callback",
+            params={"code": "oauth-code", "state": "state-readable-denied"},
+        )
+
+    success_message = "飞书表格授权成功，机器人已可读取该配置表。"
+    assert response.status_code == 200
+    assert success_message in response.text
+    assert notices == [success_message]
+    async with async_session_factory() as session:
+        record = await get_authorization_by_source(
+            session,
+            test_project_id,
+            "feishu_items",
+        )
+    assert record is not None
+    assert record.status == AUTHORIZATION_STATUS_AUTHORIZED
+    assert record.error_message == ""
+    assert record.state_hash == ""
+    assert record.state_expires_at is None
+    assert record.authorized_by_open_id == "ou_user"
+    assert record.bot_open_id == "ou_bot"
+    assert record.sheet_title == "已可读配置表"
 
 
 @pytest.mark.anyio

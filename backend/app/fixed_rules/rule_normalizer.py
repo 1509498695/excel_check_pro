@@ -26,6 +26,7 @@ from backend.app.fixed_rules.config_common import (
 )
 from backend.app.fixed_rules.dual_composite_normalizer import _normalize_dual_composite_rule
 from backend.app.fixed_rules.mapping_rule_normalizer import _normalize_multi_composite_mapping_config
+from backend.app.fixed_rules.package_items_normalizer import _normalize_package_items_compare_rule
 from backend.app.fixed_rules.pipeline_rule_normalizer import _normalize_multi_composite_pipeline_config
 
 
@@ -73,8 +74,11 @@ def _normalize_rules(
             "multi_composite_pipeline_check",
             "multi_composite_mapping_check",
         }
+        is_runtime_package_rule = (
+            rule_type == "package_items_compare" and rule.package_parse_config is not None
+        )
         target_variable = variable_map.get(target_variable_tag)
-        if not is_node_driven_rule:
+        if not is_node_driven_rule and not is_runtime_package_rule:
             if not target_variable_tag:
                 raise ValueError(f"???? '{rule_id}' ?? target_variable_tag?")
             if target_variable is None:
@@ -100,19 +104,30 @@ def _normalize_rules(
         normalized_pipeline_config: MultiCompositePipelineConfig | None = None
         normalized_mapping_config: MultiCompositeMappingConfig | None = None
         normalized_display_field: str | None = None
+        normalized_package_parse_config = rule.package_parse_config
+        normalized_left_package_field: str | None = None
+        normalized_left_item_field: str | None = None
+        normalized_left_count_field: str | None = None
+        normalized_right_package_field: str | None = None
+        normalized_right_items_field: str | None = None
+        normalized_package_id_filter: str | None = None
 
-        if not is_node_driven_rule:
+        if not is_node_driven_rule and target_variable is not None:
             if variable_kind == "single" and rule_type == "composite_condition_check":
                 raise ValueError(
                     f"???? '{rule_id}' ???????? '{target_variable_tag}'????????????????"
                 )
-            if variable_kind == "single" and rule_type == "dual_composite_compare":
+            if variable_kind == "single" and rule_type in {
+                "dual_composite_compare",
+                "package_items_compare",
+            }:
                 raise ValueError(
                     f"规则 '{rule_id}' 引用了单变量 '{target_variable_tag}'，不能保存双组合变量比对。"
                 )
             if variable_kind == "composite" and rule_type not in {
                 "composite_condition_check",
                 "dual_composite_compare",
+                "package_items_compare",
             }:
                 raise ValueError(
                     f"规则 '{rule_id}' 引用了组合变量 '{target_variable_tag}'，不能保存单变量规则。"
@@ -232,6 +247,28 @@ def _normalize_rules(
                 right_filters=rule.right_filters,
                 variable_map=variable_map,
             )
+        elif rule_type == "package_items_compare":
+            (
+                normalized_reference_variable_tag,
+                normalized_left_package_field,
+                normalized_right_package_field,
+                normalized_left_item_field,
+                normalized_left_count_field,
+                normalized_right_items_field,
+                normalized_package_id_filter,
+            ) = _normalize_package_items_compare_rule(
+                rule_id=rule_id,
+                left_variable=target_variable,
+                right_variable_tag=reference_variable_tag,
+                left_package_field=rule.left_package_field,
+                right_package_field=rule.right_package_field,
+                left_item_field=rule.left_item_field,
+                left_count_field=rule.left_count_field,
+                right_items_field=rule.right_items_field,
+                package_id_filter=rule.package_id_filter,
+                variable_map=variable_map,
+                allow_runtime_left_variable=is_runtime_package_rule,
+            )
         elif rule_type == "multi_composite_pipeline_check":
             normalized_pipeline_config = _normalize_multi_composite_pipeline_config(
                 rule_id=rule_id,
@@ -250,12 +287,14 @@ def _normalize_rules(
             )
             target_variable_tag = normalized_mapping_config.nodes[0].variable_tag
 
-        if not is_node_driven_rule:
+        if not is_node_driven_rule and target_variable is not None:
             normalized_display_field = _normalize_display_field(
                 rule_id=rule_id,
                 variable=target_variable,
                 display_field=rule.display_field,
             )
+        elif rule.display_field:
+            normalized_display_field = rule.display_field.strip() or None
 
         normalized_rules.append(
             FixedRuleDefinition(
@@ -282,6 +321,13 @@ def _normalize_rules(
                 right_filters=normalized_right_filters,
                 pipeline_config=normalized_pipeline_config,
                 mapping_config=normalized_mapping_config,
+                package_parse_config=normalized_package_parse_config,
+                left_package_field=normalized_left_package_field,
+                left_item_field=normalized_left_item_field,
+                left_count_field=normalized_left_count_field,
+                right_package_field=normalized_right_package_field,
+                right_items_field=normalized_right_items_field,
+                package_id_filter=normalized_package_id_filter,
             )
         )
         seen_rule_ids.add(rule_id)

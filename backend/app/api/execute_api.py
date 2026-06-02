@@ -17,6 +17,9 @@ from backend.app.auth.dependencies import (
 )
 from backend.app.database import get_db
 from backend.app.execution_pipeline import run_execution_pipeline
+from backend.app.fixed_rules.package_items_runtime import (
+    prepare_package_items_runtime_task_tree,
+)
 from backend.app.result_store import (
     fetch_execution_result_export,
     fetch_execution_result_page,
@@ -48,12 +51,26 @@ async def execute_engine(
         else None
     )
 
+    runtime_preparation = await prepare_package_items_runtime_task_tree(
+        task_tree,
+        db=db,
+        project_id=project_id,
+        user_id=ctx.user_id if ctx is not None else None,
+    )
+
     try:
-        execution_artifacts = run_execution_pipeline(task_tree, project_id=project_id)
+        execution_artifacts = run_execution_pipeline(
+            runtime_preparation.task_tree,
+            project_id=project_id,
+            preloaded_variable_frames=runtime_preparation.preloaded_variable_frames,
+        )
     except (ValueError, ImportError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    abnormal_results = execution_artifacts["abnormal_results"]
+    abnormal_results = [
+        *runtime_preparation.abnormal_results,
+        *execution_artifacts["abnormal_results"],
+    ]
     elapsed_ms = int((time.perf_counter() - start) * 1000)
     total_rows_scanned = sum(
         len(frame) for frame in execution_artifacts["loaded_variables"].values()

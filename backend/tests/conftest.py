@@ -17,6 +17,7 @@ from sqlalchemy import delete
 from backend.app.auth.service import create_access_token, hash_password
 from backend.app.database import (
     Base,
+    _ensure_execution_result_extra_column,
     _ensure_feishu_bot_download_columns,
     async_session_factory,
     engine,
@@ -33,6 +34,7 @@ async def test_db():
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _ensure_execution_result_extra_column()
     await _ensure_feishu_bot_download_columns()
     async with async_session_factory() as session:
         for table in reversed(Base.metadata.sorted_tables):

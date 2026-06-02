@@ -14,6 +14,7 @@ from backend.app.services.package_items_ai_parse_cache import (
 from backend.app.services.package_items_ai_parser import PackageAiParseSuggestion
 from backend.app.services.package_items_parser import (
     PackageItemsAiParseCacheContext,
+    build_package_items_map,
     extract_package_items_by_ai_suggestion,
     parse_package_items_sheet_async,
     parse_package_items_sheet,
@@ -77,6 +78,42 @@ def test_parse_package_items_multiple_header_regions() -> None:
     assert [row.row_index for row in result.detail_rows] == [2, 5, 6]
 
 
+def test_parse_package_items_rows_can_be_grouped_as_item_map() -> None:
+    result = parse_package_items_sheet(
+        [
+            ["礼包id", "道具ID", "个数"],
+            ["26042411", "39", "8"],
+            ["26042411", "48", "25"],
+            ["package_id", "item_id", "count"],
+            ["26042412", "47", "145"],
+        ]
+    )
+
+    assert result.parse_status == "success"
+    assert build_package_items_map(result.rows) == {
+        "26042411": {"39": 8, "48": 25},
+        "26042412": {"47": 145},
+    }
+
+
+def test_parse_package_items_warns_duplicate_item_id_without_dropping_rows() -> None:
+    result = parse_package_items_sheet(
+        [
+            ["礼包id", "道具ID", "个数"],
+            ["26042411", "16001", "3"],
+            ["26042411", "16001", "4"],
+            ["26042412", "16001", "5"],
+        ]
+    )
+
+    assert result.parse_status == "success"
+    assert result.detail_row_count == 3
+    assert (
+        "识别到重复道具 ID：礼包 26042411 的道具 16001 在第 2 行和第 3 行重复。"
+        in result.warnings
+    )
+
+
 def test_parse_package_items_skips_empty_note_and_missing_key_rows() -> None:
     result = parse_package_items_sheet(
         [
@@ -99,6 +136,56 @@ def test_parse_package_items_skips_empty_note_and_missing_key_rows() -> None:
     assert "跳过第 4 行" in result.warnings[1]
     assert "跳过第 5 行" in result.warnings[2]
     assert "跳过第 6 行" in result.warnings[3]
+
+
+def test_parse_package_items_reports_invalid_item_id_and_count() -> None:
+    result = parse_package_items_sheet(
+        [
+            ["礼包id", "道具ID", "个数"],
+            ["26042411", "abc", "3"],
+            ["26042411", "16001", "三个"],
+        ]
+    )
+
+    assert result.parse_status == "failed"
+    assert result.rows == []
+    assert result.detail_rows == []
+    assert "跳过第 2 行：道具 ID 无法转换为整数。" in result.warnings
+    assert "跳过第 3 行：数量无法转换为整数。" in result.warnings
+    assert "未识别到有效明细行" in result.errors
+
+
+def test_parse_package_items_formula_text_still_fails_without_rendered_values() -> None:
+    result = parse_package_items_sheet(
+        [
+            ["礼包id", "道具ID", "道具名", "个数"],
+            ["26042411", "VLOOKUP(C2,'item'!B:H,2,FALSE)", "预备兵道具-1000", "3"],
+        ]
+    )
+
+    assert result.parse_status == "failed"
+    assert result.detail_row_count == 0
+    assert "跳过第 2 行：道具 ID 无法转换为整数。" in result.warnings
+    assert "未识别到有效明细行" in result.errors
+
+
+def test_parse_package_items_accepts_formatted_formula_values() -> None:
+    result = parse_package_items_sheet(
+        [
+            ["礼包id", "道具ID", "道具名", "个数"],
+            [26042411, 16001, "预备兵道具-1000", 3],
+            [26042411, "62", "训练加速分钟=60", "10"],
+        ]
+    )
+
+    assert result.parse_status == "success"
+    assert result.package_ids == ["26042411"]
+    assert [item.model_dump() for item in result.detail_ranges] == [
+        {"header_row": 1, "start_row": 2, "end_row": 3}
+    ]
+    assert result.detail_row_count == 2
+    assert [row.item_id for row in result.rows] == ["16001", "62"]
+    assert [row.count for row in result.rows] == [3, 10]
 
 
 def test_parse_package_items_recognizes_field_aliases_with_lower_confidence() -> None:
@@ -750,6 +837,23 @@ def test_extract_package_items_by_ai_suggestion_supports_multiple_ranges() -> No
     assert [row.count for row in result.rows] == [3, 5, 1]
 
 
+def test_extract_package_items_by_ai_suggestion_warns_duplicate_item_id() -> None:
+    result = extract_package_items_by_ai_suggestion(
+        [
+            ["礼包id", "道具ID", "个数"],
+            ["26042411", "16001", "3"],
+            ["26042411", "16001", "4"],
+        ],
+        _ai_suggestion(detail_ranges=[{"header_row": 1, "start_row": 2, "end_row": 3}]),
+    )
+
+    assert result.parse_status == "success"
+    assert result.detail_row_count == 2
+    assert result.warnings == [
+        "识别到重复道具 ID：礼包 26042411 的道具 16001 在第 2 行和第 3 行重复。"
+    ]
+
+
 def test_extract_package_items_by_ai_suggestion_uses_alias_fallback() -> None:
     result = extract_package_items_by_ai_suggestion(
         [
@@ -908,7 +1012,7 @@ async def test_preview_package_items_endpoint_returns_parse_summary(
 
     async def _read_values(*_args, **kwargs):
         assert kwargs["sheet_id"] == "gid_plan"
-        assert kwargs["value_render_option"] == "ToString"
+        assert kwargs["value_render_option"] == "FormattedValue"
         return FeishuSheetTable(
             spreadsheet_token="shtcnabc123",
             sheet_id="gid_plan",

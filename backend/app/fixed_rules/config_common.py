@@ -31,6 +31,7 @@ SUPPORTED_FIXED_RULE_TYPES = {
     "dual_composite_compare",
     "multi_composite_pipeline_check",
     "multi_composite_mapping_check",
+    "package_items_compare",
 }
 SUPPORTED_FIXED_RULE_OPERATORS = {"eq", "ne", "gt", "lt"}
 SUPPORTED_COMPOSITE_FILTER_OPERATORS = {

@@ -33,7 +33,17 @@ export function getAutoSavePayload(state: WorkbenchState): Record<string, unknow
 }
 
 export async function saveConfigNowAction(state: WorkbenchState): Promise<void> {
-  await saveWorkbenchConfig(getAutoSavePayload(state))
+  state.autoSaveStatus = 'saving'
+  state.autoSaveError = ''
+  try {
+    await saveWorkbenchConfig(getAutoSavePayload(state))
+    state.autoSaveStatus = 'saved'
+    state.autoSaveSavedAt = Date.now()
+  } catch (error) {
+    state.autoSaveStatus = 'failed'
+    state.autoSaveError = error instanceof Error ? error.message : '保存个人校验配置失败。'
+    throw error
+  }
 }
 
 export function scheduleAutoSaveAction(state: WorkbenchPersistenceContext): void {
@@ -41,8 +51,9 @@ export function scheduleAutoSaveAction(state: WorkbenchPersistenceContext): void
     clearTimeout(state._autoSaveTimer)
   }
   state._autoSaveTimer = setTimeout(() => {
-    saveWorkbenchConfig(getAutoSavePayload(state)).catch(() => {
-      /* 静默失败 */
+    state._autoSaveTimer = undefined
+    saveConfigNowAction(state).catch(() => {
+      /* 自动保存失败仅更新状态，不打断用户输入。 */
     })
   }, 2000)
 }
@@ -69,6 +80,9 @@ export async function loadFromServerAction(state: WorkbenchState): Promise<void>
     state.selectedLocalPathReplacementPreset = null
     state.svnPathReplacementPresets = []
     state.selectedSvnPathReplacementPreset = null
+    state.autoSaveStatus = 'idle'
+    state.autoSaveError = ''
+    state.autoSaveSavedAt = null
 
     if (data && typeof data === 'object') {
       if (Array.isArray(data.sources)) state.sources = data.sources as DataSource[]
