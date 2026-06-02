@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ElMessage } from 'element-plus'
 
 import PackageItemsRuleDialog, {
+  type PackageItemsFeishuAuthorizationState,
   type PackageItemsRuleDialogDraft,
   type PackageItemsRuleDialogPreview,
 } from '../../src/components/fixed-rules/PackageItemsRuleDialog.vue'
@@ -90,6 +91,11 @@ const globalStubs = {
     inject: ['updateRadioGroup'],
     template: '<button type="button" @click="updateRadioGroup(label)"><slot />{{ label }}</button>',
   },
+  'el-radio': {
+    props: ['label'],
+    inject: ['updateRadioGroup'],
+    template: '<button type="button" @click="updateRadioGroup(label)"><slot />{{ label }}</button>',
+  },
 }
 
 const groups: FixedRuleGroup[] = [
@@ -166,6 +172,8 @@ function mountDialog(options: {
   preview?: PackageItemsRuleDialogPreview
   previewing?: boolean
   sourceMetadataMap?: Record<string, SourceMetadata>
+  feishuAuthorizationMap?: Record<string, PackageItemsFeishuAuthorizationState>
+  refreshingSheets?: boolean
   backendReady?: boolean
 } = {}) {
   return mount(PackageItemsRuleDialog, {
@@ -176,10 +184,12 @@ function mountDialog(options: {
       groups,
       feishuSources,
       sourceMetadataMap: options.sourceMetadataMap ?? sourceMetadataMap,
+      feishuAuthorizationMap: options.feishuAuthorizationMap ?? {},
       detailVariables,
       compositeVariables,
       preview: options.preview ?? { status: 'idle' },
       previewing: options.previewing ?? false,
+      refreshingSheets: options.refreshingSheets ?? false,
       backendReady: options.backendReady ?? true,
     },
     global: {
@@ -217,9 +227,11 @@ describe('PackageItemsRuleDialog', () => {
     expect(text).toContain('https://demo.feishu.cn/sheets/shtcnabc123')
     expect(text).toContain('feishu-plan')
     expect(text).toContain('礼包规划')
-    expect(text).toContain('[package-detail]')
-    expect(text).toContain('[other-package-detail]')
-    expect(text).toContain('feishu-plan · 礼包规划 · 礼包id / 道具ID / 个数')
+    expect(text).not.toContain('礼包明细组合变量')
+    expect(text).not.toContain('当前 Sheet')
+    expect(text).not.toContain('[package-detail]')
+    expect(text).not.toContain('[other-package-detail]')
+    expect(text).not.toContain('feishu-plan · 礼包规划 · 礼包id / 道具ID / 个数')
     expect(text).toContain('礼包配置组合变量')
     expect(text).toContain('组合变量')
     expect(text).toContain('[package-config] · package_config · INT_PackageId / STR_Items')
@@ -240,6 +252,7 @@ describe('PackageItemsRuleDialog', () => {
     expect(text).toContain('22 / 500')
     expect(text).toContain('取消')
     expect(text).toContain('保存规则')
+    expect(wrapper.find('input[placeholder="例如：登峰礼包规划 vs 礼包配置校验"]').exists()).toBe(true)
     expect(text).not.toContain('模型')
     expect(text).not.toContain('超时')
     expect(text).not.toContain('最大行数')
@@ -262,7 +275,7 @@ describe('PackageItemsRuleDialog', () => {
     })
   })
 
-  it('shows loading, AI success state, mappings, preview rows, warnings and errors', () => {
+  it('shows loading, compact preview summary, warnings and errors', () => {
     const loadingWrapper = mountDialog({ previewing: true })
     expect(loadingWrapper.text()).toContain('正在解析飞书礼包规划表')
 
@@ -299,20 +312,15 @@ describe('PackageItemsRuleDialog', () => {
     })
     const text = wrapper.text()
 
-    expect(text).toContain('AI 辅助解析')
-    expect(text).toContain('0.92')
-    expect(text).toContain('是否使用 AI：是')
-    expect(text).toContain('是')
     expect(text).toContain('识别到礼包 ID（预览）：26042411、26042412')
     expect(text).toContain('识别到明细行数：3 行')
-    expect(text).toContain('礼包 ID 列：礼包')
-    expect(text).toContain('道具 ID 列：道具')
-    expect(text).toContain('数量列：数量')
-    expect(text).toContain('明细范围：2-4 行')
-    expect(text).toContain('26042411')
-    expect(text).toContain('39')
-    expect(text).toContain('8')
-    expect(text).toContain('当前结果由 AI 辅助识别结构后，系统按识别区域重新抽取数据。')
+    expect(text).not.toContain('置信度')
+    expect(text).not.toContain('是否使用 AI')
+    expect(text).not.toContain('礼包 ID 列：礼包')
+    expect(text).not.toContain('道具 ID 列：道具')
+    expect(text).not.toContain('明细范围：2-4 行')
+    expect(text).not.toContain('行号')
+    expect(text).not.toContain('当前结果由 AI 辅助识别结构后，系统按识别区域重新抽取数据。')
     expect(text).toContain('识别到非标准表头')
     expect(text).toContain('演示错误')
   })
@@ -341,9 +349,13 @@ describe('PackageItemsRuleDialog', () => {
     expect(invalidWrapper.emitted('save')).toBeUndefined()
 
     const validWrapper = mountDialog({
-      draft: baseDraft({ validation_scope: 'specified', package_id_filter: '26042411,26042412' }),
+      draft: baseDraft({
+        detail_variable_tag: '',
+        validation_scope: 'specified',
+        package_id_filter: '26042411,26042412',
+      }),
     })
-    expect(validWrapper.find('input[placeholder="例如：26042411, 26042412"]').exists()).toBe(true)
+    expect(validWrapper.find('input[placeholder="请输入礼包 ID，多个用英文逗号分隔"]').exists()).toBe(true)
 
     await validWrapper.findAll('button').find((button) => button.text().includes('保存规则'))?.trigger('click')
 
@@ -353,6 +365,7 @@ describe('PackageItemsRuleDialog', () => {
       ai_parse_mode: 'auto',
       validation_scope: 'specified',
       package_id_filter: '26042411, 26042412',
+      detail_variable_tag: '',
     })
     expect(validWrapper.emitted('save')?.[0][0]).not.toHaveProperty('enabled')
     expect(validWrapper.emitted('save')?.[0][0]).not.toHaveProperty('ruleDescription')
@@ -371,7 +384,7 @@ describe('PackageItemsRuleDialog', () => {
     const wrapper = mountDialog()
 
     await wrapper.findAll('button').find((button) => button.text().includes('指定礼包 ID'))?.trigger('click')
-    await wrapper.find('input[placeholder="例如：26042411, 26042412"]').setValue('26042411，26042412')
+    await wrapper.find('input[placeholder="请输入礼包 ID，多个用英文逗号分隔"]').setValue('26042411，26042412')
     await wrapper.findAll('button').find((button) => button.text().includes('保存规则'))?.trigger('click')
 
     expect(wrapper.emitted('save')?.[0][0]).toMatchObject({
@@ -400,5 +413,23 @@ describe('PackageItemsRuleDialog', () => {
 
     expect(wrapper.emitted('refresh-sheets')?.at(-1)).toEqual(['feishu-plan', true])
     expect(ElMessage.info).not.toHaveBeenCalledWith('IAP礼包校验后端暂未接入，暂不可刷新 Sheet 列表。')
+  })
+
+  it('shows checking instead of unauthorized while Feishu sheet metadata is loading', () => {
+    const wrapper = mountDialog({
+      sourceMetadataMap: {},
+      refreshingSheets: true,
+    })
+
+    expect(wrapper.text()).toContain('检测中')
+    expect(wrapper.text()).not.toContain('未授权')
+  })
+
+  it('emits close when clicking cancel', async () => {
+    const wrapper = mountDialog()
+
+    await wrapper.findAll('button').find((button) => button.text().includes('取消'))?.trigger('click')
+
+    expect(wrapper.emitted('close')).toHaveLength(1)
   })
 })

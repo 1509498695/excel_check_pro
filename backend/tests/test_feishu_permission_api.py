@@ -150,6 +150,9 @@ async def _seed_authorization_sent(
     source_id: str = "feishu_items",
     expires_delta_seconds: int = 600,
     status: str = AUTHORIZATION_STATUS_SENT,
+    spreadsheet_token: str = "shtcnperm123",
+    sheet_url: str = "https://demo.feishu.cn/sheets/shtcnperm123",
+    sheet_title: str = "配置校验表",
 ) -> None:
     expires_at = datetime.datetime.now(datetime.UTC) + datetime.timedelta(
         seconds=expires_delta_seconds
@@ -159,9 +162,9 @@ async def _seed_authorization_sent(
             session,
             project_id=project_id,
             source_id=source_id,
-            spreadsheet_token="shtcnperm123",
-            sheet_url="https://demo.feishu.cn/sheets/shtcnperm123",
-            sheet_title="配置校验表",
+            spreadsheet_token=spreadsheet_token,
+            sheet_url=sheet_url,
+            sheet_title=sheet_title,
             status=status,
             chat_id="oc_default",
             message_id="om_auth_card",
@@ -466,6 +469,221 @@ async def test_check_permission_repairs_failed_wiki_record_when_bot_can_read(
     assert record.status == AUTHORIZATION_STATUS_AUTHORIZED
     assert record.spreadsheet_token == "shtcnreal456"
     assert record.error_message == ""
+
+
+@pytest.mark.anyio
+async def test_check_permission_repairs_expired_sent_wiki_record_by_reusing_real_token(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id)
+    await _seed_authorization_sent(
+        test_project_id,
+        source_id="test",
+        state="expired-state",
+        expires_delta_seconds=-60,
+        spreadsheet_token="wikcnabc123",
+        sheet_url="https://demo.feishu.cn/wiki/wikcnabc123?sheet=gid001",
+        sheet_title="旧授权请求",
+    )
+    async with async_session_factory() as session:
+        session.add(
+            FeishuSheetAuthorizationRecord(
+                project_id=test_project_id,
+                source_id="already_authorized",
+                spreadsheet_token="shtcnreal456",
+                sheet_url="https://demo.feishu.cn/sheets/shtcnreal456?sheet=gid001",
+                sheet_title="Wiki 真实表",
+                status=AUTHORIZATION_STATUS_AUTHORIZED,
+            )
+        )
+        await session.commit()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        if request.url.path == "/open-apis/wiki/v2/spaces/get_node":
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "data": {
+                        "node": {
+                            "node_token": "wikcnabc123",
+                            "obj_token": "shtcnreal456",
+                            "obj_type": "sheet",
+                        }
+                    },
+                },
+            )
+        raise AssertionError(f"复用授权时不应读取真实 Sheet 元数据：{request.url}")
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/feishu/sources/check-permission",
+        json={
+            "source_id": "test",
+            "sheet_url": "https://demo.feishu.cn/wiki/wikcnabc123?sheet=gid001",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "status": "authorized",
+        "spreadsheet_token": "shtcnreal456",
+        "sheet_url": "https://demo.feishu.cn/sheets/shtcnreal456?sheet=gid001",
+        "title": "Wiki 真实表",
+        "reused_authorization": True,
+    }
+    async with async_session_factory() as session:
+        record = await get_authorization_by_source(session, test_project_id, "test")
+    assert record is not None
+    assert record.status == AUTHORIZATION_STATUS_AUTHORIZED
+    assert record.spreadsheet_token == "shtcnreal456"
+    assert record.state_hash == ""
+    assert record.state_expires_at is None
+    assert record.error_message == ""
+
+
+@pytest.mark.anyio
+async def test_check_permission_repairs_expired_sent_record_when_bot_can_read(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id)
+    await _seed_authorization_sent(
+        test_project_id,
+        source_id="feishu_items",
+        state="expired-readable",
+        expires_delta_seconds=-60,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnperm123":
+            return _spreadsheet_response("已可读表")
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/feishu/sources/check-permission",
+        json={
+            "source_id": "feishu_items",
+            "sheet_url": "https://demo.feishu.cn/sheets/shtcnperm123?sheet=gid001",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "status": "authorized",
+        "spreadsheet_token": "shtcnperm123",
+        "sheet_url": "https://demo.feishu.cn/sheets/shtcnperm123?sheet=gid001",
+        "title": "已可读表",
+    }
+    async with async_session_factory() as session:
+        record = await get_authorization_by_source(
+            session,
+            test_project_id,
+            "feishu_items",
+        )
+    assert record is not None
+    assert record.status == AUTHORIZATION_STATUS_AUTHORIZED
+    assert record.state_hash == ""
+    assert record.state_expires_at is None
+    assert record.error_message == ""
+
+
+@pytest.mark.anyio
+async def test_check_permission_expired_sent_record_returns_pending_when_still_unreadable(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id)
+    await _seed_authorization_sent(
+        test_project_id,
+        source_id="feishu_items",
+        state="expired-denied",
+        expires_delta_seconds=-60,
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnperm123":
+            return httpx.Response(403, json={"code": 1254030, "msg": "permission denied"})
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/feishu/sources/check-permission",
+        json={
+            "source_id": "feishu_items",
+            "sheet_url": "https://demo.feishu.cn/sheets/shtcnperm123",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["status"] == "pending_authorization"
+    assert payload["error_status"] == "document_permission_denied"
+    assert payload["message"] == "文档权限不足，请发送授权请求到群。"
+    assert "过期" not in payload["message"]
+
+
+@pytest.mark.anyio
+async def test_check_permission_repairs_unexpired_sent_record_when_bot_can_read(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id)
+    await _seed_authorization_sent(
+        test_project_id,
+        source_id="feishu_items",
+        state="waiting-but-readable",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnperm123":
+            return _spreadsheet_response("授权中已可读表")
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/feishu/sources/check-permission",
+        json={
+            "source_id": "feishu_items",
+            "sheet_url": "https://demo.feishu.cn/sheets/shtcnperm123",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {
+        "status": "authorized",
+        "spreadsheet_token": "shtcnperm123",
+        "sheet_url": "https://demo.feishu.cn/sheets/shtcnperm123",
+        "title": "授权中已可读表",
+    }
+    async with async_session_factory() as session:
+        record = await get_authorization_by_source(
+            session,
+            test_project_id,
+            "feishu_items",
+        )
+    assert record is not None
+    assert record.status == AUTHORIZATION_STATUS_AUTHORIZED
+    assert record.state_hash == ""
+    assert record.state_expires_at is None
 
 
 @pytest.mark.anyio
@@ -899,7 +1117,7 @@ async def test_send_authorization_card_sends_card_and_persists_state_hash(
 
 
 @pytest.mark.anyio
-async def test_check_permission_returns_authorization_sent_by_source_without_calling_feishu(
+async def test_check_permission_returns_authorization_sent_when_pending_source_is_still_unreadable(
     auth_client: AsyncClient,
     test_project_id: int,
     monkeypatch: pytest.MonkeyPatch,
@@ -907,17 +1125,20 @@ async def test_check_permission_returns_authorization_sent_by_source_without_cal
     await _seed_feishu_bot_config(test_project_id)
     await _seed_authorization_sent(test_project_id, state="state-waiting")
 
-    def _fail_factory(timeout: float = 10.0) -> httpx.AsyncClient:
-        raise AssertionError("已有 source 授权中记录时不应调用飞书 OpenAPI")
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnperm123":
+            return httpx.Response(403, json={"code": 1254030, "msg": "permission denied"})
+        return httpx.Response(404)
 
-    monkeypatch.setattr(feishu_bot, "_create_async_client", _fail_factory)
-    monkeypatch.setattr(feishu_client, "_create_async_client", _fail_factory)
+    _install_mock_transport(monkeypatch, handler)
 
     response = await auth_client.post(
         "/api/v1/feishu/sources/check-permission",
         json={
             "source_id": "feishu_items",
-            "sheet_url": "https://demo.feishu.cn/wiki/wikcnabc123",
+            "sheet_url": "https://demo.feishu.cn/sheets/shtcnperm123",
         },
     )
 

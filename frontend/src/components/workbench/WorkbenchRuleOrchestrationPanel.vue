@@ -2,7 +2,7 @@
 import { computed, nextTick, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
-import { previewWorkbenchPackageItems } from '../../api/workbench'
+import { checkFeishuSourcePermission, previewWorkbenchPackageItems } from '../../api/workbench'
 import { useWorkbenchStore } from '../../store/workbench'
 import {
   RuleOrchestrationContainer,
@@ -11,6 +11,7 @@ import {
   useRuleForm,
 } from '../../features/rule-orchestration'
 import PackageItemsRuleDialog, {
+  type PackageItemsFeishuAuthorizationState,
   type PackageItemsRuleDialogDraft,
   type PackageItemsRuleDialogPreview,
 } from '../fixed-rules/PackageItemsRuleDialog.vue'
@@ -34,7 +35,7 @@ import type {
   PipelineAssertionOperator,
   WorkbenchPackageItemsPreviewData,
 } from '../../types/fixedRules'
-import type { DataSource, VariableTag } from '../../types/workbench'
+import type { DataSource, SourceMetadata, VariableTag } from '../../types/workbench'
 import {
   COMPOSITE_ASSERTION_OPTIONS,
   COMPOSITE_COMPARE_OPERATORS,
@@ -107,6 +108,14 @@ const isRefreshingPackageItemsSheets = ref(false)
 const isPreviewingPackageItemsRule = ref(false)
 const isSavingPackageItemsRule = ref(false)
 const packageItemsRulePreview = ref<PackageItemsRuleDialogPreview>({ status: 'idle' })
+const packageItemsFeishuAuthorizationMap = reactive<
+  Record<string, PackageItemsFeishuAuthorizationState>
+>({})
+const packageItemsPermissionRequestKey = ref('')
+const packageItemsPermissionInFlightKeys = new Set<string>()
+
+const PACKAGE_ITEMS_SHEET_CACHE_PREFIX = 'excel-checkers:package-items-sheets:v1:'
+const PACKAGE_ITEMS_SHEET_CACHE_TTL_MS = 10 * 60 * 1000
 
 const ruleSelectionOptions = RULE_SELECTION_OPTIONS
 const ruleEntryTypeOptions = RULE_ENTRY_TYPE_OPTIONS
@@ -2503,11 +2512,293 @@ function handleToggleSingleSelection(ruleId: string): void {
   emit('toggle-rule-selection', ruleId)
 }
 
+interface PackageItemsSheetCachePayload {
+  savedAt: number
+  sourceId: string
+  sheetUrl: string
+  metadata: SourceMetadata
+}
+
+function getPackageItemsSourceLocator(source: DataSource | null | undefined): string {
+  return (source?.pathOrUrl || source?.url || source?.path || '').trim()
+}
+
+function buildPackageItemsSheetCacheKey(source: DataSource): string {
+  const sheetUrl = getPackageItemsSourceLocator(source)
+  if (!source.id.trim() || !sheetUrl) {
+    return ''
+  }
+  return `${PACKAGE_ITEMS_SHEET_CACHE_PREFIX}${encodeURIComponent(`${source.id}\n${sheetUrl}`)}`
+}
+
+function readPackageItemsSheetCache(source: DataSource): SourceMetadata | null {
+  if (typeof window === 'undefined') {
+    return null
+  }
+  const cacheKey = buildPackageItemsSheetCacheKey(source)
+  if (!cacheKey) {
+    return null
+  }
+  try {
+    const rawPayload = window.sessionStorage.getItem(cacheKey)
+    if (!rawPayload) {
+      return null
+    }
+    const payload = JSON.parse(rawPayload) as Partial<PackageItemsSheetCachePayload>
+    const sheetUrl = getPackageItemsSourceLocator(source)
+    if (
+      typeof payload.savedAt !== 'number' ||
+      payload.sourceId !== source.id ||
+      payload.sheetUrl !== sheetUrl ||
+      !payload.metadata ||
+      Date.now() - payload.savedAt > PACKAGE_ITEMS_SHEET_CACHE_TTL_MS
+    ) {
+      window.sessionStorage.removeItem(cacheKey)
+      return null
+    }
+    return payload.metadata
+  } catch {
+    window.sessionStorage.removeItem(cacheKey)
+    return null
+  }
+}
+
+function writePackageItemsSheetCache(source: DataSource, metadata: SourceMetadata): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+  const cacheKey = buildPackageItemsSheetCacheKey(source)
+  if (!cacheKey || metadata.source_id !== source.id) {
+    return
+  }
+  try {
+    const payload: PackageItemsSheetCachePayload = {
+      savedAt: Date.now(),
+      sourceId: source.id,
+      sheetUrl: getPackageItemsSourceLocator(source),
+      metadata,
+    }
+    window.sessionStorage.setItem(cacheKey, JSON.stringify(payload))
+  } catch {
+    // sessionStorage 只是首屏体验缓存，写入失败不影响真实权限校验。
+  }
+}
+
+function clearPackageItemsSheetCache(source: DataSource): void {
+  if (typeof window === 'undefined') {
+    return
+  }
+  const cacheKey = buildPackageItemsSheetCacheKey(source)
+  if (!cacheKey) {
+    return
+  }
+  try {
+    window.sessionStorage.removeItem(cacheKey)
+  } catch {
+    // 忽略浏览器存储异常。
+  }
+}
+
+function setPackageItemsAuthorizationState(
+  sourceId: string,
+  status: PackageItemsFeishuAuthorizationState['status'],
+  message = '',
+): void {
+  const normalizedSourceId = sourceId.trim()
+  if (!normalizedSourceId) {
+    return
+  }
+  packageItemsFeishuAuthorizationMap[normalizedSourceId] = message
+    ? { status, message }
+    : { status }
+}
+
+function isPackageItemsPermissionAuthorized(status: string): boolean {
+  return status === 'authorized' || status === 'authorization_success'
+}
+
+function isPackageItemsPermissionPending(status: string): boolean {
+  return (
+    status === 'pending_authorization' ||
+    status === 'document_permission_denied' ||
+    status === 'authorization_sent'
+  )
+}
+
+function getDefaultPackageItemsFeishuSourceId(): string {
+  return (
+    packageItemsRuleDraft.value.feishu_source_id?.trim() ||
+    packageItemsFeishuSources.value[0]?.id ||
+    ''
+  )
+}
+
+function buildPackageItemsPermissionRequestKey(source: DataSource): string {
+  return `${source.id}\n${getPackageItemsSourceLocator(source)}`
+}
+
+function applyPackageItemsSheetCache(source: DataSource): boolean {
+  const cachedMetadata = readPackageItemsSheetCache(source)
+  if (!cachedMetadata) {
+    return false
+  }
+  store.sourceMetadataMap[source.id] = cachedMetadata
+  setPackageItemsAuthorizationState(source.id, 'authorized')
+  return true
+}
+
+function clearPackageItemsMetadata(source: DataSource): void {
+  delete store.sourceMetadataMap[source.id]
+  clearPackageItemsSheetCache(source)
+}
+
+function syncPackageItemsSourceUrl(sourceId: string, sheetUrl: string | undefined): void {
+  const normalizedSheetUrl = sheetUrl?.trim()
+  if (!normalizedSheetUrl) {
+    return
+  }
+  const currentSource = sourceMap.value.get(sourceId)
+  if (!currentSource || currentSource.type !== 'feishu') {
+    return
+  }
+  if (getPackageItemsSourceLocator(currentSource) === normalizedSheetUrl) {
+    return
+  }
+  store.upsertSource({ ...currentSource, pathOrUrl: normalizedSheetUrl }, currentSource.id)
+}
+
+async function loadPackageItemsSheetMetadata(
+  sourceId: string,
+  forceRefresh = false,
+): Promise<void> {
+  const normalizedSourceId = sourceId.trim()
+  const source = packageItemsFeishuSources.value.find((item) => item.id === normalizedSourceId)
+  if (!source) {
+    return
+  }
+  if (!forceRefresh && applyPackageItemsSheetCache(source)) {
+    return
+  }
+
+  isRefreshingPackageItemsSheets.value = true
+  try {
+    const metadata = await store.loadSourceMetadata(normalizedSourceId, forceRefresh, {
+      includeColumns: false,
+    })
+    const currentSource = sourceMap.value.get(normalizedSourceId) ?? source
+    if (metadata.authorization_status === 'authorized' || metadata.sheets.length > 0) {
+      setPackageItemsAuthorizationState(normalizedSourceId, 'authorized')
+      writePackageItemsSheetCache(currentSource, metadata)
+    }
+  } catch (error) {
+    setPackageItemsAuthorizationState(
+      normalizedSourceId,
+      'error',
+      error instanceof Error ? error.message : '刷新 Sheet 列表失败。',
+    )
+    ElMessage.error(error instanceof Error ? error.message : '刷新 Sheet 列表失败。')
+  } finally {
+    isRefreshingPackageItemsSheets.value = false
+  }
+}
+
+async function ensurePackageItemsFeishuAuthorization(
+  sourceId: string,
+  options: { forceRefreshSheets?: boolean; preferCache?: boolean } = {},
+): Promise<void> {
+  const normalizedSourceId = sourceId.trim()
+  const source = packageItemsFeishuSources.value.find((item) => item.id === normalizedSourceId)
+  if (!source) {
+    return
+  }
+  const sheetUrl = getPackageItemsSourceLocator(source)
+  if (!sheetUrl) {
+    setPackageItemsAuthorizationState(normalizedSourceId, 'error', '飞书数据源缺少文档地址。')
+    return
+  }
+
+  const usedCache =
+    options.preferCache !== false &&
+    !options.forceRefreshSheets &&
+    applyPackageItemsSheetCache(source)
+  const requestKey = buildPackageItemsPermissionRequestKey(source)
+  if (!options.forceRefreshSheets && packageItemsPermissionInFlightKeys.has(requestKey)) {
+    return
+  }
+  packageItemsPermissionInFlightKeys.add(requestKey)
+  packageItemsPermissionRequestKey.value = requestKey
+  if (!usedCache) {
+    setPackageItemsAuthorizationState(normalizedSourceId, 'checking')
+  }
+
+  try {
+    const response = await checkFeishuSourcePermission({
+      source_id: normalizedSourceId,
+      sheet_url: sheetUrl,
+    })
+    if (packageItemsPermissionRequestKey.value !== requestKey) {
+      return
+    }
+    const permission = response.data
+    if (isPackageItemsPermissionAuthorized(permission.status)) {
+      syncPackageItemsSourceUrl(normalizedSourceId, permission.sheet_url)
+      setPackageItemsAuthorizationState(
+        normalizedSourceId,
+        'authorized',
+        permission.message || '飞书表格已授权。',
+      )
+      await loadPackageItemsSheetMetadata(
+        normalizedSourceId,
+        Boolean(options.forceRefreshSheets),
+      )
+      return
+    }
+
+    const currentSource = sourceMap.value.get(normalizedSourceId) ?? source
+    clearPackageItemsMetadata(currentSource)
+    if (isPackageItemsPermissionPending(permission.status)) {
+      setPackageItemsAuthorizationState(
+        normalizedSourceId,
+        'pending_authorization',
+        permission.message || '机器人暂无该表格权限。',
+      )
+      return
+    }
+    setPackageItemsAuthorizationState(
+      normalizedSourceId,
+      'error',
+      permission.message || '飞书授权状态检测失败。',
+    )
+  } catch (error) {
+    if (packageItemsPermissionRequestKey.value !== requestKey) {
+      return
+    }
+    setPackageItemsAuthorizationState(
+      normalizedSourceId,
+      'error',
+      error instanceof Error ? error.message : '飞书授权状态检测失败。',
+    )
+  } finally {
+    packageItemsPermissionInFlightKeys.delete(requestKey)
+  }
+}
+
+function initializePackageItemsDialogAuthorization(): void {
+  const sourceId = getDefaultPackageItemsFeishuSourceId()
+  if (!sourceId) {
+    return
+  }
+  void ensurePackageItemsFeishuAuthorization(sourceId)
+}
+
 function openPackageItemsRuleDialog(rule?: FixedRuleDefinition): void {
   packageItemsRuleDialogMode.value = rule?.rule_type === 'package_items_compare' ? 'edit' : 'create'
   packageItemsEditingRule.value = rule?.rule_type === 'package_items_compare' ? rule : null
   packageItemsRulePreview.value = { status: 'idle' }
   isPackageItemsRuleDialogVisible.value = true
+  void nextTick(() => {
+    initializePackageItemsDialogAuthorization()
+  })
 }
 
 function closePackageItemsRuleDialog(): void {
@@ -2637,14 +2928,10 @@ async function handleRefreshPackageItemsSheets(
   if (!normalizedSourceId) {
     return
   }
-  isRefreshingPackageItemsSheets.value = true
-  try {
-    await store.loadSourceMetadata(normalizedSourceId, forceRefresh)
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '刷新 Sheet 列表失败。')
-  } finally {
-    isRefreshingPackageItemsSheets.value = false
-  }
+  await ensurePackageItemsFeishuAuthorization(normalizedSourceId, {
+    forceRefreshSheets: forceRefresh,
+    preferCache: !forceRefresh,
+  })
 }
 </script>
 
@@ -2708,6 +2995,7 @@ async function handleRefreshPackageItemsSheets(
       :groups="store.allRuleGroups"
       :feishu-sources="packageItemsFeishuSources"
       :source-metadata-map="store.sourceMetadataMap"
+      :feishu-authorization-map="packageItemsFeishuAuthorizationMap"
       :detail-variables="compositeVariableOptions"
       :composite-variables="compositeVariableOptions"
       :preview="packageItemsRulePreview"

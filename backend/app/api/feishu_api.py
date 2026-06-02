@@ -100,6 +100,7 @@ async def check_feishu_source_permission(
 ) -> dict[str, Any]:
     """检测当前项目飞书机器人是否可读取指定电子表格。"""
     project_id = ctx.require_project_member()
+    source_id = payload.source_id.strip()
 
     try:
         locator = parse_feishu_sheet_url(payload.sheet_url)
@@ -123,7 +124,7 @@ async def check_feishu_source_permission(
     source_record = await get_authorization_by_source(
         db,
         project_id,
-        payload.source_id.strip(),
+        source_id,
     )
     source_status = _build_permission_response_from_source_record(
         source_record,
@@ -138,17 +139,30 @@ async def check_feishu_source_permission(
         locator,
     )
     if reusable_record is not None:
-        return _ok(_build_reused_authorization_response(reusable_record, locator))
+        record = await _upsert_authorized_from_reusable_record(
+            db,
+            project_id=project_id,
+            source_id=source_id,
+            reusable_record=reusable_record,
+        )
+        await db.commit()
+        return _ok(_build_reused_authorization_response(record, locator))
 
     try:
         readable_sheet = await _read_authorized_sheet(db, project_id, locator)
     except FeishuClientError as exc:
+        pending_status = _build_authorization_sent_fallback_response(
+            source_record,
+            fallback_url=locator.normalized_url,
+        )
+        if pending_status is not None:
+            return _ok(pending_status)
         return _ok(_map_feishu_permission_error(exc))
 
     record = await upsert_authorization_record(
         db,
         project_id=project_id,
-        source_id=payload.source_id.strip(),
+        source_id=source_id,
         spreadsheet_token=readable_sheet.spreadsheet_token,
         sheet_url=readable_sheet.sheet_url,
         sheet_title=readable_sheet.title,
@@ -528,6 +542,27 @@ async def _get_reusable_authorization_record(
     )
 
 
+async def _upsert_authorized_from_reusable_record(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    source_id: str,
+    reusable_record: FeishuSheetAuthorizationRecord,
+) -> FeishuSheetAuthorizationRecord:
+    return await upsert_authorization_record(
+        db,
+        project_id=project_id,
+        source_id=source_id,
+        spreadsheet_token=reusable_record.spreadsheet_token,
+        sheet_url=reusable_record.sheet_url,
+        sheet_title=reusable_record.sheet_title,
+        status=AUTHORIZATION_STATUS_AUTHORIZED,
+        authorized_by_open_id=reusable_record.authorized_by_open_id,
+        bot_open_id=reusable_record.bot_open_id,
+        authorized_at=reusable_record.authorized_at,
+    )
+
+
 def _build_reused_authorization_response(
     record: FeishuSheetAuthorizationRecord,
     locator: FeishuSheetLocator,
@@ -701,23 +736,28 @@ def _build_permission_response_from_source_record(
             "title": record.sheet_title,
             "reused_authorization": True,
         }
-    if record.status == AUTHORIZATION_STATUS_SENT:
-        if _is_authorization_record_expired(record):
-            return {
-                "status": "authorization_failed",
-                "message": "授权请求已过期，请重新发送授权请求。",
-            }
-        return {
-            "status": AUTHORIZATION_STATUS_SENT,
-            "spreadsheet_token": record.spreadsheet_token,
-            "sheet_url": record.sheet_url or fallback_url,
-            "title": record.sheet_title,
-            "expires_at": _format_datetime(record.state_expires_at),
-            "chat_id": record.chat_id,
-            "message_id": record.message_id,
-            "message": "授权请求已发送到群，等待有权限的成员完成授权。",
-        }
     return None
+
+
+def _build_authorization_sent_fallback_response(
+    record: FeishuSheetAuthorizationRecord | None,
+    *,
+    fallback_url: str,
+) -> dict[str, Any] | None:
+    if record is None or record.status != AUTHORIZATION_STATUS_SENT:
+        return None
+    if _is_authorization_record_expired(record):
+        return None
+    return {
+        "status": AUTHORIZATION_STATUS_SENT,
+        "spreadsheet_token": record.spreadsheet_token,
+        "sheet_url": record.sheet_url or fallback_url,
+        "title": record.sheet_title,
+        "expires_at": _format_datetime(record.state_expires_at),
+        "chat_id": record.chat_id,
+        "message_id": record.message_id,
+        "message": "授权请求已发送到群，等待有权限的成员完成授权。",
+    }
 
 
 def _is_authorization_record_expired(record: FeishuSheetAuthorizationRecord) -> bool:

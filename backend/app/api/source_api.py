@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -459,6 +459,7 @@ async def validate_local_directory_path(
 @router.post("/metadata")
 async def get_source_metadata(
     source: DataSource,
+    include_columns: bool = Query(default=True),
     db: AsyncSession = Depends(get_db),
     ctx: CurrentUserContext | None = Depends(get_optional_user),
 ) -> dict[str, Any]:
@@ -475,6 +476,7 @@ async def get_source_metadata(
                 source,
                 db=db,
                 project_id=project_id,
+                include_columns=include_columns,
             )
         except FeishuClientError as error:
             _raise_for_feishu_metadata_error(error)

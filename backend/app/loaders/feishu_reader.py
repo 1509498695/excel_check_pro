@@ -144,6 +144,7 @@ async def read_feishu_source_metadata(
     *,
     db: AsyncSession,
     project_id: int,
+    include_columns: bool = True,
 ) -> dict[str, Any]:
     """读取飞书电子表格 Sheet 与列结构，用于变量池下拉构建。"""
     from backend.app.integrations.feishu_client import (
@@ -164,11 +165,15 @@ async def read_feishu_source_metadata(
     sheets = await list_spreadsheet_sheets(db, project_id, locator)
     metadata_sheets: list[dict[str, Any]] = []
     for sheet in sheets:
-        columns = await read_sheet_header_columns(
-            db,
-            project_id,
-            locator,
-            sheet=sheet,
+        columns = (
+            await read_sheet_header_columns(
+                db,
+                project_id,
+                locator,
+                sheet=sheet,
+            )
+            if include_columns
+            else []
         )
         metadata_sheets.append(
             {

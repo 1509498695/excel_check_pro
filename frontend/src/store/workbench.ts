@@ -10,6 +10,7 @@ import {
   fetchSourceMetadata,
   triggerWorkbenchSvnUpdate,
 } from '../api/workbench'
+import type { SourceMetadataFetchOptions } from '../api/workbench'
 import type { FixedRuleDefinition, FixedRuleGroup } from '../types/fixedRules'
 import type { AiRuleDraftPayload } from '../types/ai'
 import type {
@@ -86,6 +87,19 @@ import {
   getAiDraftRulesToApply,
 } from '../utils/aiDraftWorkflow'
 import { SAMPLE_SOURCE_PATH } from '../utils/workbenchMeta'
+
+function canUseCachedSourceMetadata(
+  cached: SourceMetadata | undefined,
+  options?: SourceMetadataFetchOptions,
+): cached is SourceMetadata {
+  if (!cached) {
+    return false
+  }
+  if (options?.includeColumns === false) {
+    return true
+  }
+  return cached.sheets.length === 0 || cached.sheets.some((sheet) => sheet.columns.length > 0)
+}
 
 export const useWorkbenchStore = defineStore('workbench', {
   state: (): WorkbenchState => createWorkbenchState(),
@@ -293,9 +307,13 @@ export const useWorkbenchStore = defineStore('workbench', {
       }
     },
 
-    async loadSourceMetadata(sourceId: string, forceRefresh = false): Promise<SourceMetadata> {
+    async loadSourceMetadata(
+      sourceId: string,
+      forceRefresh = false,
+      options?: SourceMetadataFetchOptions,
+    ): Promise<SourceMetadata> {
       const cached = this.sourceMetadataMap[sourceId]
-      if (cached && !forceRefresh) {
+      if (!forceRefresh && canUseCachedSourceMetadata(cached, options)) {
         return cached
       }
 
@@ -304,7 +322,7 @@ export const useWorkbenchStore = defineStore('workbench', {
         throw new Error(`未找到数据源 "${sourceId}"。`)
       }
 
-      const response = await fetchSourceMetadata(source)
+      const response = await fetchSourceMetadata(source, options)
       this.sourceMetadataMap[sourceId] = response.data
       return response.data
     },

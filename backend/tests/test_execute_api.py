@@ -1250,6 +1250,52 @@ async def test_source_metadata_returns_feishu_sheet_and_columns(
 
 
 @pytest.mark.anyio
+async def test_source_metadata_feishu_can_skip_columns_for_sheet_list(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """礼包弹窗轻量读取 Sheet 列表时，不应逐个读取表头列。"""
+    await _seed_feishu_bot_config(test_project_id)
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _feishu_token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query":
+            return _feishu_sheets_response()
+        if "/values/" in request.url.path:
+            return httpx.Response(500, json={"code": 500, "msg": "headers should be skipped"})
+        return httpx.Response(404, json={"code": 404, "msg": "not found"})
+
+    _install_feishu_metadata_mock(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/sources/metadata?include_columns=false",
+        json={
+            "id": "src_feishu",
+            "type": "feishu",
+            "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data"] == {
+        "source_id": "src_feishu",
+        "source_type": "feishu",
+        "sheets": [
+            {"name": "Sheet1", "sheet_id": "gid001", "columns": []},
+            {"name": "Sheet2", "sheet_id": "gid002", "columns": []},
+        ],
+        "authorization_status": "authorized",
+    }
+    assert "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query" in requested_paths
+    assert not any("/values/" in path for path in requested_paths)
+
+
+@pytest.mark.anyio
 async def test_source_metadata_feishu_requires_login() -> None:
     """飞书 metadata 需要当前项目上下文；未登录请求应返回 401。"""
     async with AsyncClient(

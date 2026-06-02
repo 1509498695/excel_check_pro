@@ -47,6 +47,18 @@ export interface PackageItemsRuleDialogPreview {
   previewRows?: PackageItemsPreviewRow[]
 }
 
+export type PackageItemsFeishuAuthorizationStatus =
+  | 'checking'
+  | 'authorized'
+  | 'pending_authorization'
+  | 'error'
+  | 'unknown'
+
+export interface PackageItemsFeishuAuthorizationState {
+  status: PackageItemsFeishuAuthorizationStatus
+  message?: string
+}
+
 export interface PackageItemsRuleDialogProps {
   visible: boolean
   mode: PackageItemsRuleDialogMode
@@ -54,6 +66,7 @@ export interface PackageItemsRuleDialogProps {
   groups?: FixedRuleGroup[]
   feishuSources?: DataSource[]
   sourceMetadataMap?: Record<string, SourceMetadata>
+  feishuAuthorizationMap?: Record<string, PackageItemsFeishuAuthorizationState>
   detailVariables?: VariableTag[]
   compositeVariables?: VariableTag[]
   preview?: PackageItemsRuleDialogPreview
@@ -73,6 +86,7 @@ const props = withDefaults(defineProps<PackageItemsRuleDialogProps>(), {
   groups: () => [],
   feishuSources: () => [],
   sourceMetadataMap: () => ({}),
+  feishuAuthorizationMap: () => ({}),
   detailVariables: () => [],
   compositeVariables: () => [],
   preview: undefined,
@@ -128,6 +142,9 @@ const selectedFeishuSource = computed(
 )
 
 const selectedSourceMetadata = computed(() => props.sourceMetadataMap[form.feishu_source_id] ?? null)
+const selectedAuthorizationState = computed(
+  () => props.feishuAuthorizationMap[form.feishu_source_id] ?? { status: 'unknown' as const },
+)
 
 const documentAddress = computed(() => {
   const source = selectedFeishuSource.value
@@ -143,16 +160,48 @@ const documentAddressHref = computed(() =>
 
 const authorizationStatusLabel = computed(() => {
   const metadata = selectedSourceMetadata.value
-  if (metadata?.authorization_status === 'authorized' || (metadata?.sheets?.length ?? 0) > 0) {
-    return '已授权'
-  }
+  const authorizationStatus = selectedAuthorizationState.value.status
   if (!form.feishu_source_id) {
     return '未选择'
   }
-  return '待授权'
+  if (authorizationStatus === 'checking') {
+    return '检测中'
+  }
+  if (authorizationStatus === 'pending_authorization') {
+    return '未授权'
+  }
+  if (authorizationStatus === 'error') {
+    return '授权异常'
+  }
+  if (
+    authorizationStatus === 'authorized' ||
+    metadata?.authorization_status === 'authorized' ||
+    (metadata?.sheets?.length ?? 0) > 0
+  ) {
+    return '已授权'
+  }
+  if (props.refreshingSheets) {
+    return '检测中'
+  }
+  return '待读取'
 })
 
-const isAuthorized = computed(() => authorizationStatusLabel.value === '已授权')
+const isAuthorized = computed(() => {
+  const metadata = selectedSourceMetadata.value
+  const authorizationStatus = selectedAuthorizationState.value.status
+  if (
+    authorizationStatus === 'checking' ||
+    authorizationStatus === 'pending_authorization' ||
+    authorizationStatus === 'error'
+  ) {
+    return false
+  }
+  return (
+    authorizationStatus === 'authorized' ||
+    metadata?.authorization_status === 'authorized' ||
+    (metadata?.sheets?.length ?? 0) > 0
+  )
+})
 
 interface PackageSheetOption {
   sheet_id: string
@@ -207,10 +256,6 @@ const selectedFeishuSheet = computed(
   () => feishuSheetOptions.value.find((sheet) => sheet.sheet_id === form.feishu_sheet_id) ?? null,
 )
 
-const selectedDetailVariable = computed(
-  () => detailVariableOptions.value.find((variable) => variable.tag === form.detail_variable_tag) ?? null,
-)
-
 const selectedConfigVariable = computed(
   () => compositeVariableOptions.value.find((variable) => variable.tag === form.config_variable_tag) ?? null,
 )
@@ -252,35 +297,6 @@ const previewWarnings = computed(() => currentPreview.value?.warnings ?? [])
 
 const previewErrors = computed(() => currentPreview.value?.errors ?? [])
 
-const previewRows = computed(() =>
-  isPreviewSuccessful.value ? currentPreview.value?.previewRows ?? [] : [],
-)
-
-const previewFieldMappingLines = computed(() => {
-  if (!isPreviewSuccessful.value) {
-    return []
-  }
-  const mapping = currentPreview.value?.fieldMapping
-  if (!mapping) {
-    return []
-  }
-  const packageColumn = mapping.package_id_column ?? mapping.package_id
-  const itemColumn = mapping.item_id_column ?? mapping.item_id
-  const countColumn = mapping.count_column ?? mapping.count
-  const lines = [
-    packageColumn ? `礼包 ID 列：${packageColumn}` : '',
-    itemColumn ? `道具 ID 列：${itemColumn}` : '',
-    countColumn ? `数量列：${countColumn}` : '',
-    mapping.header_row_index ? `表头行：${mapping.header_row_index}` : '',
-    mapping.detail_start_row_index && mapping.detail_end_row_index
-      ? `明细范围：${mapping.detail_start_row_index}-${mapping.detail_end_row_index} 行`
-      : '',
-  ].filter((line): line is string => Boolean(line))
-  return lines
-})
-
-const isAiPreviewMode = computed(() => currentPreview.value?.parseMode === 'ai')
-
 const ruleDescriptionCount = computed(() => uiState.ruleDescription.length)
 
 const previewInfoLines = computed(() => {
@@ -297,27 +313,6 @@ const previewInfoLines = computed(() => {
   }
   return ['尚未生成当前配置的解析预览。']
 })
-
-const previewModeLabel = computed(() => {
-  const parseMode = currentPreview.value?.parseMode
-  if (parseMode === 'ai') {
-    return 'AI 辅助解析'
-  }
-  if (parseMode === 'rule') {
-    return '规则解析'
-  }
-  return '自动解析'
-})
-
-const previewConfidenceLabel = computed(() => {
-  const confidence = currentPreview.value?.confidence
-  if (typeof confidence !== 'number') {
-    return '未返回'
-  }
-  return confidence.toFixed(2)
-})
-
-const previewAiUsedLabel = computed(() => (currentPreview.value?.aiUsed ? '是' : '否'))
 
 const previewErrorMessage = computed(() => {
   if (!props.backendReady) {
@@ -497,10 +492,6 @@ function validateForSave(payload: PackageItemsRuleDialogDraft): boolean {
     ElMessage.warning('请选择礼包规划 Sheet。')
     return false
   }
-  if (!payload.detail_variable_tag) {
-    ElMessage.warning('请选择礼包明细组合变量。')
-    return false
-  }
   if (!payload.config_variable_tag) {
     ElMessage.warning('请选择礼包配置组合变量。')
     return false
@@ -547,6 +538,14 @@ function handleSave(): void {
 function requestSheetRefreshIfNeeded(sourceId: string): void {
   const normalizedSourceId = sourceId.trim()
   if (!props.visible || !normalizedSourceId || props.sourceMetadataMap[normalizedSourceId]?.sheets?.length) {
+    return
+  }
+  const authorizationState = props.feishuAuthorizationMap[normalizedSourceId]
+  if (
+    authorizationState?.status === 'checking' ||
+    authorizationState?.status === 'pending_authorization' ||
+    authorizationState?.status === 'error'
+  ) {
     return
   }
   emit('refresh-sheets', normalizedSourceId, false)
@@ -636,7 +635,7 @@ function normalizePackageIdFilter(value: string): string {
           </div>
           <div class="package-items-rule-dialog__field package-items-rule-dialog__field--name">
             <label>规则名称</label>
-            <el-input v-model="form.rule_name" placeholder="例如：礼包 STR_Items 明细校验" />
+            <el-input v-model="form.rule_name" placeholder="例如：登峰礼包规划 vs 礼包配置校验" />
           </div>
           <div class="package-items-rule-dialog__field package-items-rule-dialog__field--switch">
             <label>启用状态</label>
@@ -651,14 +650,6 @@ function normalizePackageIdFilter(value: string): string {
             <h3>礼包规划数据源（飞书）</h3>
             <p>用于读取礼包规划明细并解析礼包 ID、道具 ID 与数量</p>
           </div>
-          <el-button
-            size="small"
-            :loading="refreshingSheets"
-            :disabled="!form.feishu_source_id"
-            @click="handleRefreshSheets"
-          >
-            刷新 Sheet 列表
-          </el-button>
         </div>
         <div class="package-items-rule-dialog__source-grid">
           <div class="package-items-rule-dialog__field">
@@ -697,56 +688,36 @@ function normalizePackageIdFilter(value: string): string {
             <label>授权状态</label>
             <span
               class="package-items-rule-dialog__auth-status"
-              :class="{ 'package-items-rule-dialog__auth-status--success': isAuthorized }"
+              :class="{
+                'package-items-rule-dialog__auth-status--success': isAuthorized,
+                'package-items-rule-dialog__auth-status--warning': !isAuthorized,
+              }"
             >
               {{ authorizationStatusLabel }}
             </span>
           </div>
         </div>
         <div class="package-items-rule-dialog__link-row">
-          <span>文档地址</span>
-          <a
-            v-if="documentAddressHref"
-            :href="documentAddressHref"
-            target="_blank"
-            rel="noreferrer"
-          >
-            {{ documentAddress }}
-          </a>
-          <strong v-else>{{ documentAddress || '未选择飞书数据源' }}</strong>
-        </div>
-        <div class="package-items-rule-dialog__compact-grid">
-          <div class="package-items-rule-dialog__field">
-            <label>礼包明细组合变量</label>
-            <el-select
-              v-model="form.detail_variable_tag"
-              class="w-full"
-              filterable
-              placeholder="选择包含 礼包id / 道具ID / 个数 的组合变量"
+          <div class="package-items-rule-dialog__document-link">
+            <span>文档地址</span>
+            <a
+              v-if="documentAddressHref"
+              :href="documentAddressHref"
+              target="_blank"
+              rel="noreferrer"
             >
-              <el-option
-                v-for="variable in detailVariableOptions"
-                :key="variable.tag"
-                :label="variable.tag"
-                :value="variable.tag"
-              />
-            </el-select>
-            <div class="package-items-rule-dialog__field-path">
-              {{
-                getVariablePathSummary(
-                  selectedDetailVariable,
-                  ['礼包id', '道具ID', '个数'],
-                  '请先选择礼包明细组合变量',
-                )
-              }}
-            </div>
+              {{ documentAddress }}
+            </a>
+            <strong v-else>{{ documentAddress || '未选择飞书数据源' }}</strong>
           </div>
-          <div class="package-items-rule-dialog__field">
-            <label>当前 Sheet</label>
-            <div class="package-items-rule-dialog__readonly-line">
-              {{ selectedFeishuSheet ? `${selectedFeishuSheet.name} · ${selectedFeishuSheet.sheet_id}` : '请先选择礼包规划 Sheet' }}
-            </div>
-          </div>
+          <el-button
+            size="small"
+            :loading="refreshingSheets"
+            :disabled="!form.feishu_source_id"
+            @click="handleRefreshSheets"
+          >
+            刷新 Sheet 列表
+          </el-button>
         </div>
       </section>
 
@@ -822,15 +793,15 @@ function normalizePackageIdFilter(value: string): string {
             <p>默认检查飞书页签全部礼包，也可只检查指定礼包 ID</p>
           </div>
         </div>
-        <el-radio-group v-model="form.validation_scope">
-          <el-radio-button label="all">飞书页签全部礼包</el-radio-button>
-          <el-radio-button label="specified">指定礼包 ID</el-radio-button>
+        <el-radio-group v-model="form.validation_scope" class="package-items-rule-dialog__scope-radios">
+          <el-radio label="all">全部礼包</el-radio>
+          <el-radio label="specified">指定礼包 ID</el-radio>
         </el-radio-group>
         <el-input
           v-if="form.validation_scope === 'specified'"
           v-model="form.package_id_filter"
           class="package-items-rule-dialog__scope-input"
-          placeholder="例如：26042411, 26042412"
+          placeholder="请输入礼包 ID，多个用英文逗号分隔"
         />
       </section>
 
@@ -854,33 +825,6 @@ function normalizePackageIdFilter(value: string): string {
         </div>
         <div v-else class="package-items-rule-dialog__preview-box">
           <div v-for="line in previewInfoLines" :key="line">{{ line }}</div>
-          <div v-if="isPreviewSuccessful" class="package-items-rule-dialog__preview-meta">
-            解析方式：{{ previewModeLabel }} · 置信度：{{ previewConfidenceLabel }} · 是否使用 AI：{{ previewAiUsedLabel }}
-          </div>
-          <div v-if="previewFieldMappingLines.length" class="package-items-rule-dialog__preview-meta">
-            <div v-for="line in previewFieldMappingLines" :key="line">{{ line }}</div>
-          </div>
-          <div v-if="previewRows.length" class="package-items-rule-dialog__preview-rows">
-            <div class="package-items-rule-dialog__preview-row package-items-rule-dialog__preview-row--head">
-              <span>行号</span>
-              <span>礼包 ID</span>
-              <span>道具 ID</span>
-              <span>数量</span>
-            </div>
-            <div
-              v-for="row in previewRows"
-              :key="`${row.row_index}-${row.package_id}-${row.item_id}`"
-              class="package-items-rule-dialog__preview-row"
-            >
-              <span>{{ row.row_index }}</span>
-              <span>{{ row.package_id }}</span>
-              <span>{{ row.item_id }}</span>
-              <span>{{ row.count }}</span>
-            </div>
-          </div>
-        </div>
-        <div v-if="isPreviewSuccessful && isAiPreviewMode" class="package-items-rule-dialog__ai-note">
-          当前结果由 AI 辅助识别结构后，系统按识别区域重新抽取数据。
         </div>
         <div v-if="previewWarnings.length" class="package-items-rule-dialog__warnings">
           <div
@@ -987,12 +931,11 @@ function normalizePackageIdFilter(value: string): string {
 
 .package-items-rule-dialog__source-grid {
   display: grid;
-  grid-template-columns: minmax(240px, 320px) minmax(240px, 320px) minmax(110px, 1fr);
+  grid-template-columns: minmax(240px, 320px) minmax(240px, 320px) minmax(110px, 160px);
   align-items: end;
   gap: 24px;
 }
 
-.package-items-rule-dialog__compact-grid,
 .package-items-rule-dialog__strategy-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(260px, 0.55fr);
@@ -1034,31 +977,45 @@ function normalizePackageIdFilter(value: string): string {
   color: #16a34a;
 }
 
+.package-items-rule-dialog__auth-status--warning {
+  color: #d97706;
+}
+
 .package-items-rule-dialog__link-row {
   display: flex;
   min-height: 24px;
   align-items: center;
-  gap: 18px;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 16px 24px;
   font-size: 13px;
   line-height: 20px;
 }
 
-.package-items-rule-dialog__link-row span {
+.package-items-rule-dialog__document-link {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 18px;
+}
+
+.package-items-rule-dialog__document-link span {
+  flex: 0 0 auto;
   color: var(--color-ink-500, #6b7280);
   font-weight: 500;
 }
 
-.package-items-rule-dialog__link-row a {
+.package-items-rule-dialog__document-link a {
   color: #0f62fe;
   text-decoration: none;
   word-break: break-all;
 }
 
-.package-items-rule-dialog__link-row a:hover {
+.package-items-rule-dialog__document-link a:hover {
   text-decoration: underline;
 }
 
-.package-items-rule-dialog__link-row strong {
+.package-items-rule-dialog__document-link strong {
   color: var(--color-ink-700, #334155);
   font-weight: 500;
   word-break: break-all;
@@ -1072,15 +1029,6 @@ function normalizePackageIdFilter(value: string): string {
   word-break: break-all;
 }
 
-.package-items-rule-dialog__readonly-line {
-  min-height: 32px;
-  display: flex;
-  align-items: center;
-  color: var(--color-ink-700, #334155);
-  font-size: 13px;
-  word-break: break-all;
-}
-
 .package-items-rule-dialog__preview-state {
   border-radius: 6px;
   background: #f5f7fb;
@@ -1091,7 +1039,14 @@ function normalizePackageIdFilter(value: string): string {
 }
 
 .package-items-rule-dialog__scope-input {
+  margin-top: 10px;
   max-width: 520px;
+}
+
+.package-items-rule-dialog__scope-radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 28px;
 }
 
 .package-items-rule-dialog__preview-box {
@@ -1101,40 +1056,6 @@ function normalizePackageIdFilter(value: string): string {
   color: var(--color-ink-600, #475569);
   font-size: 13px;
   line-height: 24px;
-}
-
-.package-items-rule-dialog__preview-meta {
-  margin-top: 4px;
-  color: var(--color-ink-500, #64748b);
-  font-size: 12px;
-}
-
-.package-items-rule-dialog__preview-rows {
-  margin-top: 10px;
-  overflow: hidden;
-  border: 1px solid var(--color-border, #e5e7eb);
-  border-radius: 6px;
-}
-
-.package-items-rule-dialog__preview-row {
-  display: grid;
-  grid-template-columns: 80px minmax(140px, 1fr) minmax(120px, 1fr) minmax(80px, 0.7fr);
-  gap: 10px;
-  border-top: 1px solid var(--color-border, #e5e7eb);
-  padding: 6px 10px;
-  color: var(--color-ink-700, #334155);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.package-items-rule-dialog__preview-row:first-child {
-  border-top: 0;
-}
-
-.package-items-rule-dialog__preview-row--head {
-  background: #eef2f7;
-  color: var(--color-ink-500, #64748b);
-  font-weight: 600;
 }
 
 .package-items-rule-dialog__textarea-wrap {
@@ -1182,16 +1103,6 @@ function normalizePackageIdFilter(value: string): string {
   line-height: 18px;
 }
 
-.package-items-rule-dialog__ai-note {
-  border: 1px solid #bfdbfe;
-  border-radius: 8px;
-  background: #eff6ff;
-  padding: 8px 10px;
-  color: #1d4ed8;
-  font-size: 12px;
-  line-height: 18px;
-}
-
 .package-items-rule-dialog__footer {
   display: flex;
   justify-content: flex-end;
@@ -1216,7 +1127,6 @@ function normalizePackageIdFilter(value: string): string {
 @media (max-width: 900px) {
   .package-items-rule-dialog__basic-grid,
   .package-items-rule-dialog__source-grid,
-  .package-items-rule-dialog__compact-grid,
   .package-items-rule-dialog__strategy-grid {
     grid-template-columns: 1fr;
   }

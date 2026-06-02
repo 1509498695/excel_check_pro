@@ -55,8 +55,19 @@ export async function validateLocalDirectoryPath(
   })
 }
 
-export async function fetchSourceMetadata(source: DataSource): Promise<SourceMetadataResponse> {
-  return apiFetch<SourceMetadataResponse>('/api/v1/sources/metadata', {
+export interface SourceMetadataFetchOptions {
+  includeColumns?: boolean
+}
+
+export async function fetchSourceMetadata(
+  source: DataSource,
+  options?: SourceMetadataFetchOptions,
+): Promise<SourceMetadataResponse> {
+  const query =
+    options?.includeColumns === false
+      ? '?include_columns=false'
+      : ''
+  return apiFetch<SourceMetadataResponse>(`/api/v1/sources/metadata${query}`, {
     method: 'POST',
     body: JSON.stringify(source),
   })

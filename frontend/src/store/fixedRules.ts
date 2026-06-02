@@ -14,6 +14,7 @@ import {
   fetchSourceCapabilities,
   fetchSourceMetadata,
 } from '../api/workbench'
+import type { SourceMetadataFetchOptions } from '../api/workbench'
 import type {
   CompositeCondition,
   FixedRuleDefinition,
@@ -66,6 +67,19 @@ import { saveApiFile } from '../utils/download'
 import { SAMPLE_SOURCE_PATH } from '../utils/workbenchMeta'
 
 const FIXED_RULES_PAGE_SIZE = RULE_ORCHESTRATION_PAGE_SIZE
+
+function canUseCachedSourceMetadata(
+  cached: SourceMetadata | undefined,
+  options?: SourceMetadataFetchOptions,
+): cached is SourceMetadata {
+  if (!cached) {
+    return false
+  }
+  if (options?.includeColumns === false) {
+    return true
+  }
+  return cached.sheets.length === 0 || cached.sheets.some((sheet) => sheet.columns.length > 0)
+}
 
 interface FixedRulesState {
   config: FixedRulesConfig
@@ -711,9 +725,13 @@ export const useFixedRulesStore = defineStore('fixed-rules', {
       }
     },
 
-    async loadSourceMetadata(sourceId: string, forceRefresh = false): Promise<SourceMetadata> {
+    async loadSourceMetadata(
+      sourceId: string,
+      forceRefresh = false,
+      options?: SourceMetadataFetchOptions,
+    ): Promise<SourceMetadata> {
       const cached = this.sourceMetadataMap[sourceId]
-      if (cached && !forceRefresh) {
+      if (!forceRefresh && canUseCachedSourceMetadata(cached, options)) {
         return cached
       }
 
@@ -722,7 +740,7 @@ export const useFixedRulesStore = defineStore('fixed-rules', {
         throw new Error(`未找到数据源“${sourceId}”。`)
       }
 
-      const response = await fetchSourceMetadata(source)
+      const response = await fetchSourceMetadata(source, options)
       this.sourceMetadataMap[sourceId] = response.data
       return response.data
     },

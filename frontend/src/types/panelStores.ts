@@ -5,6 +5,7 @@ import type {
   VariablePreviewData,
   VariableTag,
 } from './workbench'
+import type { SourceMetadataFetchOptions } from '../api/workbench'
 import type { SourcePathReplacementGroup } from '../utils/sourcePathReplacement'
 
 export interface SourceManagementStoreLike {
@@ -14,7 +15,11 @@ export interface SourceManagementStoreLike {
   sourceMetadataMap?: Record<string, SourceMetadata>
   svnPathReplacementPresets?: string[]
   selectedSvnPathReplacementPreset?: string | null
-  loadSourceMetadata?(sourceId: string, forceRefresh?: boolean): Promise<SourceMetadata>
+  loadSourceMetadata?(
+    sourceId: string,
+    forceRefresh?: boolean,
+    options?: SourceMetadataFetchOptions,
+  ): Promise<SourceMetadata>
   upsertSource(source: DataSource, originalId?: string): void
   removeSource(sourceId: string): void
   useSampleSource(): void
@@ -26,7 +31,11 @@ export interface VariablePoolStoreLike extends SourceManagementStoreLike {
   sourceMetadataMap: Record<string, SourceMetadata>
   variablePreviewMap: Record<string, VariablePreviewData>
   setActiveTag(tag: string | null): void
-  loadSourceMetadata(sourceId: string, forceRefresh?: boolean): Promise<SourceMetadata>
+  loadSourceMetadata(
+    sourceId: string,
+    forceRefresh?: boolean,
+    options?: SourceMetadataFetchOptions,
+  ): Promise<SourceMetadata>
   loadVariablePreview(
     variable: VariableTag,
     limit?: number,
