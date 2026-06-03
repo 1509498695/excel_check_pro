@@ -6,6 +6,7 @@ from backend.app.ai.compilers.base import WorkflowCompileState, WorkflowCompiler
 from backend.app.ai.compilers.composite_condition import CompositeConditionCompiler
 from backend.app.ai.compilers.dual_composite import DualCompositeCompiler
 from backend.app.ai.compilers.multi_composite import MultiCompositeCompiler
+from backend.app.ai.compilers.package_items import PackageItemsCompiler
 from backend.app.ai.compilers.single_target import CrossTableMappingCompiler, SingleTargetCompiler
 from backend.app.ai.schemas import RuleIntent
 from backend.app.ai.workflow_hints import MissingItem
@@ -17,6 +18,7 @@ _COMPILERS: tuple[WorkflowHintCompiler, ...] = (
     CompositeConditionCompiler(),
     DualCompositeCompiler(),
     MultiCompositeCompiler(),
+    PackageItemsCompiler(),
 )
 
 

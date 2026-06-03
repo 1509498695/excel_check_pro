@@ -70,6 +70,8 @@ const emit = defineEmits<{
     <td class="text-left align-top">
       <el-checkbox
         :model-value="selected"
+        :data-testid="`rule-select-${rule.rule_id}`"
+        :data-rule-name="rule.rule_name"
         @change="emit('toggle', rule.rule_id)"
         @click.stop
       />

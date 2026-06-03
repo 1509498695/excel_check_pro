@@ -32,6 +32,7 @@ const ruleTypeOptions = [
   { label: '跨组变量校验', value: 'dual_composite_compare' },
   { label: '多组串行校验', value: 'multi_composite_pipeline_check' },
   { label: '多组映射校验', value: 'multi_composite_mapping_check' },
+  { label: 'IAP礼包校验', value: 'package_items_compare' },
 ]
 
 const sourceOptions = computed(() =>
@@ -106,6 +107,7 @@ function isVariableCompatibleWithRule(variable: VariableTag, ruleType: string): 
       'dual_composite_compare',
       'multi_composite_pipeline_check',
       'multi_composite_mapping_check',
+      'package_items_compare',
     ].includes(ruleType)
   ) {
     return kind === 'composite'

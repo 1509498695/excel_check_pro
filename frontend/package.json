@@ -6,6 +6,9 @@
   "scripts": {
     "dev": "vite",
     "build": "vue-tsc -b && vite build",
+    "e2e": "node tests/e2e/prepare.mjs && playwright test --config playwright.config.ts",
+    "e2e:headed": "node tests/e2e/prepare.mjs && playwright test --config playwright.config.ts --headed",
+    "e2e:report": "playwright show-report",
     "lint": "eslint \"src/**/*.{ts,vue}\"",
     "test:unit": "vitest",
     "test:rule-contract": "node scripts/check-rule-contracts.mjs",
@@ -21,6 +24,7 @@
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "^1.56.1",
     "@types/node": "^24.12.0",
     "@vitejs/plugin-vue": "^6.0.5",
     "@vue/test-utils": "^2.4.10",

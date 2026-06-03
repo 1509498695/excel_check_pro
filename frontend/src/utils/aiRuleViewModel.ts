@@ -327,7 +327,7 @@ function buildRejectedExplanation(draft: AiRuleDraft): Pick<
     ],
     nextActionText: '点击“改写规则”回到输入框，把需求拆成当前规则库可表达的字段校验、筛选条件或 Key 对比。',
     rewriteHintText:
-      '可尝试改写成：非空、唯一、固定值比较、正则格式、顺序连续、跨表包含、组合分支、跨组 Key 对比、多组串行或多组映射，并明确目标变量、筛选字段、Key 和判断值。',
+      '可尝试改写成：非空、唯一、固定值比较、正则格式、顺序连续、跨表包含、组合分支、跨组 Key 对比、多组串行、多组映射或 IAP礼包校验，并明确目标变量、筛选字段、Key 和判断值。',
     resolveActionText: '',
   }
 }

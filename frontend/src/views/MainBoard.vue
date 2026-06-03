@@ -576,6 +576,7 @@ function handleToggleVisibleRuleSelection(payload: {
             </SecondaryButton>
             <PrimaryButton
               size="sm"
+              data-testid="personal-add-source-button"
               @click="openDataSourceCreate"
             >
               <template #icon><Plus /></template>
@@ -608,6 +609,7 @@ function handleToggleVisibleRuleSelection(payload: {
             <PrimaryButton
               size="sm"
               :disabled="!store.sources.length"
+              data-testid="personal-add-variable-button"
               @click="openSingleVariableCreate"
             >
               <template #icon><Plus /></template>
@@ -647,12 +649,14 @@ function handleToggleVisibleRuleSelection(payload: {
           <div class="personal-rule-actions">
             <SecondaryButton
               :disabled="store.isExecuting || !store.orchestrationRuleCount"
+              data-testid="personal-import-button"
               @click="openImportPersonalRulesDialog"
             >
               一键导入到项目校验
             </SecondaryButton>
             <PrimaryButton
               :disabled="store.isExecuting"
+              data-testid="personal-execute-button"
               @click="runExecution"
             >
               <template #icon>
@@ -666,7 +670,7 @@ function handleToggleVisibleRuleSelection(payload: {
         </CollapsibleSection>
       </div>
 
-      <div ref="resultStepRef">
+      <div ref="resultStepRef" data-testid="personal-result-section">
         <CollapsibleSection
           step="04"
           title="结果"

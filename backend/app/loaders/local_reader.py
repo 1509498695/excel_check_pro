@@ -10,10 +10,19 @@ from typing import Any, TypeVar
 import pandas as pd
 
 from backend.app.api.schemas import DataSource, VariableTag
+from backend.config import settings
 
 
 LOCAL_SOURCE_TYPES = {"local_excel"}
 ItemT = TypeVar("ItemT")
+LOCAL_FILE_DENIED_MESSAGE = (
+    "本地 Excel 路径不在服务端允许读取的目录内。请使用上传文件、SVN/飞书数据源，"
+    "或由管理员配置 LOCAL_FILE_ROOT_ALLOWLIST。"
+)
+
+
+class LocalFileAccessDeniedError(PermissionError):
+    """本地文件路径未通过服务端 allowlist 校验。"""
 
 
 def load_local_variables(
@@ -430,13 +439,17 @@ def _resolve_source_path(
     """
     if source.type == "svn":
         # 延迟导入以避免与 svn_manager / svn_credentials 形成循环依赖。
-        from backend.app.loaders.svn_cache import prepare_remote_svn_source
+        from backend.app.loaders.svn_cache import is_remote_svn_locator, prepare_remote_svn_source
 
-        return prepare_remote_svn_source(
+        raw_locator = (source.pathOrUrl or source.path or source.url or "").strip()
+        resolved_svn_path = prepare_remote_svn_source(
             source,
             user_scope=user_scope,
             force_refresh=force_refresh,
         )
+        if not is_remote_svn_locator(raw_locator):
+            _ensure_path_allowed(resolved_svn_path)
+        return resolved_svn_path
 
     raw_path = source.path or source.pathOrUrl
     if not raw_path:
@@ -445,20 +458,67 @@ def _resolve_source_path(
         )
 
     source_path = Path(raw_path).expanduser()
-    if not source_path.exists():
+    resolved_path = _resolve_for_allowlist(source_path)
+    _ensure_path_allowed(resolved_path)
+    if not resolved_path.exists():
         raise FileNotFoundError(
-            f"Local source '{source.id}' file not found: '{source_path}'."
+            f"Local source '{source.id}' file not found: '{resolved_path}'."
         )
-    if not source_path.is_file():
+    if not resolved_path.is_file():
         raise ValueError(
-            f"Local source '{source.id}' path is not a file: '{source_path}'."
+            f"Local source '{source.id}' path is not a file: '{resolved_path}'."
         )
-    return source_path
+    return resolved_path
 
 
 def _resolve_local_path(source: DataSource) -> Path:
     """兼容旧调用名，保留一个薄封装。"""
     return _resolve_source_path(source)
+
+
+def effective_local_file_root_allowlist() -> tuple[Path, ...]:
+    """返回显式本地白名单与系统托管缓存目录的合并结果。"""
+    return tuple(
+        _resolve_for_allowlist(path)
+        for path in (
+            *settings.local_file_root_allowlist,
+            settings.runtime_upload_dir,
+            settings.svn_cache_dir,
+        )
+    )
+
+
+def is_path_in_local_file_allowlist(path: Path) -> bool:
+    """判断路径是否位于服务端允许读取的本地根目录内。"""
+    resolved_path = _resolve_for_allowlist(path)
+    return any(
+        resolved_path == allowed_root or _is_relative_to(resolved_path, allowed_root)
+        for allowed_root in effective_local_file_root_allowlist()
+    )
+
+
+def ensure_directory_in_local_file_allowlist(path: Path) -> Path:
+    """校验本地目录是否位于 allowlist 内，供目录校验接口复用。"""
+    resolved_path = _resolve_for_allowlist(path)
+    _ensure_path_allowed(resolved_path)
+    return resolved_path
+
+
+def _ensure_path_allowed(path: Path) -> None:
+    if not is_path_in_local_file_allowlist(path):
+        raise LocalFileAccessDeniedError(LOCAL_FILE_DENIED_MESSAGE)
+
+
+def _resolve_for_allowlist(path: Path) -> Path:
+    return path.expanduser().resolve(strict=False)
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
 
 
 def _get_variable_kind(variable: VariableTag) -> str:

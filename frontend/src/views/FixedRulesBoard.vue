@@ -1,13 +1,18 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus } from '@element-plus/icons-vue'
 
 import AppCard from '../components/shell/AppCard.vue'
 import {
   RuleOrchestrationContainer,
+  buildCompositeFieldOptions,
+  buildDisplayFieldOptions,
+  resolveFieldOptionValue,
   useRuleAutoName,
   useRuleDialog,
   useRuleForm,
+  useRuleOrchestrationEditing,
 } from '../features/rule-orchestration'
 import ResultBoardPanel from '../components/workbench/ResultBoardPanel.vue'
 import DataSourcePanel from '../components/workbench/DataSourcePanel.vue'
@@ -22,59 +27,9 @@ import SecondaryButton from '../components/shell/SecondaryButton.vue'
 import type { StatusBadgeType } from '../components/shell'
 import { useFixedRulesStore } from '../store/fixedRules'
 import type {
-  CompositeAssertionOperator,
-  CompositeBranch,
-  CompositeCondition,
-  CompositeFilterOperator,
-  CompositeRuleConfig,
-  DualCompositeComparison,
-  ExpectedValueMode,
   FixedRuleDefinition,
-  FixedRuleOperator,
-  FixedRuleSelection,
-  MultiCompositeMappingConfig,
-  MultiCompositeMappingExclusionRange,
-  MultiCompositeMappingFilter,
-  MultiCompositeMappingNode,
-  MultiCompositePipelineConfig,
-  MultiCompositePipelineNode,
-  PipelineAssertionOperator,
 } from '../types/fixedRules'
-import type { DataSource, VariableTag } from '../types/workbench'
-import {
-  COMPOSITE_ASSERTION_OPTIONS,
-  COMPOSITE_COMPARE_OPERATORS,
-  COMPOSITE_FILTER_OPTIONS,
-  COMPARE_RULE_SELECTIONS,
-  DUAL_COMPOSITE_OPERATOR_OPTIONS,
-  EXPECTED_VALUE_MODE_OPTIONS,
-  KEY_FIELD,
-  OPERATOR_SYMBOL_MAP,
-  PIPELINE_ASSERTION_OPTIONS,
-  RULE_ENTRY_TYPE_OPTIONS,
-  RULE_SELECTION_NAME_MAP,
-  RULE_SELECTION_OPTIONS,
-  buildCompositeFieldOptions as buildSharedCompositeFieldOptions,
-  buildDisplayFieldOptions as buildSharedDisplayFieldOptions,
-  createDualCompositeComparison as createSharedDualCompositeComparison,
-  createMappingExclusionRange as createSharedMappingExclusionRange,
-  createMappingFilter as createSharedMappingFilter,
-  createMappingNode as createSharedMappingNode,
-  createPipelineNode as createSharedPipelineNode,
-  createRuleBranch,
-  createRuleCondition,
-  createRuleEntityId,
-  applyConditionCompareValueKind,
-  getConditionCompareValueKind as getSharedConditionCompareValueKind,
-  getConditionCompareValueKindOptions as getSharedConditionCompareValueKindOptions,
-  resolveFieldOptionValue as resolveSharedFieldOptionValue,
-  shouldShowConditionCompareValueKind as shouldShowSharedConditionCompareValueKind,
-  type ConditionCompareValueKind,
-  type FieldOption,
-  type RuleEntryType,
-} from '../rules'
-
-type ConditionMode = 'filter' | 'assertion'
+import type { VariableTag } from '../types/workbench'
 type StepIndex = 1 | 2 | 3 | 4
 type SectionStatus = 'pending' | 'active' | 'done'
 type SectionKey = 'source' | 'variable' | 'rule' | 'result'
@@ -119,18 +74,6 @@ const {
   mappingRuleForm,
 } = useRuleForm()
 
-const ruleSelectionOptions = RULE_SELECTION_OPTIONS
-const ruleEntryTypeOptions = RULE_ENTRY_TYPE_OPTIONS
-const dualCompositeOperatorOptions = DUAL_COMPOSITE_OPERATOR_OPTIONS
-const compositeFilterOptions = COMPOSITE_FILTER_OPTIONS
-const compositeAssertionOptions = COMPOSITE_ASSERTION_OPTIONS
-const pipelineAssertionOptions = PIPELINE_ASSERTION_OPTIONS
-const compareRuleSelections = COMPARE_RULE_SELECTIONS
-const compositeCompareOperators = COMPOSITE_COMPARE_OPERATORS
-const ruleSelectionNameMap = RULE_SELECTION_NAME_MAP
-const operatorSymbolMap = OPERATOR_SYMBOL_MAP
-const expectedValueModeOptions = EXPECTED_VALUE_MODE_OPTIONS
-
 const variableMap = computed(
   () => new Map(store.variables.map((variable) => [variable.tag, variable] as const)),
 )
@@ -171,27 +114,24 @@ const compositeReferenceVariableOptions = computed(() => compositeVariableOption
 const selectedReferenceVariable = computed<VariableTag | null>(
   () => variableMap.value.get(ruleForm.reference_variable_tag) ?? null,
 )
+const isCompositeBranchRule = computed(
+  () => ruleForm.rule_entry_type === 'composite',
+)
+const isDualCompositeRule = computed(
+  () => ruleForm.rule_entry_type === 'dual_composite',
+)
+const isMultiCompositePipelineRule = computed(
+  () => ruleForm.rule_entry_type === 'multi_composite_pipeline',
+)
+const isMultiCompositeMappingRule = computed(
+  () => ruleForm.rule_entry_type === 'multi_composite_mapping',
+)
 const isSameDualCompositeVariable = computed(
   () =>
     isDualCompositeRule.value &&
     ruleForm.target_variable_tag.trim() !== '' &&
     ruleForm.target_variable_tag === ruleForm.reference_variable_tag,
 )
-
-function buildCompositeFieldOptions(variable: VariableTag | null): FieldOption[] {
-  return buildSharedCompositeFieldOptions(variable)
-}
-
-function buildDisplayFieldOptions(variable: VariableTag | null): FieldOption[] {
-  return buildSharedDisplayFieldOptions(variable)
-}
-
-function resolveFieldOptionValue(
-  options: FieldOption[],
-  field: string,
-): string | null {
-  return resolveSharedFieldOptionValue(options, field)
-}
 
 const compositeFieldOptions = computed(() => {
   return buildCompositeFieldOptions(selectedRuleVariable.value)
@@ -200,6 +140,133 @@ const referenceCompositeFieldOptions = computed(() => {
   return buildCompositeFieldOptions(selectedReferenceVariable.value)
 })
 const displayFieldOptions = computed(() => buildDisplayFieldOptions(selectedRuleVariable.value))
+
+const {
+  KEY_FIELD,
+  ruleSelectionOptions,
+  ruleEntryTypeOptions,
+  dualCompositeOperatorOptions,
+  compositeFilterOptions,
+  expectedValueModeOptions,
+  isCompareRuleSelection,
+  isCompositeRegexOperator,
+  normalizeExpectedValueMode,
+  parseExpectedValueSet,
+  setRuleFormExpectedValueMode,
+  getExpectedValueModeHelpText,
+  getDefaultCompositeVariableTag,
+  normalizeCompositeConfig,
+  applyCompositeConfig,
+  resetCompositeConfig,
+  normalizeDualCompositeComparisons,
+  normalizeDualCompositeFilters,
+  getRuleEntryTypeBySelection,
+  applyDualCompositeComparisons,
+  resetDualCompositeComparisons,
+  applyDualCompositeFilters,
+  resetDualCompositeFilters,
+  resetDualCompositeKeyFields,
+  normalizePipelineConfig,
+  applyPipelineConfig,
+  resetPipelineConfig,
+  normalizeMappingConfig,
+  applyMappingConfig,
+  resetMappingConfig,
+  getNodeDisplayFieldOptions,
+  normalizeDisplayField,
+  addPipelineNode,
+  removePipelineNode,
+  movePipelineNode,
+  addPipelineNodeFilter,
+  removePipelineNodeFilter,
+  addPipelineNodeAssertion,
+  removePipelineNodeAssertion,
+  getPipelineNodeVariable,
+  getPipelineNodeFieldOptions,
+  handlePipelineNodeVariableChange,
+  addMappingNode,
+  removeMappingNode,
+  moveMappingNode,
+  addMappingNodeFilter,
+  removeMappingNodeFilter,
+  getMappingNodeVariable,
+  getMappingNodeFieldOptions,
+  handleMappingNodeVariableChange,
+  addMappingExclusionRange,
+  removeMappingExclusionRange,
+  addGlobalFilter,
+  removeGlobalFilter,
+  addBranch,
+  removeBranch,
+  addBranchFilter,
+  removeBranchFilter,
+  addBranchAssertion,
+  removeBranchAssertion,
+  addDualCompositeComparison,
+  removeDualCompositeComparison,
+  addDualCompositeFilter,
+  removeDualCompositeFilter,
+  shouldShowConditionCompareValueKind,
+  getConditionCompareValueKind,
+  getConditionCompareValueKindOptions,
+  setConditionCompareValueKind,
+  shouldShowConditionExpectedValue,
+  shouldShowConditionExpectedField,
+  getConditionExpectedValuePlaceholder,
+  getConditionOptions,
+  getPipelineConditionOptions,
+  handleFilterOperatorChange,
+  handleAssertionOperatorChange,
+  handlePipelineAssertionOperatorChange,
+  validateCompositeCondition,
+  validateDualCompositeKeyField,
+  validateDualCompositeFilters,
+  validateDualCompositeComparison,
+  getMappingRangeStartError,
+  getMappingRangeEndError,
+  getMappingRangeExpectedValueError,
+  validateMappingExclusionRanges,
+  getDualCompositeOperatorLabel,
+  getDualCompositeKeyCheckModeLabel,
+  getSourcePath,
+  getCompositeFieldLabel,
+  resolveRuleVariable,
+  resolveRuleSource,
+  getOperatorLabel,
+  getRuleSelectionLabel,
+  getRuleSelectionValue,
+  buildSequenceSummary,
+  getVariableColumnSummary,
+  buildVariableOptionLabel,
+  buildDefaultRuleName,
+  applySystemRuleName,
+  syncRuleNameWithForm,
+  summarizeCondition,
+} = useRuleOrchestrationEditing({
+  ruleForm,
+  compositeRuleForm,
+  dualCompositeComparisons,
+  dualCompositeLeftFilters,
+  dualCompositeRightFilters,
+  pipelineRuleForm,
+  mappingRuleForm,
+  compositeVariableOptions,
+  variableMap,
+  sourceMap,
+  selectedRuleVariable,
+  compositeFieldOptions,
+  referenceCompositeFieldOptions,
+  isMultiCompositePipelineRule,
+  isMultiCompositeMappingRule,
+  isInitializingRuleDialog,
+  isApplyingSystemRuleName,
+  isRuleNameManuallyEdited,
+  lastAutoGeneratedRuleName,
+  options: {
+    dualComparisonIdPrefix: 'dual-comparison',
+    normalizeDualComparisonFields: false,
+  },
+})
 
 const canCreateRule = computed(() => variableOptions.value.length > 0)
 
@@ -219,18 +286,6 @@ const shouldShowManualSequenceStartValue = computed(
 )
 const shouldShowSingleExpectedValueMode = computed(
   () => ruleForm.selected_rule === 'eq' || ruleForm.selected_rule === 'ne',
-)
-const isCompositeBranchRule = computed(
-  () => ruleForm.rule_entry_type === 'composite',
-)
-const isDualCompositeRule = computed(
-  () => ruleForm.rule_entry_type === 'dual_composite',
-)
-const isMultiCompositePipelineRule = computed(
-  () => ruleForm.rule_entry_type === 'multi_composite_pipeline',
-)
-const isMultiCompositeMappingRule = computed(
-  () => ruleForm.rule_entry_type === 'multi_composite_mapping',
 )
 const shouldShowTopTargetVariable = computed(
   () => !isMultiCompositePipelineRule.value && !isMultiCompositeMappingRule.value,
@@ -820,997 +875,6 @@ function getSectionStatusTone(step: StepIndex): 'pending' | 'done' | 'warn' {
   }
 
   return getSectionStatusLabel(step) === '已完成' ? 'done' : 'pending'
-}
-
-function isCompareRuleSelection(value: FixedRuleSelection): value is FixedRuleOperator {
-  return compareRuleSelections.has(value as FixedRuleOperator)
-}
-
-function isCompositeCompareOperator(
-  value: CompositeFilterOperator | CompositeAssertionOperator,
-): value is FixedRuleOperator {
-  return compositeCompareOperators.has(value)
-}
-
-function isCompositeContainsOperator(
-  value: CompositeFilterOperator | CompositeAssertionOperator,
-): value is 'contains' | 'not_contains' {
-  return value === 'contains' || value === 'not_contains'
-}
-
-function isCompositeRegexOperator(
-  value: CompositeFilterOperator | CompositeAssertionOperator,
-): value is 'regex' {
-  return value === 'regex'
-}
-
-function normalizeExpectedValueMode(value: ExpectedValueMode | undefined): ExpectedValueMode {
-  return value === 'set' ? 'set' : 'single'
-}
-
-function parseExpectedValueSet(value: string): string[] {
-  return value
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
-
-function shouldShowConditionExpectedValueMode(condition: CompositeCondition): boolean {
-  return (
-    (condition.operator === 'eq' || condition.operator === 'ne') &&
-    (condition.value_source ?? 'literal') === 'literal'
-  )
-}
-
-function setRuleFormExpectedValueMode(value: string): void {
-  ruleForm.expected_value_mode = normalizeExpectedValueMode(value as ExpectedValueMode)
-}
-
-function getExpectedValueModeHelpText(value: string): string {
-  return value.trim() ? '' : '多个固定值请用英文逗号分隔，例如：0,1,2。'
-}
-
-function createId(prefix: string): string {
-  return createRuleEntityId(prefix)
-}
-
-function createCondition(): CompositeCondition {
-  return createRuleCondition()
-}
-
-function createBranch(): CompositeBranch {
-  return createRuleBranch()
-}
-
-function createDualCompositeComparison(): DualCompositeComparison {
-  return createSharedDualCompositeComparison()
-}
-
-function getDefaultCompositeVariableTag(preferred = ''): string {
-  const normalizedPreferred = preferred.trim()
-  if (
-    normalizedPreferred &&
-    compositeVariableOptions.value.some((variable) => variable.tag === normalizedPreferred)
-  ) {
-    return normalizedPreferred
-  }
-  return compositeVariableOptions.value[0]?.tag ?? ''
-}
-
-function createPipelineNode(preferredVariableTag = ''): MultiCompositePipelineNode {
-  return createSharedPipelineNode(getDefaultCompositeVariableTag(preferredVariableTag))
-}
-
-function createMappingExclusionRange(startRow = 2): MultiCompositeMappingExclusionRange {
-  return createSharedMappingExclusionRange(startRow)
-}
-
-function createMappingFilter(): MultiCompositeMappingFilter {
-  return createSharedMappingFilter()
-}
-
-function createMappingNode(preferredVariableTag = ''): MultiCompositeMappingNode {
-  const variableTag = getDefaultCompositeVariableTag(preferredVariableTag)
-  return createSharedMappingNode(variableTag)
-}
-
-function normalizeCompositeConfig(config?: CompositeRuleConfig): CompositeRuleConfig {
-  return {
-    global_filters: (config?.global_filters ?? []).map((condition) => ({
-      ...condition,
-      condition_id: condition.condition_id || createId('condition'),
-    })),
-    branches: (config?.branches?.length ? config.branches : [createBranch()]).map((branch) => ({
-      branch_id: branch.branch_id || createId('branch'),
-      filters: (branch.filters ?? []).map((condition) => ({
-        ...condition,
-        condition_id: condition.condition_id || createId('condition'),
-      })),
-      assertions: (branch.assertions?.length ? branch.assertions : [createCondition()]).map((condition) => ({
-        ...condition,
-        condition_id: condition.condition_id || createId('condition'),
-      })),
-    })),
-  }
-}
-
-function applyCompositeConfig(config?: CompositeRuleConfig): void {
-  const next = normalizeCompositeConfig(config)
-  compositeRuleForm.global_filters = next.global_filters
-  compositeRuleForm.branches = next.branches
-}
-
-function resetCompositeConfig(): void {
-  applyCompositeConfig(undefined)
-}
-
-function normalizeDualCompositeComparisons(
-  comparisons?: DualCompositeComparison[],
-): DualCompositeComparison[] {
-  return (comparisons?.length ? comparisons : [createDualCompositeComparison()]).map((comparison) => ({
-    ...comparison,
-    comparison_id: comparison.comparison_id || createId('dual-comparison'),
-  }))
-}
-
-function normalizeDualCompositeFilters(filters?: CompositeCondition[]): CompositeCondition[] {
-  return (filters ?? []).map((condition) => ({
-    ...condition,
-    condition_id: condition.condition_id || createId('condition'),
-  }))
-}
-
-function getRuleEntryTypeBySelection(selection: FixedRuleSelection): RuleEntryType {
-  if (selection === 'dual_composite_compare') {
-    return 'dual_composite'
-  }
-  if (selection === 'multi_composite_pipeline_check') {
-    return 'multi_composite_pipeline'
-  }
-  if (selection === 'multi_composite_mapping_check') {
-    return 'multi_composite_mapping'
-  }
-  if (selection === 'composite_condition_check') {
-    return 'composite'
-  }
-  return 'single'
-}
-
-function applyDualCompositeComparisons(comparisons?: DualCompositeComparison[]): void {
-  dualCompositeComparisons.value = normalizeDualCompositeComparisons(comparisons)
-}
-
-function resetDualCompositeComparisons(): void {
-  applyDualCompositeComparisons(undefined)
-}
-
-function applyDualCompositeFilters(
-  leftFilters?: CompositeCondition[],
-  rightFilters?: CompositeCondition[],
-): void {
-  dualCompositeLeftFilters.value = normalizeDualCompositeFilters(leftFilters)
-  dualCompositeRightFilters.value = normalizeDualCompositeFilters(rightFilters)
-}
-
-function resetDualCompositeFilters(): void {
-  applyDualCompositeFilters()
-}
-
-function resetDualCompositeKeyFields(): void {
-  ruleForm.left_key_field = KEY_FIELD
-  ruleForm.right_key_field = KEY_FIELD
-}
-
-function normalizePipelineConfig(
-  config?: MultiCompositePipelineConfig,
-  preferredVariableTag = '',
-): MultiCompositePipelineConfig {
-  const fallbackVariableTag = getDefaultCompositeVariableTag(preferredVariableTag)
-  const nextNodes = (config?.nodes?.length ? config.nodes : [createPipelineNode(fallbackVariableTag)]).map(
-    (node, index) => ({
-      node_id: node.node_id || createId('pipeline-node'),
-      variable_tag:
-        getDefaultCompositeVariableTag(node.variable_tag || (index === 0 ? fallbackVariableTag : '')),
-      display_field: node.display_field?.trim() ?? '',
-      filters: (node.filters ?? []).map((condition) => ({
-        ...condition,
-        condition_id: condition.condition_id || createId('condition'),
-      })),
-      assertions: (node.assertions?.length ? node.assertions : [createCondition()]).map((condition) => ({
-        ...condition,
-        condition_id: condition.condition_id || createId('condition'),
-      })),
-    }),
-  )
-  return { nodes: nextNodes }
-}
-
-function applyPipelineConfig(
-  config?: MultiCompositePipelineConfig,
-  preferredVariableTag = '',
-): void {
-  const next = normalizePipelineConfig(config, preferredVariableTag)
-  pipelineRuleForm.nodes = next.nodes
-}
-
-function resetPipelineConfig(preferredVariableTag = ''): void {
-  applyPipelineConfig(undefined, preferredVariableTag)
-}
-
-function normalizeMappingConfig(
-  config?: MultiCompositeMappingConfig,
-  preferredVariableTag = '',
-): MultiCompositeMappingConfig {
-  const fallbackVariableTag = getDefaultCompositeVariableTag(preferredVariableTag)
-  const nextNodes = (config?.nodes?.length ? config.nodes : [createMappingNode(fallbackVariableTag)]).map(
-    (node, index) => {
-      const variableTag = getDefaultCompositeVariableTag(
-        node.variable_tag || (index === 0 ? fallbackVariableTag : ''),
-      )
-      return {
-        node_id: node.node_id || createId('mapping-node'),
-        variable_tag: variableTag,
-        display_field: node.display_field?.trim() ?? '',
-        filters: (node.filters ?? []).map((condition) => ({
-          ...condition,
-          condition_id: condition.condition_id || createId('condition'),
-          exclusion_ranges: (condition.exclusion_ranges ?? []).map((range) => ({
-            range_id: range.range_id || createId('mapping-range'),
-            start_row: Number(range.start_row) || 1,
-            end_row: Number(range.end_row) || 1,
-            expected_value: range.expected_value?.trim() ?? '',
-          })),
-        })),
-      }
-    },
-  )
-  return { nodes: nextNodes }
-}
-
-function applyMappingConfig(
-  config?: MultiCompositeMappingConfig,
-  preferredVariableTag = '',
-): void {
-  const next = normalizeMappingConfig(config, preferredVariableTag)
-  mappingRuleForm.nodes = next.nodes
-}
-
-function resetMappingConfig(preferredVariableTag = ''): void {
-  applyMappingConfig(undefined, preferredVariableTag)
-}
-
-function getNodeDisplayFieldOptions(node: MultiCompositePipelineNode | MultiCompositeMappingNode): Array<{ label: string; value: string }> {
-  return buildDisplayFieldOptions(variableMap.value.get(node.variable_tag) ?? null)
-}
-
-function normalizeDisplayField(value: string, options: Array<{ label: string; value: string }>): string {
-  return options.some((option) => option.value === value) ? value : ''
-}
-
-function addPipelineNode(): void {
-  pipelineRuleForm.nodes.push(createPipelineNode())
-}
-
-function removePipelineNode(nodeId: string): void {
-  pipelineRuleForm.nodes = pipelineRuleForm.nodes.filter((node) => node.node_id !== nodeId)
-}
-
-function movePipelineNode(nodeId: string, direction: 'up' | 'down'): void {
-  const currentIndex = pipelineRuleForm.nodes.findIndex((node) => node.node_id === nodeId)
-  if (currentIndex < 0) {
-    return
-  }
-  const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1
-  if (targetIndex < 0 || targetIndex >= pipelineRuleForm.nodes.length) {
-    return
-  }
-  const nextNodes = [...pipelineRuleForm.nodes]
-  const [currentNode] = nextNodes.splice(currentIndex, 1)
-  nextNodes.splice(targetIndex, 0, currentNode)
-  pipelineRuleForm.nodes = nextNodes
-}
-
-function addPipelineNodeFilter(node: MultiCompositePipelineNode): void {
-  node.filters.push(createCondition())
-}
-
-function removePipelineNodeFilter(node: MultiCompositePipelineNode, conditionId: string): void {
-  node.filters = node.filters.filter((condition) => condition.condition_id !== conditionId)
-}
-
-function addPipelineNodeAssertion(node: MultiCompositePipelineNode): void {
-  node.assertions.push(createCondition())
-}
-
-function removePipelineNodeAssertion(node: MultiCompositePipelineNode, conditionId: string): void {
-  node.assertions = node.assertions.filter((condition) => condition.condition_id !== conditionId)
-}
-
-function getPipelineNodeVariable(node: MultiCompositePipelineNode): VariableTag | null {
-  return variableMap.value.get(node.variable_tag) ?? null
-}
-
-function getPipelineNodeFieldOptions(
-  node: MultiCompositePipelineNode,
-): Array<{ label: string; value: string }> {
-  return buildCompositeFieldOptions(getPipelineNodeVariable(node))
-}
-
-function handlePipelineNodeVariableChange(nodeIndex: number, value: string): void {
-  const node = pipelineRuleForm.nodes[nodeIndex]
-  if (!node) {
-    return
-  }
-  node.variable_tag = value
-  node.display_field = normalizeDisplayField(node.display_field ?? '', getNodeDisplayFieldOptions(node))
-}
-
-function addMappingNode(): void {
-  mappingRuleForm.nodes.push(createMappingNode())
-}
-
-function removeMappingNode(nodeId: string): void {
-  mappingRuleForm.nodes = mappingRuleForm.nodes.filter((node) => node.node_id !== nodeId)
-}
-
-function moveMappingNode(nodeId: string, direction: 'up' | 'down'): void {
-  const currentIndex = mappingRuleForm.nodes.findIndex((node) => node.node_id === nodeId)
-  if (currentIndex < 0) {
-    return
-  }
-  const targetIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1
-  if (targetIndex < 0 || targetIndex >= mappingRuleForm.nodes.length) {
-    return
-  }
-  const nextNodes = [...mappingRuleForm.nodes]
-  const [currentNode] = nextNodes.splice(currentIndex, 1)
-  nextNodes.splice(targetIndex, 0, currentNode)
-  mappingRuleForm.nodes = nextNodes
-}
-
-function addMappingNodeFilter(node: MultiCompositeMappingNode): void {
-  node.filters.push(createMappingFilter())
-}
-
-function removeMappingNodeFilter(node: MultiCompositeMappingNode, conditionId: string): void {
-  node.filters = node.filters.filter((condition) => condition.condition_id !== conditionId)
-}
-
-function getMappingNodeVariable(node: MultiCompositeMappingNode): VariableTag | null {
-  return variableMap.value.get(node.variable_tag) ?? null
-}
-
-function getMappingNodeFieldOptions(
-  node: MultiCompositeMappingNode,
-): Array<{ label: string; value: string }> {
-  return buildCompositeFieldOptions(getMappingNodeVariable(node))
-}
-
-function handleMappingNodeVariableChange(nodeIndex: number, value: string): void {
-  const node = mappingRuleForm.nodes[nodeIndex]
-  if (!node) {
-    return
-  }
-  node.variable_tag = value
-  node.display_field = normalizeDisplayField(node.display_field ?? '', getNodeDisplayFieldOptions(node))
-  node.filters = []
-}
-
-function getNextMappingExclusionRangeStart(condition: MultiCompositeMappingFilter): number {
-  if (!condition.exclusion_ranges.length) {
-    return 2
-  }
-  const lastEnd = Math.max(...condition.exclusion_ranges.map((range) => Number(range.end_row) || 1))
-  return lastEnd + 1
-}
-
-function addMappingExclusionRange(condition: MultiCompositeMappingFilter): void {
-  condition.exclusion_ranges.push(createMappingExclusionRange(getNextMappingExclusionRangeStart(condition)))
-}
-
-function removeMappingExclusionRange(condition: MultiCompositeMappingFilter, rangeId: string): void {
-  condition.exclusion_ranges = condition.exclusion_ranges.filter((range) => range.range_id !== rangeId)
-}
-
-function addGlobalFilter(): void {
-  compositeRuleForm.global_filters.push(createCondition())
-}
-
-function removeGlobalFilter(conditionId: string): void {
-  compositeRuleForm.global_filters = compositeRuleForm.global_filters.filter(
-    (condition) => condition.condition_id !== conditionId,
-  )
-}
-
-function addBranch(): void {
-  compositeRuleForm.branches.push(createBranch())
-}
-
-function removeBranch(branchId: string): void {
-  compositeRuleForm.branches = compositeRuleForm.branches.filter((branch) => branch.branch_id !== branchId)
-}
-
-function addBranchFilter(branch: CompositeBranch): void {
-  branch.filters.push(createCondition())
-}
-
-function removeBranchFilter(branch: CompositeBranch, conditionId: string): void {
-  branch.filters = branch.filters.filter((condition) => condition.condition_id !== conditionId)
-}
-
-function addBranchAssertion(branch: CompositeBranch): void {
-  branch.assertions.push(createCondition())
-}
-
-function removeBranchAssertion(branch: CompositeBranch, conditionId: string): void {
-  branch.assertions = branch.assertions.filter((condition) => condition.condition_id !== conditionId)
-}
-
-function addDualCompositeComparison(): void {
-  dualCompositeComparisons.value.push(createDualCompositeComparison())
-}
-
-function removeDualCompositeComparison(comparisonId: string): void {
-  dualCompositeComparisons.value = dualCompositeComparisons.value.filter(
-    (comparison) => comparison.comparison_id !== comparisonId,
-  )
-}
-
-function addDualCompositeFilter(side: 'left' | 'right'): void {
-  if (side === 'left') {
-    dualCompositeLeftFilters.value.push(createCondition())
-    return
-  }
-  dualCompositeRightFilters.value.push(createCondition())
-}
-
-function removeDualCompositeFilter(side: 'left' | 'right', conditionId: string): void {
-  if (side === 'left') {
-    dualCompositeLeftFilters.value = dualCompositeLeftFilters.value.filter(
-      (condition) => condition.condition_id !== conditionId,
-    )
-    return
-  }
-  dualCompositeRightFilters.value = dualCompositeRightFilters.value.filter(
-    (condition) => condition.condition_id !== conditionId,
-  )
-}
-
-function setConditionOperator(
-  condition: CompositeCondition,
-  operator: CompositeFilterOperator | CompositeAssertionOperator,
-): void {
-  condition.operator = operator
-  if (isCompositeContainsOperator(operator)) {
-    condition.value_source = 'literal'
-    condition.expected_field = undefined
-    condition.expected_value_mode = undefined
-    if (typeof condition.expected_value !== 'string') {
-      condition.expected_value = ''
-    }
-    return
-  }
-  if (isCompositeRegexOperator(operator)) {
-    condition.value_source = undefined
-    condition.expected_field = undefined
-    condition.expected_value_mode = undefined
-    if (typeof condition.expected_value !== 'string') {
-      condition.expected_value = ''
-    }
-    return
-  }
-  if (!isCompositeCompareOperator(operator)) {
-    condition.value_source = undefined
-    condition.expected_value = undefined
-    condition.expected_value_mode = undefined
-    condition.expected_field = undefined
-    return
-  }
-
-  if (condition.value_source !== 'field' && condition.value_source !== 'literal') {
-    condition.value_source = 'literal'
-  }
-  if (condition.value_source === 'field') {
-    condition.expected_value = undefined
-    condition.expected_value_mode = undefined
-  } else {
-    condition.expected_field = undefined
-    if (operator !== 'eq' && operator !== 'ne') {
-      condition.expected_value_mode = undefined
-    } else {
-      condition.expected_value_mode = normalizeExpectedValueMode(condition.expected_value_mode)
-    }
-  }
-}
-
-function shouldShowConditionCompareValueKind(condition: CompositeCondition): boolean {
-  return shouldShowSharedConditionCompareValueKind(condition)
-}
-
-function getConditionCompareValueKind(condition: CompositeCondition): ConditionCompareValueKind {
-  return getSharedConditionCompareValueKind(condition)
-}
-
-function getConditionCompareValueKindOptions(condition: CompositeCondition) {
-  return getSharedConditionCompareValueKindOptions(condition)
-}
-
-function setConditionCompareValueKind(
-  condition: CompositeCondition,
-  value: string,
-): void {
-  applyConditionCompareValueKind(condition, value as ConditionCompareValueKind)
-}
-
-function shouldShowConditionExpectedValue(condition: CompositeCondition): boolean {
-  if (isCompositeContainsOperator(condition.operator)) {
-    return true
-  }
-  if (isCompositeRegexOperator(condition.operator)) {
-    return true
-  }
-  return isCompositeCompareOperator(condition.operator) && (condition.value_source ?? 'literal') === 'literal'
-}
-
-function shouldShowConditionExpectedField(condition: CompositeCondition): boolean {
-  return isCompositeCompareOperator(condition.operator) && condition.value_source === 'field'
-}
-
-function getConditionExpectedValuePlaceholder(condition: CompositeCondition): string {
-  if (isCompositeContainsOperator(condition.operator)) {
-    return condition.operator === 'not_contains' ? '输入要排除的片段' : '输入要匹配的片段'
-  }
-  if (isCompositeRegexOperator(condition.operator)) {
-    return '输入完整正则表达式'
-  }
-  if (shouldShowConditionExpectedValueMode(condition) && condition.expected_value_mode === 'set') {
-    return '例如：0,1,2'
-  }
-  return '请输入比较值'
-}
-
-function getConditionOptions(mode: ConditionMode) {
-  return mode === 'filter' ? compositeFilterOptions : compositeAssertionOptions
-}
-
-function getPipelineConditionOptions(mode: ConditionMode) {
-  return mode === 'filter' ? compositeFilterOptions : pipelineAssertionOptions
-}
-
-function handleFilterOperatorChange(condition: CompositeCondition, value: string): void {
-  setConditionOperator(condition, value as CompositeFilterOperator)
-}
-
-function handleAssertionOperatorChange(condition: CompositeCondition, value: string): void {
-  setConditionOperator(condition, value as CompositeAssertionOperator)
-}
-
-function handlePipelineAssertionOperatorChange(condition: CompositeCondition, value: string): void {
-  setConditionOperator(condition, value as PipelineAssertionOperator)
-}
-
-function isKnownCompositeField(
-  field: string,
-  options = compositeFieldOptions.value,
-): boolean {
-  return resolveFieldOptionValue(options, field) !== null
-}
-
-function validateCompositeCondition(
-  condition: CompositeCondition,
-  mode: ConditionMode,
-  label: string,
-  options = compositeFieldOptions.value,
-  allowSetAssertions = true,
-): string | null {
-  if (!condition.field.trim()) {
-    return `${label}缺少字段。`
-  }
-  if (!isKnownCompositeField(condition.field, options)) {
-    return `${label}引用了当前组合变量中不存在的字段。`
-  }
-  if (mode === 'filter' && (condition.operator === 'unique' || condition.operator === 'duplicate_required')) {
-    return `${label}的筛选条件不支持唯一或必须重复。`
-  }
-  if (
-    mode === 'assertion' &&
-    !allowSetAssertions &&
-    (condition.operator === 'unique' || condition.operator === 'duplicate_required')
-  ) {
-    return `${label}不支持唯一或必须重复。`
-  }
-  if (isCompositeContainsOperator(condition.operator)) {
-    if (condition.value_source === 'field') {
-      return `${label}的${condition.operator === 'not_contains' ? '不包含' : '包含'}条件只支持固定值。`
-    }
-    if (!condition.expected_value?.trim()) {
-      return `${label}缺少比较值。`
-    }
-    return null
-  }
-  if (isCompositeRegexOperator(condition.operator)) {
-    if (mode !== 'assertion') {
-      return `${label}的正则校验只能用于分支校验条件。`
-    }
-    if (!condition.expected_value?.trim()) {
-      return `${label}缺少正则表达式。`
-    }
-    return null
-  }
-  if (!isCompositeCompareOperator(condition.operator)) {
-    return null
-  }
-
-  if ((condition.value_source ?? 'literal') === 'field') {
-    if (!condition.expected_field?.trim()) {
-      return `${label}缺少右侧字段。`
-    }
-    if (!isKnownCompositeField(condition.expected_field, options)) {
-      return `${label}引用了无效的右侧字段。`
-    }
-    return null
-  }
-
-  if (!condition.expected_value?.trim()) {
-    return `${label}缺少比较值。`
-  }
-  if (
-    shouldShowConditionExpectedValueMode(condition) &&
-    condition.expected_value_mode === 'set' &&
-    parseExpectedValueSet(condition.expected_value).length === 0
-  ) {
-    return `${label}的规则集至少需要一个固定值。`
-  }
-  if ((condition.operator === 'gt' || condition.operator === 'lt') && Number.isNaN(Number(condition.expected_value))) {
-    return `${label}的大于/小于比较值必须是合法数字。`
-  }
-  return null
-}
-
-function isKnownReferenceCompositeField(field: string): boolean {
-  return resolveFieldOptionValue(referenceCompositeFieldOptions.value, field) !== null
-}
-
-function validateDualCompositeKeyField(
-  field: string,
-  sideLabel: string,
-  options: Array<{ label: string; value: string }>,
-): string | null {
-  if (!field.trim()) {
-    return `${sideLabel}关联 Key 字段不能为空。`
-  }
-  if (resolveFieldOptionValue(options, field) === null) {
-    return `${sideLabel}关联 Key 字段不属于对应组合变量。`
-  }
-  return null
-}
-
-function validateDualCompositeFilters(
-  filters: CompositeCondition[],
-  sideLabel: string,
-  options: Array<{ label: string; value: string }>,
-): string | null {
-  for (let index = 0; index < filters.length; index += 1) {
-    const error = validateCompositeCondition(
-      filters[index],
-      'filter',
-      `${sideLabel}筛选条件 ${index + 1}`,
-      options,
-    )
-    if (error) {
-      return error
-    }
-  }
-  return null
-}
-
-function validateDualCompositeComparison(
-  comparison: DualCompositeComparison,
-  label: string,
-): string | null {
-  if (!comparison.left_field.trim()) {
-    return `${label}缺少变量 1 字段。`
-  }
-  if (!isKnownCompositeField(comparison.left_field)) {
-    return `${label}引用了基准变量中不存在的字段。`
-  }
-  if (!comparison.right_field.trim()) {
-    return `${label}缺少变量 2 字段。`
-  }
-  if (!isKnownReferenceCompositeField(comparison.right_field)) {
-    return `${label}引用了目标变量中不存在的字段。`
-  }
-  if ((comparison.operator === 'gt' || comparison.operator === 'lt') && comparison.left_field === KEY_FIELD) {
-    return `${label}暂不支持使用 Key 做大小比较。`
-  }
-  return null
-}
-
-function getMappingRangeStartError(range: MultiCompositeMappingExclusionRange): string {
-  if (range.start_row == null) {
-    return '请输入起始行号'
-  }
-  const startRow = Number(range.start_row)
-  if (!Number.isInteger(startRow) || startRow <= 0) {
-    return '行号必须为正整数'
-  }
-  const endRow = Number(range.end_row)
-  if (Number.isInteger(endRow) && endRow > 0 && startRow > endRow) {
-    return '起始行号不能大于结束行号'
-  }
-  return ''
-}
-
-function getMappingRangeEndError(range: MultiCompositeMappingExclusionRange): string {
-  if (range.end_row == null) {
-    return '请输入结束行号'
-  }
-  const endRow = Number(range.end_row)
-  if (!Number.isInteger(endRow) || endRow <= 0) {
-    return '行号必须为正整数'
-  }
-  const startRow = Number(range.start_row)
-  if (Number.isInteger(startRow) && startRow > 0 && startRow > endRow) {
-    return '起始行号不能大于结束行号'
-  }
-  return ''
-}
-
-function getMappingRangeExpectedValueError(range: MultiCompositeMappingExclusionRange): string {
-  const expectedValues = (range.expected_value ?? '')
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean)
-  return expectedValues.length ? '' : '请输入判定值，多个值用英文逗号分隔'
-}
-
-function validateMappingExclusionRanges(
-  ranges: MultiCompositeMappingExclusionRange[],
-  label: string,
-): string | null {
-  for (let index = 0; index < ranges.length; index += 1) {
-    const range = ranges[index]
-    const startError = getMappingRangeStartError(range)
-    if (startError) {
-      return `${label}第 ${index + 1} 段排除范围：${startError}。`
-    }
-    const endError = getMappingRangeEndError(range)
-    if (endError) {
-      return `${label}第 ${index + 1} 段排除范围：${endError}。`
-    }
-    const expectedValueError = getMappingRangeExpectedValueError(range)
-    if (expectedValueError) {
-      return `${label}第 ${index + 1} 段排除范围：${expectedValueError}。`
-    }
-  }
-  return null
-}
-
-function getDualCompositeOperatorLabel(operator: FixedRuleOperator | 'not_null'): string {
-  if (operator === 'not_null') {
-    return '都非空'
-  }
-  return operatorSymbolMap[operator]
-}
-
-function getDualCompositeKeyCheckModeLabel(mode: 'baseline_only' | 'bidirectional' | undefined): string {
-  return mode === 'bidirectional' ? '双向检查' : '基准变量为准'
-}
-
-function getSourcePath(source: DataSource | null | undefined): string {
-  if (!source) {
-    return ''
-  }
-  return source.pathOrUrl ?? source.path ?? source.url ?? ''
-}
-
-function getCompositeFieldLabel(field: string, variable: VariableTag | null): string {
-  const options = buildCompositeFieldOptions(variable)
-  const resolvedField = resolveFieldOptionValue(options, field)
-  const matchedOption = options.find((option) => option.value === resolvedField)
-  if (matchedOption) {
-    return matchedOption.label
-  }
-  return field === KEY_FIELD ? `${variable?.key_column || 'Key'} (Key)` : field
-}
-
-function resolveRuleVariable(rule: FixedRuleDefinition): VariableTag | null {
-  return variableMap.value.get(rule.target_variable_tag) ?? null
-}
-
-function resolveRuleSource(rule: FixedRuleDefinition): DataSource | null {
-  const variable = resolveRuleVariable(rule)
-  return variable ? sourceMap.value.get(variable.source_id) ?? null : null
-}
-
-function getOperatorLabel(value: FixedRuleOperator): string {
-  return operatorSymbolMap[value]
-}
-
-function getRuleSelectionLabel(value: FixedRuleSelection): string {
-  return ruleSelectionOptions.find((item) => item.value === value)?.label ?? value
-}
-
-function getRuleSelectionName(value: FixedRuleSelection): string {
-  return ruleSelectionNameMap[value]
-}
-
-function getRuleSelectionValue(rule: FixedRuleDefinition): FixedRuleSelection {
-  if (rule.rule_type === 'fixed_value_compare') {
-    return rule.operator ?? 'gt'
-  }
-  if (rule.rule_type === 'cross_table_mapping') {
-    return 'in'
-  }
-  return rule.rule_type as FixedRuleSelection
-}
-
-function getSequenceDirectionLabel(direction: 'asc' | 'desc' | undefined): string {
-  return direction === 'desc' ? '降序' : '升序'
-}
-
-function buildSequenceSummary(
-  direction: 'asc' | 'desc' | undefined,
-  step: string | undefined,
-  startMode: 'auto' | 'manual' | undefined,
-  startValue: string | undefined,
-): string {
-  const normalizedStep = step?.trim() || '1'
-  if (startMode === 'manual') {
-    return `顺序校验（${getSequenceDirectionLabel(direction)}，步长 ${normalizedStep}，起始值 ${startValue?.trim() || '0'}）`
-  }
-  return `顺序校验（${getSequenceDirectionLabel(direction)}，步长 ${normalizedStep}，自动起始）`
-}
-
-function getVariableColumnSummary(variable: VariableTag | null | undefined): string {
-  if (!variable) {
-    return '未绑定变量'
-  }
-  if ((variable.variable_kind ?? 'single') === 'composite') {
-    return `Key=${variable.key_column || 'Key'}；成员列：${
-      (variable.columns ?? [])
-        .filter((column) => column !== variable.key_column)
-        .join(' / ') || '未配置'
-    }`
-  }
-  return variable.column?.trim() || '未配置列'
-}
-
-function buildVariableOptionLabel(variable: VariableTag): string {
-  return variable.tag
-}
-
-function buildDefaultRuleName(
-  variable: VariableTag | null,
-  selectedRule: FixedRuleSelection,
-  expectedValue: string,
-  referenceVariableTag = '',
-): string {
-  if (!variable) {
-    return ''
-  }
-
-  const normalizedSheet = variable.sheet.trim()
-  if ((variable.variable_kind ?? 'single') === 'composite') {
-    if (selectedRule === 'dual_composite_compare') {
-      if (referenceVariableTag.trim() === variable.tag) {
-        const firstComparison = dualCompositeComparisons.value[0]
-        const leftField = firstComparison?.left_field
-          ? getCompositeFieldLabel(firstComparison.left_field, variable)
-          : '字段A'
-        const rightField = firstComparison?.right_field
-          ? getCompositeFieldLabel(firstComparison.right_field, variable)
-          : '字段B'
-        return `同变量筛选对比-${variable.tag}-${leftField} vs ${rightField}`
-      }
-      return `${normalizedSheet}-${variable.tag}-跨组变量校验`
-    }
-    if (selectedRule === 'multi_composite_pipeline_check') {
-      return `${normalizedSheet}-${variable.tag}-多组串行校验`
-    }
-    if (selectedRule === 'multi_composite_mapping_check') {
-      return `${normalizedSheet}-${variable.tag}-多组映射校验`
-    }
-    return `${normalizedSheet}-${variable.tag}-组合分支校验`
-  }
-  const normalizedColumn = variable.column?.trim() ?? ''
-  if (!normalizedSheet || !normalizedColumn) {
-    return ''
-  }
-
-  const baseName = `${normalizedSheet}-${normalizedColumn}-${getRuleSelectionName(selectedRule)}`
-  if (selectedRule === 'in') {
-    const referenceVariable = variableMap.value.get(referenceVariableTag)
-    const referenceColumn =
-      referenceVariable && (referenceVariable.variable_kind ?? 'single') === 'single'
-        ? referenceVariable.column?.trim() || referenceVariable.tag
-        : referenceVariableTag.trim()
-    return referenceColumn ? `${baseName}-${referenceColumn}` : baseName
-  }
-  if (!isCompareRuleSelection(selectedRule)) {
-    return baseName
-  }
-
-  const normalizedExpectedValue = expectedValue.trim()
-  return normalizedExpectedValue ? `${baseName}-${normalizedExpectedValue}` : baseName
-}
-
-function buildDefaultRuleNameFromForm(): string {
-  const nodeVariable =
-    isMultiCompositePipelineRule.value
-      ? variableMap.value.get(pipelineRuleForm.nodes[0]?.variable_tag ?? '') ?? null
-      : isMultiCompositeMappingRule.value
-      ? variableMap.value.get(mappingRuleForm.nodes[0]?.variable_tag ?? '') ?? null
-      : selectedRuleVariable.value
-  return buildDefaultRuleName(
-    nodeVariable,
-    ruleForm.selected_rule,
-    ruleForm.expected_value,
-    ruleForm.reference_variable_tag,
-  )
-}
-
-function applySystemRuleName(nextRuleName: string): void {
-  isApplyingSystemRuleName.value = true
-  ruleForm.rule_name = nextRuleName
-  lastAutoGeneratedRuleName.value = nextRuleName
-  isRuleNameManuallyEdited.value = false
-  isApplyingSystemRuleName.value = false
-}
-
-function syncRuleNameWithForm(): void {
-  if (isInitializingRuleDialog.value || isRuleNameManuallyEdited.value) {
-    return
-  }
-
-  const nextRuleName = buildDefaultRuleNameFromForm()
-  const currentRuleName = ruleForm.rule_name.trim()
-  if (!nextRuleName) {
-    if (!currentRuleName || currentRuleName === lastAutoGeneratedRuleName.value) {
-      applySystemRuleName('')
-    }
-    return
-  }
-
-  if (currentRuleName !== nextRuleName || lastAutoGeneratedRuleName.value !== nextRuleName) {
-    applySystemRuleName(nextRuleName)
-  }
-}
-
-function summarizeCondition(
-  condition: CompositeCondition,
-  variable: VariableTag | null,
-): string {
-  const fieldLabel = getCompositeFieldLabel(condition.field, variable)
-  if (condition.operator === 'not_null') {
-    return `${fieldLabel} 非空`
-  }
-  if (condition.operator === 'unique') {
-    return `${fieldLabel} 唯一`
-  }
-  if (condition.operator === 'duplicate_required') {
-    return `${fieldLabel} 必须重复`
-  }
-  if (condition.operator === 'regex') {
-    return `${fieldLabel} 正则匹配 ${condition.expected_value ?? ''}`
-  }
-  if (condition.operator === 'contains') {
-    return `${fieldLabel} 包含 ${condition.expected_value ?? ''}`
-  }
-  if (condition.operator === 'not_contains') {
-    return `${fieldLabel} 不包含 ${condition.expected_value ?? ''}`
-  }
-
-  const operator = {
-    eq: '=',
-    ne: '!=',
-    gt: '>',
-    lt: '<',
-  }[condition.operator as FixedRuleOperator]
-  const expected = condition.value_source === 'field'
-    ? getCompositeFieldLabel(condition.expected_field ?? '', variable)
-    : condition.expected_value ?? ''
-  return `${fieldLabel} ${operator} ${expected}`
 }
 
 function buildRuleCondition(rule: FixedRuleDefinition): string {
@@ -2924,7 +1988,7 @@ async function handleSvnUpdate(): Promise<void> {
         <CollapsibleSection
           step="01"
           title="数据源"
-          description="接入 Excel 或 SVN 来源，飞书暂为占位"
+          description="接入 Excel、SVN 或飞书电子表格来源"
           :status-label="getSectionStatusLabel(1)"
           :status-tone="getSectionStatusTone(1)"
           :active="activeGuideStep === 1"
@@ -2941,6 +2005,7 @@ async function handleSvnUpdate(): Promise<void> {
             </SecondaryButton>
             <PrimaryButton
               size="sm"
+              data-testid="fixed-add-source-button"
               @click="openDataSourceCreate"
             >
               <template #icon>
@@ -2980,6 +2045,7 @@ async function handleSvnUpdate(): Promise<void> {
             <PrimaryButton
               size="sm"
               :disabled="!store.sources.length"
+              data-testid="fixed-add-variable-button"
               @click="openSingleVariableCreate"
             >
               <template #icon><Plus /></template>
@@ -3057,6 +2123,7 @@ async function handleSvnUpdate(): Promise<void> {
               <div class="mt-6 flex justify-end">
                 <PrimaryButton
                   :disabled="store.isExecuting || !store.canExecute"
+                  data-testid="fixed-execute-button"
                   @click="handleExecute"
                 >
                   <template #icon>
@@ -3072,7 +2139,7 @@ async function handleSvnUpdate(): Promise<void> {
         </CollapsibleSection>
       </div>
       <!-- 执行结果 -->
-      <div ref="resultStepRef">
+      <div ref="resultStepRef" data-testid="fixed-result-section">
         <CollapsibleSection
           step="04"
           title="结果"

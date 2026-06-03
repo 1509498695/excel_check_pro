@@ -38,19 +38,29 @@
 
 ## 5. 检查与测试
 
-```powershell
-python -m ruff check backend
-python -m pytest backend/tests -q
-```
-
-```powershell
-cd frontend
-npm run lint
-npm run build
-```
+推荐执行完整一键检查，它会安装锁定后端依赖并使用 `npm ci` 重建前端依赖：
 
 ```powershell
 .\scripts\check-standards.ps1
+```
+
+或使用通用命令：
+
+```bash
+python scripts/check-standards.py
+```
+
+手动拆分执行时：
+
+```powershell
+python -m pip install -r backend\requirements.txt
+python -m ruff check backend
+python -m pytest backend/tests -q
+cd frontend
+npm ci
+npm run lint
+npm run test:unit
+npm run build
 ```
 
 ## 6. 稳定文档职责

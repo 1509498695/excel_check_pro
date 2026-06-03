@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,7 +20,6 @@ from backend.app.api.schemas import DataSource
 from backend.app.auth.dependencies import (
     CurrentUserContext,
     get_current_user,
-    get_optional_user,
 )
 from backend.app.database import get_db
 from backend.app.integrations.feishu_client import (
@@ -38,6 +37,8 @@ from backend.app.loaders.feishu_reader import (
     read_feishu_source_metadata,
 )
 from backend.app.loaders.local_reader import (
+    LocalFileAccessDeniedError,
+    ensure_directory_in_local_file_allowlist,
     preview_composite_variable,
     preview_source_column,
     read_source_metadata,
@@ -184,6 +185,11 @@ def _raise_for_feishu_metadata_error(error: FeishuClientError) -> None:
     )
 
 
+def _require_source_project(ctx: CurrentUserContext) -> int:
+    """数据源接口使用严格项目校验，避免 Token 指向非成员项目时静默回退。"""
+    return ctx.require_strict_project_member()
+
+
 def _get_pick_filetypes(source_type: str) -> list[tuple[str, str]]:
     """返回 tkinter 文件对话框需要的文件类型。"""
     if source_type == "local_excel":
@@ -245,12 +251,17 @@ def _validate_selected_path(source_type: str, selected_path: str) -> str:
             ),
         )
 
-    if not path.exists():
-        raise HTTPException(status_code=400, detail=f"所选文件不存在：{path}")
-    if not path.is_file():
-        raise HTTPException(status_code=400, detail=f"所选路径不是文件：{path}")
+    try:
+        resolved_path = ensure_directory_in_local_file_allowlist(path)
+    except LocalFileAccessDeniedError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
 
-    return str(path.resolve())
+    if not resolved_path.exists():
+        raise HTTPException(status_code=400, detail=f"所选文件不存在：{resolved_path}")
+    if not resolved_path.is_file():
+        raise HTTPException(status_code=400, detail=f"所选路径不是文件：{resolved_path}")
+
+    return str(resolved_path)
 
 
 def _show_local_file_dialog(source_type: str) -> str:
@@ -301,7 +312,11 @@ def _validate_directory_path(raw_directory_path: str) -> str:
     if not directory_path.is_absolute():
         raise HTTPException(status_code=400, detail="替换目录必须是本地绝对路径。")
 
-    resolved_path = directory_path.resolve(strict=False)
+    try:
+        resolved_path = ensure_directory_in_local_file_allowlist(directory_path)
+    except LocalFileAccessDeniedError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
+
     if not resolved_path.exists():
         raise HTTPException(status_code=400, detail=f"替换目录不存在：{resolved_path}")
     if not resolved_path.is_dir():
@@ -375,21 +390,34 @@ async def _save_upload_file(
 
 
 @router.get("/capabilities")
-def get_source_capabilities() -> dict[str, Any]:
+def get_source_capabilities(
+    ctx: CurrentUserContext = Depends(get_current_user),
+) -> dict[str, Any]:
     """返回当前后端声明支持的数据源能力。"""
+    _require_source_project(ctx)
     return {
         "code": 200,
         "msg": "ok",
         "data": {
             "source_types": list(settings.supported_source_types),
-            "implemented": False,
+            "implemented": True,
         },
     }
 
 
 @router.post("/local-pick")
-async def pick_local_source_file(payload: LocalPickRequest) -> dict[str, Any]:
+async def pick_local_source_file(
+    payload: LocalPickRequest,
+    ctx: CurrentUserContext = Depends(get_current_user),
+) -> dict[str, Any]:
     """在本机弹出系统文件选择框，并返回真实本地路径。"""
+    _require_source_project(ctx)
+    if not settings.enable_local_picker:
+        raise HTTPException(
+            status_code=403,
+            detail="本机文件选择器默认关闭，请使用上传文件，或由管理员设置 ENABLE_LOCAL_PICKER=true。",
+        )
+
     try:
         selected_path = _show_local_file_dialog(payload.source_type)
     except ValueError as error:
@@ -424,7 +452,7 @@ async def upload_source_file(
     ctx: CurrentUserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """接收浏览器上传的 Excel，并保存到项目/用户隔离目录。"""
-    project_id = ctx.require_project_member()
+    project_id = _require_source_project(ctx)
     saved_file = await _save_upload_file(
         file,
         project_id=project_id,
@@ -444,8 +472,10 @@ async def upload_source_file(
 @router.post("/local-directory-validate")
 async def validate_local_directory_path(
     payload: LocalDirectoryValidateRequest,
+    ctx: CurrentUserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """校验并返回规范化后的本地目录路径。"""
+    _require_source_project(ctx)
     normalized_directory = _validate_directory_path(payload.directory_path)
     return {
         "code": 200,
@@ -461,16 +491,11 @@ async def get_source_metadata(
     source: DataSource,
     include_columns: bool = Query(default=True),
     db: AsyncSession = Depends(get_db),
-    ctx: CurrentUserContext | None = Depends(get_optional_user),
+    ctx: CurrentUserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """返回变量池构建所需的 Sheet 与列结构。"""
+    project_id = _require_source_project(ctx)
     if source.type == "feishu":
-        if ctx is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="未提供认证令牌",
-            )
-        project_id = ctx.require_project_member()
         try:
             metadata = await read_feishu_source_metadata(
                 source,
@@ -488,6 +513,8 @@ async def get_source_metadata(
 
     try:
         metadata = read_source_metadata(source)
+    except LocalFileAccessDeniedError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     except (FileNotFoundError, ValueError, ImportError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -502,16 +529,11 @@ async def get_source_metadata(
 async def get_source_column_preview(
     payload: ColumnPreviewRequest,
     db: AsyncSession = Depends(get_db),
-    ctx: CurrentUserContext | None = Depends(get_optional_user),
+    ctx: CurrentUserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """返回单个变量详情弹窗所需的列预览数据。"""
+    project_id = _require_source_project(ctx)
     if payload.source.type == "feishu":
-        if ctx is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="未提供认证令牌",
-            )
-        project_id = ctx.require_project_member()
         try:
             preview = await preview_feishu_source_column(
                 payload.source,
@@ -539,6 +561,8 @@ async def get_source_column_preview(
             column_name=payload.column,
             limit=payload.limit,
         )
+    except LocalFileAccessDeniedError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     except (FileNotFoundError, ValueError, ImportError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -553,16 +577,11 @@ async def get_source_column_preview(
 async def get_composite_variable_preview(
     payload: CompositePreviewRequest,
     db: AsyncSession = Depends(get_db),
-    ctx: CurrentUserContext | None = Depends(get_optional_user),
+    ctx: CurrentUserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """返回组合变量所需的 JSON 映射预览。"""
+    project_id = _require_source_project(ctx)
     if payload.source.type == "feishu":
-        if ctx is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="未提供认证令牌",
-            )
-        project_id = ctx.require_project_member()
         try:
             preview = await preview_feishu_composite_variable(
                 payload.source,
@@ -592,6 +611,8 @@ async def get_composite_variable_preview(
             key_column=payload.key_column,
             append_index_to_key=payload.append_index_to_key,
         )
+    except LocalFileAccessDeniedError as error:
+        raise HTTPException(status_code=403, detail=str(error)) from error
     except (FileNotFoundError, ValueError, ImportError) as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
 
@@ -608,6 +629,7 @@ async def list_remote_svn_directory(
     ctx: CurrentUserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """列出 SVN 远端目录下的文件与子目录（最多 1 层下钻在前端控制）。"""
+    _require_source_project(ctx)
     try:
         normalized_dir_url = normalize_dir_url(payload.dir_url)
     except ValueError as error:
@@ -648,6 +670,7 @@ async def save_svn_credentials_endpoint(
     ctx: CurrentUserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """保存当前登录用户在某 SVN host 上的凭据。"""
+    _require_source_project(ctx)
     try:
         host = enforce_host_allowlist(payload.host)
     except ValueError as error:
@@ -699,6 +722,7 @@ async def list_svn_credentials_endpoint(
     ctx: CurrentUserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """列出当前登录用户已保存的 SVN host（不返回密码）。"""
+    _require_source_project(ctx)
     items = list_svn_credential_hosts(user_scope=ctx.user.username)
     return {
         "code": 200,
@@ -713,6 +737,7 @@ async def get_svn_credential_detail_endpoint(
     ctx: CurrentUserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """读取当前登录用户在某 host 上已保存的 SVN 凭据详情。"""
+    _require_source_project(ctx)
     try:
         normalized_host = enforce_host_allowlist(host)
     except ValueError as error:
@@ -741,6 +766,7 @@ async def delete_svn_credentials_endpoint(
     ctx: CurrentUserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """删除当前登录用户在某 host 上的凭据。"""
+    _require_source_project(ctx)
     deleted = delete_credentials(host=host, user_scope=ctx.user.username)
     return {
         "code": 200,
@@ -755,6 +781,7 @@ async def refresh_remote_svn_source(
     ctx: CurrentUserContext = Depends(get_current_user),
 ) -> dict[str, Any]:
     """强制刷新某 SVN 数据源缓存（绕过 TTL）。"""
+    _require_source_project(ctx)
     if payload.source.type != "svn":
         raise HTTPException(status_code=400, detail="仅支持 SVN 数据源刷新。")
 

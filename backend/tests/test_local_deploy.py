@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from backend.app.api import source_api
+from backend.app.loaders import local_reader
 from backend.run import app as main_app
 from backend.run import configure_static_frontend
 
@@ -19,6 +20,11 @@ TEST_DATA_PATH = Path(__file__).resolve().parent / "data" / "minimal_rules.xlsx"
 
 def _patch_upload_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, max_bytes: int) -> None:
     upload_root = tmp_path / "local_excel"
+    patched_settings = SimpleNamespace(
+        local_file_root_allowlist=(),
+        runtime_upload_dir=upload_root,
+        svn_cache_dir=tmp_path / "svn-cache",
+    )
     monkeypatch.setattr(
         source_api,
         "settings",
@@ -29,6 +35,7 @@ def _patch_upload_settings(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, max_
             supported_source_types=("local_excel", "feishu", "svn"),
         ),
     )
+    monkeypatch.setattr(local_reader, "settings", patched_settings)
 
 
 @pytest.mark.anyio
@@ -88,16 +95,14 @@ async def test_upload_source_file_requires_login(tmp_path: Path) -> None:
 
 
 @pytest.mark.anyio
-async def test_source_capabilities_omit_csv() -> None:
+async def test_source_capabilities_omit_csv(auth_client: AsyncClient) -> None:
     """能力声明不再暴露 CSV 数据源。"""
-    async with AsyncClient(
-        transport=ASGITransport(app=main_app),
-        base_url="http://testserver",
-    ) as client:
-        response = await client.get("/api/v1/sources/capabilities")
+    response = await auth_client.get("/api/v1/sources/capabilities")
 
     assert response.status_code == 200
-    assert response.json()["data"]["source_types"] == ["local_excel", "feishu", "svn"]
+    data = response.json()["data"]
+    assert data["source_types"] == ["local_excel", "feishu", "svn"]
+    assert data["implemented"] is True
 
 
 @pytest.mark.anyio

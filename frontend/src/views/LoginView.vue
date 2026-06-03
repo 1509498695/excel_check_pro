@@ -65,6 +65,7 @@ async function handleLogin(): Promise<void> {
     <!-- 登录卡 -->
     <form
       class="w-[380px] rounded-card border border-line bg-card p-6 shadow-card-2"
+      data-testid="login-form"
       @submit.prevent="handleLogin"
     >
       <div class="mb-5">
@@ -75,16 +76,17 @@ async function handleLogin(): Promise<void> {
       <div class="flex flex-col gap-4">
         <div>
           <label class="mb-1.5 block text-[12px] font-medium text-ink-500">用户名</label>
-          <el-input v-model="username" placeholder="例如：admin" autofocus />
+          <el-input v-model="username" placeholder="例如：admin" autofocus data-testid="login-username" />
         </div>
         <div>
           <label class="mb-1.5 block text-[12px] font-medium text-ink-500">密码</label>
-          <el-input v-model="password" type="password" placeholder="密码" show-password />
+          <el-input v-model="password" type="password" placeholder="密码" show-password data-testid="login-password" />
         </div>
 
         <button
           type="submit"
           class="ec-btn ec-btn-primary mt-2 w-full"
+          data-testid="login-submit"
           :disabled="isLoading"
         >
           {{ isLoading ? '登录中…' : '登录' }}

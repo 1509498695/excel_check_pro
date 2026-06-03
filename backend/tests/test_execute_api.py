@@ -29,6 +29,7 @@ from backend.app.integrations.feishu_client import (
     FeishuSheetMetadata,
     FeishuSheetTable,
 )
+from backend.app.loaders import local_reader as local_reader_module
 from backend.app.loaders.local_reader import load_local_variables
 from backend.app.models import FeishuBotConfigRecord, User, UserProjectRole
 from backend.app.security.crypto import encrypt_secret
@@ -36,6 +37,20 @@ from backend.run import app
 
 
 TEST_DATA_PATH = Path(__file__).resolve().parent / "data" / "minimal_rules.xlsx"
+
+
+@pytest.fixture(autouse=True)
+def _allow_test_local_files(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """执行接口大量复用本地测试 Excel，测试环境显式放入 allowlist。"""
+    monkeypatch.setattr(
+        local_reader_module,
+        "settings",
+        SimpleNamespace(
+            local_file_root_allowlist=(TEST_DATA_PATH.parent, tmp_path),
+            runtime_upload_dir=tmp_path / "uploads",
+            svn_cache_dir=tmp_path / "svn-cache",
+        ),
+    )
 
 
 async def _seed_feishu_bot_config(project_id: int) -> None:
@@ -986,23 +1001,27 @@ async def test_execute_engine_returns_400_for_unknown_source_id() -> None:
 
 
 @pytest.mark.anyio
-async def test_local_pick_returns_real_selected_path(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_local_pick_returns_real_selected_path(
+    auth_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """验证本地文件选择接口会返回真实路径，不会复制文件。"""
 
+    monkeypatch.setattr(
+        source_api,
+        "settings",
+        SimpleNamespace(enable_local_picker=True),
+    )
     monkeypatch.setattr(
         source_api,
         "_show_local_file_dialog",
         lambda source_type: str(TEST_DATA_PATH) if source_type == "local_excel" else "",
     )
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
-        response = await client.post(
-            "/api/v1/sources/local-pick",
-            json={"source_type": "local_excel"},
-        )
+    response = await auth_client.post(
+        "/api/v1/sources/local-pick",
+        json={"source_type": "local_excel"},
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -1014,20 +1033,22 @@ async def test_local_pick_returns_real_selected_path(monkeypatch: pytest.MonkeyP
 
 @pytest.mark.anyio
 async def test_local_pick_returns_cancelled_when_user_closes_dialog(
+    auth_client: AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """验证用户取消选择时接口会返回 cancelled。"""
 
+    monkeypatch.setattr(
+        source_api,
+        "settings",
+        SimpleNamespace(enable_local_picker=True),
+    )
     monkeypatch.setattr(source_api, "_show_local_file_dialog", lambda _source_type: "")
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
-        response = await client.post(
-            "/api/v1/sources/local-pick",
-            json={"source_type": "local_excel"},
-        )
+    response = await auth_client.post(
+        "/api/v1/sources/local-pick",
+        json={"source_type": "local_excel"},
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -1038,18 +1059,15 @@ async def test_local_pick_returns_cancelled_when_user_closes_dialog(
 
 @pytest.mark.anyio
 async def test_local_directory_validate_returns_normalized_absolute_directory(
+    auth_client: AsyncClient,
     tmp_path: Path,
 ) -> None:
     """验证本地目录校验接口会返回规范化后的绝对目录路径。"""
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
-        response = await client.post(
-            "/api/v1/sources/local-directory-validate",
-            json={"directory_path": f" {tmp_path} "},
-        )
+    response = await auth_client.post(
+        "/api/v1/sources/local-directory-validate",
+        json={"directory_path": f" {tmp_path} "},
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -1126,21 +1144,19 @@ def test_show_local_file_dialog_raises_runtime_error_on_nonzero_exit(
 
 
 @pytest.mark.anyio
-async def test_source_metadata_returns_excel_sheet_and_column_structure() -> None:
+async def test_source_metadata_returns_excel_sheet_and_column_structure(
+    auth_client: AsyncClient,
+) -> None:
     """验证变量池元数据接口会返回 Excel 的 Sheet 与列结构。"""
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
-        response = await client.post(
-            "/api/v1/sources/metadata",
-            json={
-                "id": "src_test",
-                "type": "local_excel",
-                "path": str(TEST_DATA_PATH),
-            },
-        )
+    response = await auth_client.post(
+        "/api/v1/sources/metadata",
+        json={
+            "id": "src_test",
+            "type": "local_excel",
+            "path": str(TEST_DATA_PATH),
+        },
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -1155,6 +1171,7 @@ async def test_source_metadata_returns_excel_sheet_and_column_structure() -> Non
 
 @pytest.mark.anyio
 async def test_source_metadata_rejects_csv_for_variable_pool_dropdown(
+    auth_client: AsyncClient,
     tmp_path: Path,
 ) -> None:
     """验证 CSV 数据源会被明确拦截。"""
@@ -1162,18 +1179,14 @@ async def test_source_metadata_rejects_csv_for_variable_pool_dropdown(
     csv_path = tmp_path / "sample.csv"
     csv_path.write_text("id\n1\n", encoding="utf-8")
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
-        response = await client.post(
-            "/api/v1/sources/metadata",
-            json={
-                "id": "src_csv",
-                "type": "local_csv",
-                "path": str(csv_path),
-            },
-        )
+    response = await auth_client.post(
+        "/api/v1/sources/metadata",
+        json={
+            "id": "src_csv",
+            "type": "local_csv",
+            "path": str(csv_path),
+        },
+    )
 
     assert response.status_code == 400
     assert "变量池下拉提取目前仅支持 Excel 与 SVN" in response.json()["detail"]
@@ -1411,26 +1424,24 @@ async def test_source_metadata_feishu_app_permission_missing(
 
 
 @pytest.mark.anyio
-async def test_column_preview_returns_top_rows_for_variable_detail() -> None:
+async def test_column_preview_returns_top_rows_for_variable_detail(
+    auth_client: AsyncClient,
+) -> None:
     """验证列预览接口会返回变量详情页签所需的前几行数据。"""
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
-        response = await client.post(
-            "/api/v1/sources/column-preview",
-            json={
-                "source": {
-                    "id": "src_test",
-                    "type": "local_excel",
-                    "path": str(TEST_DATA_PATH),
-                },
-                "sheet": "items",
-                "column": "ID",
-                "limit": 3,
+    response = await auth_client.post(
+        "/api/v1/sources/column-preview",
+        json={
+            "source": {
+                "id": "src_test",
+                "type": "local_excel",
+                "path": str(TEST_DATA_PATH),
             },
-        )
+            "sheet": "items",
+            "column": "ID",
+            "limit": 3,
+        },
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -1448,25 +1459,23 @@ async def test_column_preview_returns_top_rows_for_variable_detail() -> None:
 
 
 @pytest.mark.anyio
-async def test_column_preview_without_limit_returns_full_column_for_detail_dialog() -> None:
+async def test_column_preview_without_limit_returns_full_column_for_detail_dialog(
+    auth_client: AsyncClient,
+) -> None:
     """验证详情弹窗在不传 limit 时会返回当前列的完整预览。"""
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
-        response = await client.post(
-            "/api/v1/sources/column-preview",
-            json={
-                "source": {
-                    "id": "src_test",
-                    "type": "local_excel",
-                    "path": str(TEST_DATA_PATH),
-                },
-                "sheet": "items",
-                "column": "ID",
+    response = await auth_client.post(
+        "/api/v1/sources/column-preview",
+        json={
+            "source": {
+                "id": "src_test",
+                "type": "local_excel",
+                "path": str(TEST_DATA_PATH),
             },
-        )
+            "sheet": "items",
+            "column": "ID",
+        },
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -1598,29 +1607,26 @@ async def test_feishu_column_preview_without_limit_returns_full_column(
 
 @pytest.mark.anyio
 async def test_composite_preview_returns_json_mapping_for_same_sheet(
+    auth_client: AsyncClient,
     tmp_path: Path,
 ) -> None:
     """验证组合变量预览接口会返回 key->object 的完整 JSON 映射。"""
 
     workbook_path = _create_composite_test_workbook(tmp_path / "composite_preview.xlsx")
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
-        response = await client.post(
-            "/api/v1/sources/composite-preview",
-            json={
-                "source": {
-                    "id": "src_combo",
-                    "type": "local_excel",
-                    "path": str(workbook_path),
-                },
-                "sheet": "items",
-                "columns": ["ID", "ItemName", "Desc"],
-                "key_column": "ID",
+    response = await auth_client.post(
+        "/api/v1/sources/composite-preview",
+        json={
+            "source": {
+                "id": "src_combo",
+                "type": "local_excel",
+                "path": str(workbook_path),
             },
-        )
+            "sheet": "items",
+            "columns": ["ID", "ItemName", "Desc"],
+            "key_column": "ID",
+        },
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -1642,6 +1648,7 @@ async def test_composite_preview_returns_json_mapping_for_same_sheet(
 
 @pytest.mark.anyio
 async def test_composite_preview_supports_appending_index_to_duplicate_keys(
+    auth_client: AsyncClient,
     tmp_path: Path,
 ) -> None:
     """验证组合变量预览可将重复 key 生成为原值_序号。"""
@@ -1655,24 +1662,20 @@ async def test_composite_preview_supports_appending_index_to_duplicate_keys(
             }
         ).to_excel(writer, sheet_name="items", index=False)
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
-        response = await client.post(
-            "/api/v1/sources/composite-preview",
-            json={
-                "source": {
-                    "id": "src_combo",
-                    "type": "local_excel",
-                    "path": str(workbook_path),
-                },
-                "sheet": "items",
-                "columns": ["INT_ID", "INT_Group", "INT_Faction"],
-                "key_column": "INT_ID",
-                "append_index_to_key": True,
+    response = await auth_client.post(
+        "/api/v1/sources/composite-preview",
+        json={
+            "source": {
+                "id": "src_combo",
+                "type": "local_excel",
+                "path": str(workbook_path),
             },
-        )
+            "sheet": "items",
+            "columns": ["INT_ID", "INT_Group", "INT_Faction"],
+            "key_column": "INT_ID",
+            "append_index_to_key": True,
+        },
+    )
 
     assert response.status_code == 200
     payload = response.json()["data"]
@@ -1687,6 +1690,7 @@ async def test_composite_preview_supports_appending_index_to_duplicate_keys(
 
 @pytest.mark.anyio
 async def test_composite_preview_reports_duplicate_keys_without_append_mode(
+    auth_client: AsyncClient,
     tmp_path: Path,
 ) -> None:
     """验证重复 key 且未开启追加序号时，预览仍返回重复标记供前端提示。"""
@@ -1700,24 +1704,20 @@ async def test_composite_preview_reports_duplicate_keys_without_append_mode(
             }
         ).to_excel(writer, sheet_name="switch", index=False)
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
-        response = await client.post(
-            "/api/v1/sources/composite-preview",
-            json={
-                "source": {
-                    "id": "src_combo",
-                    "type": "local_excel",
-                    "path": str(workbook_path),
-                },
-                "sheet": "switch",
-                "columns": ["STR_ParamType", "INT_Group", "INT_Faction"],
-                "key_column": "STR_ParamType",
-                "append_index_to_key": False,
+    response = await auth_client.post(
+        "/api/v1/sources/composite-preview",
+        json={
+            "source": {
+                "id": "src_combo",
+                "type": "local_excel",
+                "path": str(workbook_path),
             },
-        )
+            "sheet": "switch",
+            "columns": ["STR_ParamType", "INT_Group", "INT_Faction"],
+            "key_column": "STR_ParamType",
+            "append_index_to_key": False,
+        },
+    )
 
     assert response.status_code == 200
     payload = response.json()["data"]
@@ -1956,40 +1956,37 @@ async def test_feishu_preview_validation_errors_return_chinese_messages(
 
 @pytest.mark.anyio
 async def test_preview_endpoints_preserve_raw_sheet_and_column_names(
+    auth_client: AsyncClient,
     tmp_path: Path,
 ) -> None:
     """验证预览接口读取 Excel 时保留原始 Sheet 名和列名，不裁掉尾部空格。"""
     workbook_path = _create_whitespace_header_workbook(tmp_path / "whitespace_headers.xlsx")
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app),
-        base_url="http://testserver",
-    ) as client:
-        column_response = await client.post(
-            "/api/v1/sources/column-preview",
-            json={
-                "source": {
-                    "id": "src_space",
-                    "type": "local_excel",
-                    "path": str(workbook_path),
-                },
-                "sheet": "Quest  ",
-                "column": "STR_ABSwitch  ",
+    column_response = await auth_client.post(
+        "/api/v1/sources/column-preview",
+        json={
+            "source": {
+                "id": "src_space",
+                "type": "local_excel",
+                "path": str(workbook_path),
             },
-        )
-        composite_response = await client.post(
-            "/api/v1/sources/composite-preview",
-            json={
-                "source": {
-                    "id": "src_space",
-                    "type": "local_excel",
-                    "path": str(workbook_path),
-                },
-                "sheet": "Quest  ",
-                "columns": ["INT_ID", "STR_ABSwitch  ", "DESC3"],
-                "key_column": "INT_ID",
+            "sheet": "Quest  ",
+            "column": "STR_ABSwitch  ",
+        },
+    )
+    composite_response = await auth_client.post(
+        "/api/v1/sources/composite-preview",
+        json={
+            "source": {
+                "id": "src_space",
+                "type": "local_excel",
+                "path": str(workbook_path),
             },
-        )
+            "sheet": "Quest  ",
+            "columns": ["INT_ID", "STR_ABSwitch  ", "DESC3"],
+            "key_column": "INT_ID",
+        },
+    )
 
     assert column_response.status_code == 200
     column_payload = column_response.json()["data"]

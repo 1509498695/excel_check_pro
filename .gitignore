@@ -12,6 +12,11 @@ __pycache__/
 .venv/
 venv/
 
+# Node and frontend build artifacts
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
 # OS files
 .DS_Store
 Thumbs.db
@@ -21,6 +26,9 @@ Thumbs.db
 .runtime/
 backend/.runtime/
 backend/.runtime_uploads/
+.e2e-runtime/
+frontend/playwright-report/
+frontend/test-results/
 backend-server*.log
 frontend-server*.log
 *.out.log

@@ -122,6 +122,7 @@ async function handleSwitchProject(projectId: number): Promise<void> {
           :key="item.to"
           :to="item.to"
           class="ec-nav-link"
+          :data-testid="`nav-${item.routeName}`"
           :class="{ 'ec-nav-link--active': isActive(item.routeName) }"
         >
           <svg

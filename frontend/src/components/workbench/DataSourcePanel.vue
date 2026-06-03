@@ -1137,6 +1137,7 @@ watch(
         <button
           type="button"
           class="ec-btn ec-btn-primary ec-btn-sm"
+          data-testid="source-create-button"
           @click="() => openCreateDialog()"
         >
           <svg class="ec-btn-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -1211,6 +1212,7 @@ watch(
       v-model="dialogVisible"
       :title="editingId ? '编辑数据源' : '新增数据源'"
       width="min(760px, calc(100vw - 32px))"
+      data-testid="source-dialog"
       destroy-on-close
     >
       <div class="flex flex-col gap-4">
@@ -1220,6 +1222,7 @@ watch(
             v-model="draft.id"
             placeholder="例如：src_items、src_drop_table"
             maxlength="48"
+            data-testid="source-id-input"
             @input="handleSourceIdInput"
           />
           <div
@@ -1237,6 +1240,7 @@ watch(
           <el-select
             :model-value="draft.type"
             class="w-full"
+            data-testid="source-type-select"
             @update:model-value="handleSourceTypeChange"
           >
             <el-option
@@ -1283,6 +1287,7 @@ watch(
               v-else
               v-model="draft.pathOrUrl"
               class="w-full min-w-0 flex-1"
+              data-testid="source-path-input"
               :placeholder="
                 localSource
                   ? '上传文件，或输入服务器本机/共享盘文件路径'
@@ -1300,12 +1305,14 @@ watch(
               class="hidden"
               type="file"
               accept=".xlsx,.xls"
+              data-testid="source-upload-input"
               @change="handleUploadFile"
             />
             <button
               v-if="localSource"
               type="button"
               class="ec-btn ec-btn-primary w-full shrink-0 justify-center sm:w-auto"
+              data-testid="source-upload-button"
               :disabled="!canUploadLocalFile"
               @click="triggerUploadFile"
             >
@@ -1423,6 +1430,7 @@ watch(
           <button
             type="button"
             class="ec-btn ec-btn-primary"
+            data-testid="source-save-button"
             :disabled="!canSaveSource"
             @click="saveSource"
           >

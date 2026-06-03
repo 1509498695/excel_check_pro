@@ -412,7 +412,7 @@ describe('PackageItemsRuleDialog', () => {
     await wrapper.findAll('button').find((button) => button.text().includes('刷新 Sheet 列表'))?.trigger('click')
 
     expect(wrapper.emitted('refresh-sheets')?.at(-1)).toEqual(['feishu-plan', true])
-    expect(ElMessage.info).not.toHaveBeenCalledWith('IAP礼包校验后端暂未接入，暂不可刷新 Sheet 列表。')
+    expect(ElMessage.info).not.toHaveBeenCalledWith('当前环境未启用 IAP礼包校验能力，无法刷新 Sheet 列表。')
   })
 
   it('shows checking instead of unauthorized while Feishu sheet metadata is loading', () => {

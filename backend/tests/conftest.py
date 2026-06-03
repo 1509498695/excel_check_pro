@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 
 TEST_DB_PATH = Path(__file__).resolve().parents[1] / ".runtime" / "test_excel_check.db"
@@ -17,25 +18,38 @@ from sqlalchemy import delete
 from backend.app.auth.service import create_access_token, hash_password
 from backend.app.database import (
     Base,
-    _ensure_execution_result_extra_column,
-    _ensure_feishu_bot_download_columns,
     async_session_factory,
-    engine,
 )
+from backend.app.db_migrations import run_database_migrations_async
+from backend.app.loaders import local_reader
 from backend.app.models import FixedRulesConfigRecord, Project, User, UserProjectRole
 from backend.run import app
 
 
+@pytest.fixture(autouse=True)
+def _allow_test_local_file_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """测试环境显式放行测试数据目录和每个用例自己的临时目录。"""
+    monkeypatch.setattr(
+        local_reader,
+        "settings",
+        SimpleNamespace(
+            local_file_root_allowlist=(Path(__file__).resolve().parent, tmp_path),
+            runtime_upload_dir=tmp_path / "uploads",
+            svn_cache_dir=tmp_path / "svn-cache",
+        ),
+    )
+
+
 @pytest.fixture
 async def test_db():
-    """在每个测试前创建表结构，测试结束后清理。"""
+    """在每个测试前迁移表结构，测试结束后清理。"""
     # 显式导入模型，确保测试环境中的 metadata 完整可用。
     from backend.app import models as _models  # noqa: F401
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    await _ensure_execution_result_extra_column()
-    await _ensure_feishu_bot_download_columns()
+    await run_database_migrations_async()
     async with async_session_factory() as session:
         for table in reversed(Base.metadata.sorted_tables):
             await session.execute(delete(table))

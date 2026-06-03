@@ -119,6 +119,7 @@ const COMMON_WORKFLOW_PROMPT = `你是 Excel Check 项目的规则工作流 Agen
 - 跨组合变量比较：dual_composite_compare
 - 多节点串行：multi_composite_pipeline_check
 - 多组映射：multi_composite_mapping_check
+- IAP礼包校验：package_items_compare
 
 如果规则需要“按另一个字段过滤后再校验目标字段”，必须优先使用 composite_condition_check，不要降级成单字段 regex_check。
 如果规则描述为“筛选 A=1 和 A=2，以 B 为 key，判断 C/D 是否相等”，必须优先使用 dual_composite_compare，并把 A 放入左右筛选、B 放入左右关联 Key、C/D 放入比较字段。

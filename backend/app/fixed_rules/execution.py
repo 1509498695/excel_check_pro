@@ -8,13 +8,10 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.fixed_rules_schemas import FixedRulesConfig
+from backend.app.execution_summary import build_fixed_rules_execution_summary
 from backend.app.execution_pipeline import run_execution_pipeline
-from backend.app.fixed_rules.config_loader import load_fixed_rules_config, parse_raw_fixed_rules_config
-from backend.app.fixed_rules.config_normalizer import validate_and_normalize_fixed_rules_config
-from backend.app.fixed_rules.db_service import load_fixed_rules_config_from_db
-from backend.app.fixed_rules.package_items_runtime import prepare_package_items_runtime_config
+from backend.app.fixed_rules.config_loader import load_fixed_rules_config
 from backend.app.fixed_rules.task_tree_builder import build_fixed_rules_task_tree, _get_ordered_rules
-from backend.app.models import Project
 from backend.app.result_store import persist_execution_result
 from backend.app.utils.formatter import build_execution_response
 
@@ -63,36 +60,16 @@ async def execute_fixed_rules_for_project(
     - ``user_scope`` 预留 SVN 凭据维度（与 ``run_saved_fixed_rules_svn_update``
       保持一致），当前 ``run_execution_pipeline`` 还未消费该字段，本期保持透传。
     """
-    raw = await load_fixed_rules_config_from_db(db, project_id)
-    if raw is None:
-        raise ValueError("当前项目尚未配置固定规则")
-
-    parsed = parse_raw_fixed_rules_config(raw)
-    config = validate_and_normalize_fixed_rules_config(parsed)
-    runtime_preparation = await prepare_package_items_runtime_config(
-        config,
+    execution_summary = await build_fixed_rules_execution_summary(
         db=db,
         project_id=project_id,
+        user_scope=user_scope,
         selected_rule_ids=selected_rule_ids,
     )
-    task_tree = build_fixed_rules_task_tree(
-        runtime_preparation.config,
-        selected_rule_ids=selected_rule_ids,
-    )
-
-    start = time.perf_counter()
-    execution_artifacts = run_execution_pipeline(
-        task_tree,
-        project_id=project_id,
-        preloaded_variable_frames=runtime_preparation.preloaded_variable_frames,
-    )
-    elapsed_ms = int((time.perf_counter() - start) * 1000)
-
-    abnormal_results = execution_artifacts["abnormal_results"]
-    total_rows_scanned = sum(
-        len(frame) for frame in execution_artifacts["loaded_variables"].values()
-    )
-    failed_sources = execution_artifacts["failed_sources"]
+    abnormal_results = execution_summary["abnormal_results"]
+    total_rows_scanned = execution_summary["total_rows_scanned"]
+    failed_sources = execution_summary["failed_sources"]
+    elapsed_ms = execution_summary["execution_time_ms"]
 
     result_id = await persist_execution_result(
         db,
@@ -105,15 +82,12 @@ async def execute_fixed_rules_for_project(
         failed_sources=failed_sources,
     )
 
-    project = await db.get(Project, project_id)
-    project_name = project.name if project is not None else f"项目 {project_id}"
-
     return {
         "result_id": result_id,
         "total_rows_scanned": total_rows_scanned,
         "failed_sources": failed_sources,
         "abnormal_results": abnormal_results,
         "execution_time_ms": elapsed_ms,
-        "project_name": project_name,
-        "package_items_parse": runtime_preparation.parse_metadata,
+        "project_name": execution_summary["project_name"],
+        "package_items_parse": execution_summary["package_items_parse"],
     }

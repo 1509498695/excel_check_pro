@@ -569,10 +569,10 @@ defineExpose({
 <style scoped>
 .source-path-management-dialog :deep(.el-input__wrapper),
 .source-path-management-dialog :deep(.el-select__wrapper) {
-  min-height: 42px;
-  border: 1px solid #d1d5db !important;
-  border-radius: 6px !important;
-  background: #ffffff !important;
+  min-height: var(--ui-control-height-md, 42px);
+  border: 1px solid var(--color-border, #d1d5db) !important;
+  border-radius: var(--radius-sm, 8px) !important;
+  background: var(--color-bg-card, #ffffff) !important;
   box-shadow: none !important;
   transition:
     border-color 160ms cubic-bezier(0.2, 0, 0, 1),
@@ -581,30 +581,30 @@ defineExpose({
 
 .source-path-management-dialog :deep(.el-input__wrapper:hover),
 .source-path-management-dialog :deep(.el-select__wrapper:hover) {
-  border-color: #9ca3af !important;
+  border-color: var(--border-strong, #9ca3af) !important;
 }
 
 .source-path-management-dialog :deep(.el-input__wrapper.is-focus),
 .source-path-management-dialog :deep(.el-select__wrapper.is-focused),
 .source-path-management-dialog :deep(.el-input.is-focus .el-input__wrapper) {
-  border-color: #3b82f6 !important;
-  box-shadow: 0 0 0 1px #3b82f6 inset !important;
+  border-color: var(--color-primary, #3b82f6) !important;
+  box-shadow: 0 0 0 1px var(--color-primary, #3b82f6) inset !important;
 }
 
 .source-path-management-dialog :deep(.el-input__inner),
 .source-path-management-dialog :deep(.el-select__placeholder) {
-  color: #111827;
+  color: var(--color-text-main, #111827);
   font-size: 14px;
 }
 
 .preset-select-button {
   width: 100%;
-  min-height: 42px;
-  border: 1px solid #d1d5db;
-  border-radius: 6px;
-  background: #ffffff;
+  min-height: var(--ui-control-height-md, 42px);
+  border: 1px solid var(--color-border, #d1d5db);
+  border-radius: var(--radius-sm, 8px);
+  background: var(--color-bg-card, #ffffff);
   padding: 9px 12px;
-  color: #111827;
+  color: var(--color-text-main, #111827);
   font-size: 14px;
   line-height: 1.5;
   text-align: left;
@@ -614,12 +614,12 @@ defineExpose({
 }
 
 .preset-select-button:hover {
-  border-color: #9ca3af;
+  border-color: var(--border-strong, #9ca3af);
 }
 
 .preset-select-button:focus-visible {
   outline: none;
-  border-color: #3b82f6;
-  box-shadow: 0 0 0 1px #3b82f6 inset;
+  border-color: var(--color-primary, #3b82f6);
+  box-shadow: 0 0 0 1px var(--color-primary, #3b82f6) inset;
 }
 </style>

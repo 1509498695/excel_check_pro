@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -25,6 +26,8 @@ async def load_workbench_context(
     db: AsyncSession,
     project_id: int,
     user_id: int,
+    *,
+    metadata_reader: Callable[[DataSource], dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Load the current user's personal workbench config as AI context."""
     result = await db.execute(
@@ -46,7 +49,10 @@ async def load_workbench_context(
     variables = _validate_list(raw_config.get("variables"), VariableTag)
     groups = _validate_list(raw_config.get("ruleGroups"), FixedRuleGroup)
     rules = _validate_list(raw_config.get("orchestrationRules"), FixedRuleDefinition)
-    source_metadata = read_safe_source_metadata(sources)
+    source_metadata = read_safe_source_metadata(
+        sources,
+        metadata_reader=metadata_reader or read_source_metadata,
+    )
 
     prompt_context = {
         "sources": [
@@ -91,7 +97,11 @@ async def load_workbench_context(
     }
 
 
-def read_safe_source_metadata(sources: list[DataSource]) -> dict[str, Any]:
+def read_safe_source_metadata(
+    sources: list[DataSource],
+    *,
+    metadata_reader: Callable[[DataSource], dict[str, Any]] = read_source_metadata,
+) -> dict[str, Any]:
     """Read source metadata for prompt context without blocking the page."""
     metadata: dict[str, Any] = {}
     for source in sources:
@@ -99,7 +109,7 @@ def read_safe_source_metadata(sources: list[DataSource]) -> dict[str, Any]:
             metadata[source.id] = {"sheets": [], "error": "当前数据源类型暂不支持元数据读取。"}
             continue
         try:
-            metadata[source.id] = read_source_metadata(source)
+            metadata[source.id] = metadata_reader(source)
         except Exception as exc:  # noqa: BLE001 - only used as degraded AI context.
             metadata[source.id] = {"sheets": [], "error": str(exc)}
     return metadata

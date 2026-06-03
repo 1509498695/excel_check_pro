@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 
-from sqlalchemy import inspect, select, text, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
+from backend.app.db_migrations import run_database_migrations_async
 from backend.config import settings
 
 DEFAULT_PROJECT_NAME = "默认项目"
@@ -33,17 +34,11 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """应用启动时创建所有表结构（幂等操作），并确保默认项目与管理员存在。"""
+    """应用启动时升级数据库结构，并确保默认项目与管理员存在。"""
     # 先显式导入 ORM 模型，确保 Base.metadata 已完整收集所有表。
     from backend.app import models as _models  # noqa: F401
 
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-    await _ensure_user_primary_project_column()
-    await _ensure_execution_result_display_value_column()
-    await _ensure_execution_result_extra_column()
-    await _ensure_feishu_bot_download_columns()
-    await _ensure_feishu_bot_app_id_unique_index()
+    await run_database_migrations_async()
     await ensure_default_auth_bootstrap()
 
 
@@ -52,100 +47,6 @@ async def ensure_default_auth_bootstrap() -> None:
     default_project = await _seed_default_project()
     await _seed_default_super_admin(default_project.id)
     await _backfill_user_primary_projects()
-
-
-async def _ensure_user_primary_project_column() -> None:
-    """为已有运行时数据库补齐 users.primary_project_id 列。"""
-
-    def _has_primary_project_column(sync_conn) -> bool:
-        inspector = inspect(sync_conn)
-        user_columns = inspector.get_columns("users")
-        return any(column["name"] == "primary_project_id" for column in user_columns)
-
-    async with engine.begin() as conn:
-        has_column = await conn.run_sync(_has_primary_project_column)
-        if not has_column:
-            await conn.execute(text("ALTER TABLE users ADD COLUMN primary_project_id INTEGER"))
-
-
-async def _ensure_execution_result_display_value_column() -> None:
-    """为已有运行时数据库补齐 execution_result_items.display_value_json 列。"""
-
-    def _has_display_value_column(sync_conn) -> bool:
-        inspector = inspect(sync_conn)
-        columns = inspector.get_columns("execution_result_items")
-        return any(column["name"] == "display_value_json" for column in columns)
-
-    async with engine.begin() as conn:
-        has_column = await conn.run_sync(_has_display_value_column)
-        if not has_column:
-            await conn.execute(
-                text(
-                    "ALTER TABLE execution_result_items "
-                    "ADD COLUMN display_value_json TEXT DEFAULT 'null'"
-                )
-            )
-
-
-async def _ensure_execution_result_extra_column() -> None:
-    """为已有运行时数据库补齐 execution_result_items.extra_json 列。"""
-
-    def _has_extra_column(sync_conn) -> bool:
-        inspector = inspect(sync_conn)
-        columns = inspector.get_columns("execution_result_items")
-        return any(column["name"] == "extra_json" for column in columns)
-
-    async with engine.begin() as conn:
-        has_column = await conn.run_sync(_has_extra_column)
-        if not has_column:
-            await conn.execute(
-                text(
-                    "ALTER TABLE execution_result_items "
-                    "ADD COLUMN extra_json TEXT DEFAULT '{}'"
-                )
-            )
-
-
-async def _ensure_feishu_bot_download_columns() -> None:
-    """为已有运行时数据库补齐飞书机器人下载配置列。"""
-
-    def _existing_columns(sync_conn) -> set[str]:
-        inspector = inspect(sync_conn)
-        return {column["name"] for column in inspector.get_columns("feishu_bot_configs")}
-
-    columns_to_add = {
-        "local_download_roots": "TEXT DEFAULT '[]'",
-        "svn_download_roots": "TEXT DEFAULT '[]'",
-        "allowed_download_suffixes": (
-            "TEXT DEFAULT '[\".xls\",\".xlsx\",\".csv\",\".json\",\".xml\",\".txt\"]'"
-        ),
-    }
-
-    async with engine.begin() as conn:
-        existing_columns = await conn.run_sync(_existing_columns)
-        for column_name, column_definition in columns_to_add.items():
-            if column_name not in existing_columns:
-                await conn.execute(
-                    text(
-                        f"ALTER TABLE feishu_bot_configs "
-                        f"ADD COLUMN {column_name} {column_definition}"
-                    )
-                )
-
-
-async def _ensure_feishu_bot_app_id_unique_index() -> None:
-    """为 feishu_bot_configs.app_id 建立 partial unique index（仅对非空值生效）。
-
-    使用 partial index 是为了允许多行 app_id='' 共存（未配置时的初始空值），
-    同时强制已配置的 app_id 全局唯一，避免不同项目复用同一个飞书自建应用。
-    """
-    async with engine.begin() as conn:
-        await conn.execute(
-            text(
-                "CREATE UNIQUE INDEX IF NOT EXISTS uq_feishu_bot_configs_app_id "
-                "ON feishu_bot_configs(app_id) WHERE app_id <> ''"
-            )
-        )
 
 
 async def _seed_default_project():

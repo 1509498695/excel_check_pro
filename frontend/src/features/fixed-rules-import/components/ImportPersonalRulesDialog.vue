@@ -117,6 +117,7 @@ async function handleCommit(): Promise<void> {
     title="导入个人校验"
     width="min(1180px, calc(100vw - 48px))"
     class="import-personal-rules-dialog"
+    data-testid="import-personal-rules-dialog"
     destroy-on-close
     append-to-body
   >
@@ -224,6 +225,7 @@ async function handleCommit(): Promise<void> {
         <el-button :disabled="isBusy" @click="modelValue = false">取消</el-button>
         <el-button
           v-if="!preview || isPreviewStale"
+          data-testid="import-preview-button"
           type="primary"
           :loading="isPreviewing"
           :disabled="isBusy || !canPreview"
@@ -233,6 +235,7 @@ async function handleCommit(): Promise<void> {
         </el-button>
         <el-button
           v-else
+          data-testid="import-confirm-button"
           type="primary"
           :loading="isCommitting"
           :disabled="isBusy || !canCommit"

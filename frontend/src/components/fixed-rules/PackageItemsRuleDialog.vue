@@ -316,7 +316,7 @@ const previewInfoLines = computed(() => {
 
 const previewErrorMessage = computed(() => {
   if (!props.backendReady) {
-    return 'IAP礼包校验后端暂未接入，暂不可生成解析预览或保存规则。'
+    return '当前环境未启用 IAP礼包校验能力，无法生成解析预览或保存规则。'
   }
   if (!hasPreviewSelection.value) {
     return '请先选择飞书数据源和礼包规划 Sheet。'
@@ -509,7 +509,7 @@ function handleClose(): void {
 
 function handlePreview(): void {
   if (!props.backendReady) {
-    ElMessage.info('IAP礼包校验后端暂未接入，暂不可生成解析预览。')
+    ElMessage.info('当前环境未启用 IAP礼包校验能力，无法生成解析预览。')
     return
   }
   emit('preview', buildPayload())
@@ -529,7 +529,7 @@ function handleSave(): void {
     return
   }
   if (!props.backendReady) {
-    ElMessage.info('IAP礼包校验后端暂未接入，暂不可保存规则。')
+    ElMessage.info('当前环境未启用 IAP礼包校验能力，无法保存规则。')
     return
   }
   emit('save', payload)
@@ -1120,7 +1120,7 @@ function normalizePackageIdFilter(value: string): string {
 }
 
 :global(.package-items-rule-dialog .el-textarea__inner) {
-  min-height: 80px !important;
+  min-height: var(--ui-textarea-min-height-md, 80px) !important;
   padding-bottom: 28px;
 }
 

@@ -20,9 +20,15 @@ _bearer_scheme = HTTPBearer(auto_error=False)
 class CurrentUserContext:
     """封装请求级别的用户身份与项目上下文。"""
 
-    def __init__(self, user: User, project_id: int | None):
+    def __init__(
+        self,
+        user: User,
+        project_id: int | None,
+        requested_project_id: int | None = None,
+    ):
         self.user = user
         self.project_id = project_id
+        self.requested_project_id = requested_project_id
 
     @property
     def user_id(self) -> int:
@@ -55,6 +61,18 @@ class CurrentUserContext:
             return pid
         role = self.role_in_project(pid)
         if role is None:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="您不属于当前项目",
+            )
+        return pid
+
+    def require_strict_project_member(self) -> int:
+        """要求当前 Token 指定的项目也必须是用户所属项目。"""
+        pid = self.require_project_member()
+        if self.is_super_admin or self.requested_project_id is None:
+            return pid
+        if self.requested_project_id != pid:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="您不属于当前项目",
@@ -115,7 +133,11 @@ async def get_current_user(
         )
 
     resolved_project_id = resolve_active_project_id(user, project_id)
-    return CurrentUserContext(user=user, project_id=resolved_project_id)
+    return CurrentUserContext(
+        user=user,
+        project_id=resolved_project_id,
+        requested_project_id=project_id,
+    )
 
 
 async def get_optional_user(
@@ -138,4 +160,8 @@ async def get_optional_user(
         return None
 
     resolved_project_id = resolve_active_project_id(user, project_id)
-    return CurrentUserContext(user=user, project_id=resolved_project_id)
+    return CurrentUserContext(
+        user=user,
+        project_id=resolved_project_id,
+        requested_project_id=project_id,
+    )

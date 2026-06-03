@@ -20,10 +20,23 @@ if str(PROJECT_ROOT) not in sys.path:
 from backend.app.api.router import api_router
 from backend.app.database import async_session_factory, init_db
 from backend.app.integrations.feishu_long_conn import long_conn_supervisor
+from backend.app.result_store import mark_interrupted_execution_runs
 from backend.config import settings
 
 
 logger = logging.getLogger(__name__)
+
+
+def _log_development_environment_warning() -> None:
+    """提示开发环境默认值的安全边界，避免误用于生产。"""
+    if settings.app_env != "development":
+        return
+    logger.warning(
+        "当前 APP_ENV=development，默认 JWT、管理员密码、CORS 与 SVN host "
+        "仅适合本地开发；生产部署请设置 APP_ENV=production 并显式配置 "
+        "JWT_SECRET_KEY、DEFAULT_SUPER_ADMIN_PASSWORD、CORS_ALLOW_ORIGINS "
+        "和 SVN_URL_ALLOWLIST。"
+    )
 
 
 @asynccontextmanager
@@ -36,6 +49,13 @@ async def lifespan(application: FastAPI):
     settings.runtime_dir.mkdir(parents=True, exist_ok=True)
     settings.runtime_upload_dir.mkdir(parents=True, exist_ok=True)
     await init_db()
+    async with async_session_factory() as session:
+        interrupted_runs = await mark_interrupted_execution_runs(session)
+    if interrupted_runs:
+        logger.warning(
+            "已将 %s 个服务重启前未完成的执行任务标记为失败",
+            interrupted_runs,
+        )
 
     long_conn_supervisor.set_session_factory(async_session_factory)
     try:
@@ -58,6 +78,7 @@ async def lifespan(application: FastAPI):
 
 def create_app() -> FastAPI:
     """创建并装配 FastAPI 应用实例。"""
+    _log_development_environment_warning()
     application = FastAPI(title=settings.app_name, lifespan=lifespan)
 
     application.add_middleware(

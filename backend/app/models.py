@@ -153,12 +153,14 @@ class AiRuleDraftRecord(Base):
 
 
 class ExecutionRunRecord(Base):
-    """最近一次执行结果记录。"""
+    """执行任务与执行结果主记录。"""
 
     __tablename__ = "execution_runs"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     scope_type: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    execution_mode: Mapped[str] = mapped_column(String(16), default="sync", index=True)
+    status: Mapped[str] = mapped_column(String(16), default="success", index=True)
     project_id: Mapped[int] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"), index=True
     )
@@ -169,6 +171,13 @@ class ExecutionRunRecord(Base):
     execution_time_ms: Mapped[int] = mapped_column(default=0)
     total_rows_scanned: Mapped[int] = mapped_column(default=0)
     failed_sources_json: Mapped[str] = mapped_column(Text, default="[]")
+    error_message: Mapped[str] = mapped_column(Text, default="")
+    started_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    finished_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

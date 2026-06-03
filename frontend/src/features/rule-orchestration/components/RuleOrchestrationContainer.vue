@@ -130,6 +130,7 @@ const partiallySelectedVisibleRules = computed(() => {
             <PrimaryButton
               size="sm"
               :disabled="!canCreateRule"
+              data-testid="rule-create-button"
               @click="emit('create-rule')"
             >
               <template #icon><Plus /></template>

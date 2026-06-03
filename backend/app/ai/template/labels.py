@@ -11,6 +11,7 @@ SUPPORTED_RULE_TYPES = {
     "dual_composite_compare",
     "multi_composite_pipeline_check",
     "multi_composite_mapping_check",
+    "package_items_compare",
 }
 RULE_TYPE_ALIASES = {
     "非空": "not_null",
@@ -50,6 +51,10 @@ RULE_TYPE_ALIASES = {
     "多组映射": "multi_composite_mapping_check",
     "多组映射校验": "multi_composite_mapping_check",
     "多节点映射": "multi_composite_mapping_check",
+    "IAP礼包校验": "package_items_compare",
+    "IAP 礼包校验": "package_items_compare",
+    "礼包校验": "package_items_compare",
+    "礼包道具校验": "package_items_compare",
 }
 TEMPLATE_LABELS = (
     "数据源",
@@ -96,7 +101,7 @@ TEMPLATE_PLACEHOLDERS = {
     "sheet名",
     "变量1,变量2",
     "目标字段",
-    "从 not_null / unique / fixed_value_compare / regex_check / sequence_order_check / cross_table_mapping / composite_condition_check / dual_composite_compare / multi_composite_pipeline_check / multi_composite_mapping_check 中选择",
+    "从 not_null / unique / fixed_value_compare / regex_check / sequence_order_check / cross_table_mapping / composite_condition_check / dual_composite_compare / multi_composite_pipeline_check / multi_composite_mapping_check / package_items_compare 中选择",
     "字段或内容",
     "全部数据 / 满足 xxx 的数据",
     "字段名",

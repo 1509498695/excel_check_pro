@@ -1,4 +1,4 @@
-"""飞书数据源读取占位实现。"""
+"""飞书电子表格数据源读取实现。"""
 
 from __future__ import annotations
 
@@ -774,8 +774,3 @@ def _build_feishu_composite_mapping(
 
 def _unique_preserve_order(items: list[str]) -> list[str]:
     return list(dict.fromkeys(items))
-
-
-def read_feishu_sheet(*args: object, **kwargs: object) -> None:
-    """预留飞书 Open API 读取入口，当前尚未实现。"""
-    raise NotImplementedError("Feishu loading is not implemented yet.")

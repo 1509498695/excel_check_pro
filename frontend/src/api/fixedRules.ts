@@ -1,9 +1,6 @@
 import type {
   FixedRulesConfig,
   FixedRulesConfigResponse,
-  FixedRulesImportCommitResponse,
-  FixedRulesImportPreviewResponse,
-  FixedRulesImportRequest,
   FixedRulesExecuteResponse,
   FixedRulesSvnUpdateResponse,
 } from '../types/fixedRules'
@@ -53,23 +50,5 @@ export async function exportFixedRulesResults(resultId: number): Promise<ApiFile
 export async function triggerFixedRulesSvnUpdate(): Promise<FixedRulesSvnUpdateResponse> {
   return apiFetch<FixedRulesSvnUpdateResponse>('/api/v1/fixed-rules/svn-update', {
     method: 'POST',
-  })
-}
-
-export async function previewWorkbenchRuleImport(
-  payload: FixedRulesImportRequest,
-): Promise<FixedRulesImportPreviewResponse> {
-  return apiFetch<FixedRulesImportPreviewResponse>('/api/v1/fixed-rules/import-preview', {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  })
-}
-
-export async function importWorkbenchRules(
-  payload: FixedRulesImportRequest,
-): Promise<FixedRulesImportCommitResponse> {
-  return apiFetch<FixedRulesImportCommitResponse>('/api/v1/fixed-rules/import-from-workbench', {
-    method: 'POST',
-    body: JSON.stringify(payload),
   })
 }

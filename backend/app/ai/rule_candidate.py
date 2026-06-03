@@ -32,6 +32,7 @@ SUPPORTED_RULE_TYPES: tuple[FixedRuleType, ...] = (
     "dual_composite_compare",
     "multi_composite_pipeline_check",
     "multi_composite_mapping_check",
+    "package_items_compare",
 )
 
 UNSUPPORTED_KEYWORDS = ("公式", "聚合", "平均", "求和", "脚本", "计算后", "跨行统计")
@@ -141,6 +142,11 @@ RULE_TYPE_SPECS: tuple[RuleTypeSpec, ...] = (
         ("多组映射", "多节点映射", "映射校验", "mapping"),
         ("multi_node",),
     ),
+    RuleTypeSpec(
+        "package_items_compare",
+        ("IAP礼包", "IAP 礼包", "礼包校验", "礼包道具", "STR_Items", "package_items_compare"),
+        ("package_items",),
+    ),
 )
 
 
@@ -220,7 +226,7 @@ def build_rule_candidates(
 
 
 def rank_rule_candidates(candidate: RuleCandidate) -> list[RuleCandidateScore]:
-    """为一个候选片段计算 10 类规则的评分。"""
+    """为一个候选片段计算当前规则库的评分。"""
     slots = _collect_slots(candidate)
     return sorted(
         (_score_rule_type(candidate, spec, slots) for spec in RULE_TYPE_SPECS),
@@ -252,7 +258,7 @@ def critique_rule_candidate(
             workflow_hints=candidate.hints,
             confidence=max(best.score, 0.4),
             rule_type=best.rule_type if best.score >= AMBIGUOUS_SCORE_THRESHOLD else None,
-            rejection_reason="当前输入包含聚合、平均值、公式、求和或跨行统计等语义，现有 10 类规则暂不能稳定表达。",
+            rejection_reason="当前输入包含聚合、平均值、公式、求和或跨行统计等语义，现有 11 类规则暂不能稳定表达。",
             reasoning_summary="规则批判发现当前需求超出现有规则库能力，已阻止误添加。",
             should_stop=True,
         )
@@ -450,6 +456,7 @@ def _collect_slots(candidate: RuleCandidate) -> dict[str, bool]:
         "key": bool(hints.key_column or hints.left_key_field or hints.right_key_field),
         "compare_fields": bool(hints.compare_fields),
         "multi_node": bool(hints.pipeline_nodes or hints.mapping_nodes or re.search(r"(多组|多节点|链路)", text)),
+        "package_items": bool(re.search(r"(IAP\s*礼包|礼包校验|礼包道具|STR_Items)", text, re.IGNORECASE)),
         "composite_signal": bool(
             hints.filters
             or hints.filter_field

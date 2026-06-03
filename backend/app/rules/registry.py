@@ -19,6 +19,7 @@ RuleCategory = Literal[
     "dual_composite",
     "pipeline",
     "mapping",
+    "package_items",
 ]
 
 
@@ -57,6 +58,11 @@ RULE_METADATA: dict[str, RuleMetadata] = {
         "multi_composite_mapping_check",
         "多组映射校验",
         "mapping",
+    ),
+    "package_items_compare": RuleMetadata(
+        "package_items_compare",
+        "IAP礼包校验",
+        "package_items",
     ),
 }
 

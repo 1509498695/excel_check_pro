@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -16,9 +15,8 @@ from backend.app.auth.dependencies import (
     get_optional_user,
 )
 from backend.app.database import get_db
-from backend.app.execution_pipeline import run_execution_pipeline
-from backend.app.fixed_rules.package_items_runtime import (
-    prepare_package_items_runtime_task_tree,
+from backend.app.execution_summary import (
+    build_workbench_execution_summary,
 )
 from backend.app.result_store import (
     fetch_execution_result_export,
@@ -44,38 +42,26 @@ async def execute_engine(
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
     """按 TaskTree 串起加载、规则执行与响应组装流程。"""
-    start = time.perf_counter()
     project_id = (
         ctx.require_project_member()
         if ctx is not None and ctx.project_id is not None
         else None
     )
 
-    runtime_preparation = await prepare_package_items_runtime_task_tree(
-        task_tree,
-        db=db,
-        project_id=project_id,
-        user_id=ctx.user_id if ctx is not None else None,
-    )
-
     try:
-        execution_artifacts = run_execution_pipeline(
-            runtime_preparation.task_tree,
+        execution_summary = await build_workbench_execution_summary(
+            task_tree,
+            db=db,
             project_id=project_id,
-            preloaded_variable_frames=runtime_preparation.preloaded_variable_frames,
+            user_id=ctx.user_id if ctx is not None else None,
         )
     except (ValueError, ImportError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    abnormal_results = [
-        *runtime_preparation.abnormal_results,
-        *execution_artifacts["abnormal_results"],
-    ]
-    elapsed_ms = int((time.perf_counter() - start) * 1000)
-    total_rows_scanned = sum(
-        len(frame) for frame in execution_artifacts["loaded_variables"].values()
-    )
-    failed_sources = execution_artifacts["failed_sources"]
+    abnormal_results = execution_summary["abnormal_results"]
+    elapsed_ms = execution_summary["execution_time_ms"]
+    total_rows_scanned = execution_summary["total_rows_scanned"]
+    failed_sources = execution_summary["failed_sources"]
     page, size = normalize_result_page(task_tree.page, task_tree.size)
 
     result_id: int | None = None

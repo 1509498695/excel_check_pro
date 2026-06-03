@@ -19,6 +19,7 @@ SUPPORTED_RULE_TYPES = [
     "dual_composite_compare",
     "multi_composite_pipeline_check",
     "multi_composite_mapping_check",
+    "package_items_compare",
 ]
 
 
@@ -57,6 +58,7 @@ def build_prompt_optimize_system_prompt() -> str:
             "规则类型映射：升序/降序/连续/递增/递减/步长 -> sequence_order_check；存在于/引用表/字典表/包含(in) -> cross_table_mapping。",
             "规则类型映射：按字段筛选后校验另一个字段 -> composite_condition_check；两组数据按 Key 比较字段 -> dual_composite_compare。",
             "规则类型映射：多级链路/串行节点 -> multi_composite_pipeline_check；多个节点独立筛选或映射 -> multi_composite_mapping_check。",
+            "规则类型映射：飞书礼包规划明细与 STR_Items 道具列表比对 -> package_items_compare。",
             "暂不支持聚合、平均值、求和、分组统计、跨多表复杂公式或需要读取业务单元格样本才能判断的规则；这类规则不要强行映射成已支持类型，应保留原意并提示需要用户确认或当前能力不支持。",
             "detected_clues.rule_type_hint 只能使用允许的 rule_type；不能确定时填 null。",
             "filters 用字段、操作符和值描述；filter operator 支持 eq / ne / gt / lt / not_null / contains / not_contains；compare_operator 使用 eq / ne / gt / lt / not_null。",
@@ -91,6 +93,7 @@ def build_system_prompt() -> str:
             "规则匹配表：格式/正则/匹配 -> regex_check；升序/降序/连续/递增/递减/步长 -> sequence_order_check；存在于/字典表/包含(in) -> cross_table_mapping。",
             "规则匹配表：按一个字段筛选后再校验另一个字段 -> composite_condition_check；两组配置按 key 比较多个字段 -> dual_composite_compare。",
             "规则匹配表：A关联B再关联C/多级链路 -> multi_composite_pipeline_check；多个组合变量节点独立筛选或映射 -> multi_composite_mapping_check。",
+            "规则匹配表：飞书礼包规划明细与 STR_Items 道具列表比对 -> package_items_compare。",
             "输入模板语义：数据源、sheet分页、变量选择来自页面独立输入区或历史旧模板；规则正文可以是自然句，但优化输入必须输出 DSL。",
             "Key 句或筛选区里的 FIELD 唯一是 Key/唯一性前置条件；断言里的“A=B/等于字段 B”若两边都是字段，则是字段对字段比较，应生成 value_source=field + expected_field。",
             "当规则需要按一个字段过滤后再校验另一个字段时，优先使用 composite_condition_check；不要降级为单字段 regex_check。",

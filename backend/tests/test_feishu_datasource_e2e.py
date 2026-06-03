@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
@@ -24,6 +25,7 @@ from backend.app.integrations.feishu_client import (
     FeishuSheetMetadata,
     FeishuSheetTable,
 )
+from backend.app.loaders import local_reader
 from backend.app.loaders.feishu_reader import FeishuSheetError, parse_feishu_sheet_url
 from backend.app.models import FeishuBotConfigRecord, FeishuSheetAuthorizationRecord
 from backend.app.security.crypto import encrypt_secret
@@ -759,30 +761,42 @@ async def test_feishu_authorization_e2e_callback_share_permission_failure(
 
 
 @pytest.mark.anyio
-async def test_local_excel_metadata_preview_execution_regression(tmp_path: Path) -> None:
+async def test_local_excel_metadata_preview_execution_regression(
+    auth_client: AsyncClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     workbook_path = _create_regression_workbook(tmp_path / "local_regression.xlsx")
     source = {"id": "src_local", "type": "local_excel", "path": str(workbook_path)}
+    monkeypatch.setattr(
+        local_reader,
+        "settings",
+        SimpleNamespace(
+            local_file_root_allowlist=(tmp_path,),
+            runtime_upload_dir=tmp_path / "uploads",
+            svn_cache_dir=tmp_path / "svn-cache",
+        ),
+    )
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
-        metadata_response = await client.post("/api/v1/sources/metadata", json=source)
-        preview_response = await client.post(
-            "/api/v1/sources/column-preview",
-            json={"source": source, "sheet": "Items", "column": "Name", "limit": 2},
-        )
-        composite_response = await client.post(
-            "/api/v1/sources/composite-preview",
-            json={
-                "source": source,
-                "sheet": "Items",
-                "columns": ["ID", "Name", "Group"],
-                "key_column": "ID",
-                "append_index_to_key": True,
-            },
-        )
-        execute_response = await client.post(
-            "/api/v1/engine/execute",
-            json=_not_null_execute_payload(source),
-        )
+    metadata_response = await auth_client.post("/api/v1/sources/metadata", json=source)
+    preview_response = await auth_client.post(
+        "/api/v1/sources/column-preview",
+        json={"source": source, "sheet": "Items", "column": "Name", "limit": 2},
+    )
+    composite_response = await auth_client.post(
+        "/api/v1/sources/composite-preview",
+        json={
+            "source": source,
+            "sheet": "Items",
+            "columns": ["ID", "Name", "Group"],
+            "key_column": "ID",
+            "append_index_to_key": True,
+        },
+    )
+    execute_response = await auth_client.post(
+        "/api/v1/engine/execute",
+        json=_not_null_execute_payload(source),
+    )
 
     assert metadata_response.status_code == 200
     assert metadata_response.json()["data"]["sheets"][0]["columns"] == ["ID", "Name", "Group"]
@@ -800,6 +814,7 @@ async def test_local_excel_metadata_preview_execution_regression(tmp_path: Path)
 
 @pytest.mark.anyio
 async def test_svn_metadata_preview_execution_regression(
+    auth_client: AsyncClient,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -813,26 +828,25 @@ async def test_svn_metadata_preview_execution_regression(
         "pathOrUrl": "https://samosvn/data/project/samo/GameDatas/datas_qa88/items.xlsx",
     }
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://testserver") as client:
-        metadata_response = await client.post("/api/v1/sources/metadata", json=source)
-        preview_response = await client.post(
-            "/api/v1/sources/column-preview",
-            json={"source": source, "sheet": "Items", "column": "Name", "limit": 2},
-        )
-        composite_response = await client.post(
-            "/api/v1/sources/composite-preview",
-            json={
-                "source": source,
-                "sheet": "Items",
-                "columns": ["ID", "Name", "Group"],
-                "key_column": "ID",
-                "append_index_to_key": True,
-            },
-        )
-        execute_response = await client.post(
-            "/api/v1/engine/execute",
-            json=_not_null_execute_payload(source),
-        )
+    metadata_response = await auth_client.post("/api/v1/sources/metadata", json=source)
+    preview_response = await auth_client.post(
+        "/api/v1/sources/column-preview",
+        json={"source": source, "sheet": "Items", "column": "Name", "limit": 2},
+    )
+    composite_response = await auth_client.post(
+        "/api/v1/sources/composite-preview",
+        json={
+            "source": source,
+            "sheet": "Items",
+            "columns": ["ID", "Name", "Group"],
+            "key_column": "ID",
+            "append_index_to_key": True,
+        },
+    )
+    execute_response = await auth_client.post(
+        "/api/v1/engine/execute",
+        json=_not_null_execute_payload(source),
+    )
 
     assert metadata_response.status_code == 200
     assert metadata_response.json()["data"]["source_type"] == "svn"

@@ -1680,6 +1680,7 @@ def test_hint_extractor_short_template_uses_key_selection_and_judgement() -> Non
         ("跨组变量 / dual_composite_compare", "目标字段：无\n筛选条件：左侧 Type=1；右侧 Type=2\nKey字段：ID\n引用对象：无\n比较字段：Value\n\n校验规则：左右两组按 Key 对齐后比较字段必须相等\n规则参数：无", "dual_composite_compare"),
         ("多组串行 / multi_composite_pipeline_check", "目标字段：Code\n筛选条件：无\nKey字段：ID\n引用对象：无\n比较字段：无\n\n校验规则：按多组串行节点执行筛选和断言\n规则参数：节点1 -> 节点2", "multi_composite_pipeline_check"),
         ("多组映射 / multi_composite_mapping_check", "目标字段：Code\n筛选条件：无\nKey字段：ID\n引用对象：无\n比较字段：无\n\n校验规则：按多组映射节点独立筛选和判断\n规则参数：节点1：变量=A；筛选=Type=1", "multi_composite_mapping_check"),
+        ("IAP礼包校验 / package_items_compare", "目标字段：无\n筛选条件：无\nKey字段：无\n引用对象：礼包配置变量\n比较字段：STR_Items\n\n校验规则：飞书礼包规划明细与 STR_Items 一致\n规则参数：无", "package_items_compare"),
     ],
 )
 def test_hint_extractor_v3_template_rule_type_aliases(
@@ -1687,7 +1688,7 @@ def test_hint_extractor_v3_template_rule_type_aliases(
     body: str,
     expected_rule_type: str,
 ) -> None:
-    """v3 模板中的中英文规则类型别名应归一到当前 10 类规则。"""
+    """v3 模板中的中英文规则类型别名应归一到当前 11 类规则。"""
     hints = extract_workflow_hints_from_text(
         f"""数据源：demo.xls
 sheet分页：items
@@ -2825,7 +2826,7 @@ async def test_rule_draft_workflow_hints_do_not_override_rejected(
             "verdict": "rejected",
             "confidence": 0.2,
             "reasoning_summary": "当前系统不支持公式聚合计算。",
-            "rejection_reason": "当前 10 类规则无法表达跨行聚合平均值判断。",
+            "rejection_reason": "当前 11 类规则无法表达跨行聚合平均值判断。",
         }, {}
 
     monkeypatch.setattr("backend.app.ai.agent_service.call_provider_json", fake_call_provider_json)
@@ -2848,7 +2849,7 @@ async def test_rule_draft_workflow_hints_do_not_override_rejected(
     assert data["verdict"] == "rejected"
     assert data["draft"]["rules_to_add"] == []
     assert "聚合" in data["rejection_reason"]
-    assert "现有 10 类规则" in data["rejection_reason"]
+    assert "现有 11 类规则" in data["rejection_reason"]
 
 
 @pytest.mark.anyio
@@ -2999,7 +3000,7 @@ async def test_rule_draft_workflow_hints_cover_all_existing_rule_types_when_prov
     workflow_hints: dict[str, Any],
     test_db,
 ) -> None:
-    """模型不可用时，完整结构化线索仍能编译为当前 10 类已有规则。"""
+    """模型不可用时，完整结构化线索仍能编译为当前标准 AI 规则。"""
     await _save_provider(auth_client)
 
     async def fake_call_provider_json(**_: Any) -> tuple[dict[str, Any], dict[str, Any]]:

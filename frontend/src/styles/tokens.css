@@ -1,0 +1,117 @@
+/* ================ Design Tokens ================
+   运行时样式 token 的唯一入口。Tailwind token 应与本文件保持语义一致，
+   组件和页面样式优先引用这里的 CSS variables。 */
+:root {
+  font-family:
+    'Inter', 'Noto Sans SC', 'SF Pro Display', 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  color: #0f172a;
+  background: #f6f8fc;
+  line-height: 1.6;
+  font-weight: 400;
+  text-rendering: optimizeLegibility;
+  font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  --color-primary: #0f62fe;
+  --color-primary-hover: #004eeb;
+  --color-primary-soft: #eaf2ff;
+  --color-primary-light: #f3f7ff;
+
+  --color-success: #12b76a;
+  --color-success-soft: #e8f8f0;
+
+  --color-warning: #ff7a1a;
+  --color-warning-soft: #fff1e8;
+
+  --color-danger: #ef4444;
+  --color-danger-soft: #feecec;
+
+  --color-text-main: #0f172a;
+  --color-text-secondary: #475569;
+  --color-text-muted: #94a3b8;
+  --color-text-subtle: var(--color-text-muted);
+
+  --color-border: #e5eaf3;
+  --color-border-light: #eef2f7;
+
+  --color-bg-page: #f6f8fc;
+  --color-bg-card: #ffffff;
+  --color-bg-card-soft: #fbfcff;
+
+  --shadow-card: 0 12px 32px rgba(15, 23, 42, 0.06);
+  --shadow-card-hover: 0 16px 40px rgba(15, 23, 42, 0.1);
+  --shadow-button: 0 8px 18px rgba(15, 98, 254, 0.22);
+  --shadow-panel:
+    0 28px 80px rgba(15, 23, 42, 0.08),
+    0 8px 24px rgba(15, 23, 42, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  --shadow-soft:
+    0 24px 60px rgba(15, 23, 42, 0.08),
+    0 8px 24px rgba(15, 23, 42, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.7);
+
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 18px;
+  --radius-xl: 24px;
+  --radius-pill: 999px;
+
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 28px;
+
+  --layout-sidebar-width: 260px;
+  --layout-content-padding: 28px;
+
+  --ui-control-height-sm: 36px;
+  --ui-control-height-md: 42px;
+  --ui-control-radius: 10px;
+  --ui-table-row-height: 50px;
+  --ui-textarea-min-height-md: 80px;
+
+  --ui-card-border: var(--color-border);
+  --ui-card-radius: var(--radius-lg);
+  --ui-card-bg: rgba(255, 255, 255, 0.96);
+  --ui-card-shadow: var(--shadow-card);
+
+  --ui-dialog-radius: var(--radius-xl);
+  --ui-dialog-shadow: 0 28px 72px rgba(15, 23, 42, 0.16), 0 12px 32px rgba(15, 23, 42, 0.08);
+
+  /* 兼容遗留页面和组件仍在使用的变量名。 */
+  --surface: rgba(255, 255, 255, 0.84);
+  --surface-soft: rgba(255, 255, 255, 0.72);
+  --surface-strong: rgba(255, 255, 255, 0.92);
+  --surface-tint: rgba(255, 255, 255, 0.56);
+  --surface-inverse: rgba(29, 29, 31, 0.72);
+  --surface-warm: var(--color-bg-page);
+  --border: rgba(15, 23, 42, 0.08);
+  --border-strong: rgba(15, 23, 42, 0.12);
+  --text-main: #1d1d1f;
+  --text-soft: #6e6e73;
+  --text-muted: #86868b;
+  --accent: #0a84ff;
+  --accent-strong: #0066cc;
+  --brand: #5ac8fa;
+  --brand-strong: #0a84ff;
+  --success: #30d158;
+  --warning: #ff9f0a;
+  --danger: #ff453a;
+  --apple-transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (min-width: 1440px) {
+  :root {
+    --layout-content-padding: 32px;
+  }
+}
+
+@media (min-width: 1920px) {
+  :root {
+    --layout-content-padding: 36px;
+  }
+}

@@ -826,6 +826,7 @@ defineExpose({
           <button
             type="button"
             class="ec-btn ec-btn-primary ec-btn-sm"
+            data-testid="variable-single-create-button"
             :disabled="!store.sources.length"
             @click="() => openSingleCreateTab()"
           >
@@ -835,6 +836,7 @@ defineExpose({
           <button
             type="button"
             class="ec-btn ec-btn-primary ec-btn-sm"
+            data-testid="variable-composite-create-button"
             :disabled="!store.sources.length"
             @click="() => openCompositeCreateTab()"
           >
@@ -891,6 +893,7 @@ defineExpose({
     v-model="singleDialogVisible"
     :title="singleEditingTag ? '编辑单个变量' : '添加单个变量'"
     width="520px"
+    data-testid="single-variable-dialog"
     destroy-on-close
     @closed="handleSingleDialogClosed"
   >
@@ -917,6 +920,7 @@ defineExpose({
             class="w-full"
             filterable
             placeholder="选择来源数据"
+            data-testid="single-variable-source-select"
             @update:model-value="handleSingleSourceChange"
           >
             <el-option
@@ -934,6 +938,7 @@ defineExpose({
             :model-value="singleDraft.sheet"
             class="w-full"
             filterable
+            data-testid="single-variable-sheet-select"
             :placeholder="singleSheetPlaceholder"
             :loading="singleMetadataLoading"
             :disabled="singleMetadataLoading || !singleDraft.source_id || !singleSheetOptions.length"
@@ -957,6 +962,7 @@ defineExpose({
             :model-value="singleDraft.column"
             class="w-full"
             filterable
+            data-testid="single-variable-column-select"
             :placeholder="singleColumnPlaceholder"
             :loading="singleMetadataLoading"
             :disabled="singleMetadataLoading || !singleDraft.sheet || !singleColumnOptions.length"
@@ -977,6 +983,7 @@ defineExpose({
             v-model="singleDraft.expected_type"
             class="w-full"
             placeholder="选择期望类型"
+            data-testid="single-variable-type-select"
           >
             <el-option
               v-for="option in EXPECTED_TYPE_OPTIONS"
@@ -994,6 +1001,7 @@ defineExpose({
         <el-input
           :model-value="singleDraft.tag"
           placeholder="[source-sheet-column]"
+          data-testid="single-variable-tag-input"
           @input="handleSingleTagInput"
         />
         <div
@@ -1019,6 +1027,7 @@ defineExpose({
         <button
           type="button"
           class="ec-btn ec-btn-primary"
+          data-testid="single-variable-save-button"
           :disabled="!canSaveSingle"
           @click="saveSingleVariable"
         >
