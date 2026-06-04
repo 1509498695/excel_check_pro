@@ -61,7 +61,13 @@ import {
   scheduleAutoSaveAction,
 } from './workbench/persistenceActions'
 import { collectAffectedSourceIds } from './workbench/sourceActions'
-import { normalizeStoredVariable } from './workbench/variableActions'
+import {
+  getCompositePreviewPageOptions,
+  normalizeStoredVariable,
+  normalizeVariablePreviewOptions,
+  variablePreviewMatchesRequest,
+  type VariablePreviewLoadOptions,
+} from './workbench/variableActions'
 import { resetExecutionState } from './workbench/executionActions'
 import { createWorkbenchState, type WorkbenchState } from './workbench/state'
 import {
@@ -329,26 +335,18 @@ export const useWorkbenchStore = defineStore('workbench', {
 
     async loadVariablePreview(
       variable: VariableTag,
-      limit?: number,
+      options?: number | VariablePreviewLoadOptions,
       forceRefresh = false,
     ): Promise<VariablePreviewData> {
       const cached = this.variablePreviewMap[variable.tag]
-      const wantsAllRows = limit === undefined || limit === null
+      const previewOptions = normalizeVariablePreviewOptions(options)
 
-      if (cached && !forceRefresh) {
-        const cachedLoadsAllRows =
-          cached.variable_kind === 'single'
-            ? cached.loaded_all_rows ?? cached.preview_rows.length === cached.total_rows
-            : cached.loaded_all_rows ?? (cached.loaded_rows ?? 0) === cached.total_rows
-
-        const cachedMatchesLimit =
-          cached.variable_kind === 'single'
-            ? cached.preview_limit === limit
-            : wantsAllRows
-
-        if ((wantsAllRows && cachedLoadsAllRows) || (!wantsAllRows && cachedMatchesLimit)) {
-          return cached
-        }
+      if (
+        cached &&
+        !forceRefresh &&
+        variablePreviewMatchesRequest(cached, variable, previewOptions)
+      ) {
+        return cached
       }
 
       const source = this.sources.find((item) => item.id === variable.source_id)
@@ -356,6 +354,7 @@ export const useWorkbenchStore = defineStore('workbench', {
         throw new Error(`变量 "${variable.tag}" 引用了不存在的数据源 "${variable.source_id}"。`)
       }
 
+      const compositePageOptions = getCompositePreviewPageOptions(previewOptions)
       const response =
         (variable.variable_kind ?? 'single') === 'composite'
           ? await fetchCompositePreview({
@@ -364,12 +363,14 @@ export const useWorkbenchStore = defineStore('workbench', {
               columns: variable.columns ?? [],
               key_column: variable.key_column ?? '',
               append_index_to_key: variable.append_index_to_key ?? false,
+              page: compositePageOptions.page,
+              size: compositePageOptions.size,
             })
           : await fetchColumnPreview({
               source,
               sheet: variable.sheet,
               column: variable.column ?? '',
-              limit,
+              limit: previewOptions.limit,
             })
       this.variablePreviewMap[variable.tag] = response.data
       return response.data

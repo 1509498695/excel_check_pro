@@ -266,6 +266,8 @@ async def preview_feishu_composite_variable(
     columns: list[str],
     key_column: str,
     append_index_to_key: bool = False,
+    page: int | None = None,
+    size: int | None = None,
     db: AsyncSession,
     project_id: int,
 ) -> dict[str, Any]:
@@ -313,6 +315,22 @@ async def preview_feishu_composite_variable(
         for column in resolved_preview_columns
     }
     data_rows = table.raw_values[1:] if table.raw_values else []
+    total_keys = _count_non_empty_feishu_composite_keys(
+        data_rows,
+        key_column_index=key_column_index,
+    )
+    (
+        resolved_page,
+        page_size,
+        total_pages,
+        page_start,
+        page_end,
+        is_paginated,
+    ) = _resolve_composite_preview_page(
+        page=page,
+        size=size,
+        total_keys=total_keys,
+    )
     duplicate_keys_preview = _find_duplicate_feishu_composite_keys(
         data_rows,
         key_column_index=key_column_index,
@@ -323,13 +341,25 @@ async def preview_feishu_composite_variable(
         mapping: dict[str, dict[str, Any]] = {}
         loaded_rows = 0
     else:
+        preview_rows = data_rows
+        row_positions: list[int] | None = None
+        if is_paginated:
+            indexed_rows = _select_feishu_composite_key_rows(
+                data_rows,
+                key_column_index=key_column_index,
+                start=page_start,
+                end=page_end,
+            )
+            row_positions = [row_position for row_position, _row in indexed_rows]
+            preview_rows = [row for _row_position, row in indexed_rows]
         mapping, loaded_rows = _build_feishu_composite_mapping(
-            data_rows,
+            preview_rows,
             columns=resolved_preview_columns,
             column_indexes=column_indexes,
             key_column=resolved_key_column,
             key_column_index=key_column_index,
             append_index_to_key=append_index_to_key,
+            row_positions=row_positions,
         )
 
     return {
@@ -339,12 +369,17 @@ async def preview_feishu_composite_variable(
         "sheet": selected_sheet.title,
         "columns": resolved_preview_columns,
         "key_column": resolved_key_column,
+        "append_index_to_key": append_index_to_key,
         "has_duplicate_keys": has_duplicate_keys,
         "duplicate_keys_preview": duplicate_keys_preview,
         "mapping": mapping,
         "total_rows": len(data_rows),
+        "total_keys": total_keys,
+        "page": resolved_page,
+        "page_size": page_size,
+        "total_pages": total_pages,
         "loaded_rows": loaded_rows,
-        "loaded_all_rows": loaded_rows == len(data_rows),
+        "loaded_all_rows": loaded_rows == total_keys,
     }
 
 
@@ -712,6 +747,67 @@ def _get_feishu_row_value(row: list[Any], column_index: int) -> Any:
     return row[column_index] if column_index < len(row) else None
 
 
+def _resolve_composite_preview_page(
+    *,
+    page: int | None,
+    size: int | None,
+    total_keys: int,
+) -> tuple[int, int, int, int, int, bool]:
+    if page is None and size is None:
+        return 1, total_keys, 1, 0, total_keys, False
+
+    resolved_page = max(1, page or 1)
+    page_size = max(1, size or 200)
+    total_pages = max(1, (total_keys + page_size - 1) // page_size)
+    page_start = (resolved_page - 1) * page_size
+    return (
+        resolved_page,
+        page_size,
+        total_pages,
+        page_start,
+        page_start + page_size,
+        True,
+    )
+
+
+def _count_non_empty_feishu_composite_keys(
+    data_rows: list[list[Any]],
+    *,
+    key_column_index: int,
+) -> int:
+    total_keys = 0
+    for row in data_rows:
+        value = _normalize_feishu_preview_value(
+            _get_feishu_row_value(row, key_column_index)
+        )
+        if not _is_empty_feishu_preview_value(value):
+            total_keys += 1
+    return total_keys
+
+
+def _select_feishu_composite_key_rows(
+    data_rows: list[list[Any]],
+    *,
+    key_column_index: int,
+    start: int,
+    end: int,
+) -> list[tuple[int, list[Any]]]:
+    selected_rows: list[tuple[int, list[Any]]] = []
+    valid_key_position = 0
+    for row_position, row in enumerate(data_rows):
+        value = _normalize_feishu_preview_value(
+            _get_feishu_row_value(row, key_column_index)
+        )
+        if _is_empty_feishu_preview_value(value):
+            continue
+        if start <= valid_key_position < end:
+            selected_rows.append((row_position, row))
+        valid_key_position += 1
+        if valid_key_position >= end:
+            break
+    return selected_rows
+
+
 def _find_duplicate_feishu_composite_keys(
     data_rows: list[list[Any]],
     *,
@@ -742,11 +838,17 @@ def _build_feishu_composite_mapping(
     key_column: str,
     key_column_index: int,
     append_index_to_key: bool,
+    row_positions: list[int] | None = None,
 ) -> tuple[dict[str, dict[str, Any]], int]:
     mapping: dict[str, dict[str, Any]] = {}
     loaded_rows = 0
 
-    for row_position, row in enumerate(data_rows):
+    for fallback_position, row in enumerate(data_rows):
+        row_position = (
+            row_positions[fallback_position]
+            if row_positions is not None and fallback_position < len(row_positions)
+            else fallback_position
+        )
         key_value = _normalize_feishu_preview_value(
             _get_feishu_row_value(row, key_column_index)
         )

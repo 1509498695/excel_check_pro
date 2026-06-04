@@ -186,6 +186,8 @@ def preview_composite_variable(
     columns: list[str],
     key_column: str,
     append_index_to_key: bool = False,
+    page: int | None = None,
+    size: int | None = None,
 ) -> dict[str, Any]:
     """返回同一数据源同一 Sheet 内多列组合后的 JSON 映射预览。"""
     _ensure_metadata_supported(source)
@@ -222,9 +224,9 @@ def preview_composite_variable(
             identifier_label="key 列",
             context=f"Excel 数据源 '{source.id}' 的 Sheet '{resolved_sheet_name}'",
         )
-        dataframe = workbook.parse(
+        key_dataframe = workbook.parse(
             sheet_name=resolved_sheet_name,
-            usecols=resolved_preview_columns,
+            usecols=[resolved_key_column],
         )
     except FileNotFoundError as exc:
         raise FileNotFoundError(
@@ -241,13 +243,45 @@ def preview_composite_variable(
     if resolved_key_column not in resolved_preview_columns:
         raise ValueError("组合变量的 key 列必须包含在关联列中。")
 
-    duplicate_keys_preview = _find_duplicate_composite_keys(dataframe[resolved_key_column])
+    key_series = key_dataframe[resolved_key_column]
+    total_rows = int(len(key_dataframe))
+    total_keys = _count_non_empty_composite_keys(key_series)
+    (
+        resolved_page,
+        page_size,
+        total_pages,
+        page_start,
+        page_end,
+        is_paginated,
+    ) = _resolve_composite_preview_page(
+        page=page,
+        size=size,
+        total_keys=total_keys,
+    )
+    duplicate_keys_preview = _find_duplicate_composite_keys(key_series)
     has_duplicate_keys = bool(duplicate_keys_preview)
 
     if has_duplicate_keys and not append_index_to_key:
         mapping: dict[str, dict[str, Any]] = {}
         loaded_rows = 0
     else:
+        if is_paginated:
+            page_row_indices = _select_composite_key_row_indices(
+                key_series,
+                start=page_start,
+                end=page_end,
+            )
+            dataframe = _read_composite_preview_page(
+                workbook,
+                sheet_name=resolved_sheet_name,
+                columns=resolved_preview_columns,
+                row_indices=page_row_indices,
+            )
+        else:
+            dataframe = workbook.parse(
+                sheet_name=resolved_sheet_name,
+                usecols=resolved_preview_columns,
+            )
         mapping, loaded_rows = _build_composite_mapping(
             dataframe,
             columns=resolved_preview_columns,
@@ -263,12 +297,17 @@ def preview_composite_variable(
         "sheet": resolved_sheet_name,
         "columns": resolved_preview_columns,
         "key_column": resolved_key_column,
+        "append_index_to_key": append_index_to_key,
         "has_duplicate_keys": has_duplicate_keys,
         "duplicate_keys_preview": duplicate_keys_preview,
         "mapping": mapping,
-        "total_rows": int(len(dataframe)),
+        "total_rows": total_rows,
+        "total_keys": total_keys,
+        "page": resolved_page,
+        "page_size": page_size,
+        "total_pages": total_pages,
         "loaded_rows": loaded_rows,
-        "loaded_all_rows": loaded_rows == int(len(dataframe)),
+        "loaded_all_rows": loaded_rows == total_keys,
     }
 
 
@@ -700,6 +739,86 @@ def _build_composite_variable_frame(
     return frame[ordered_columns].reset_index(drop=True)
 
 
+def _resolve_composite_preview_page(
+    *,
+    page: int | None,
+    size: int | None,
+    total_keys: int,
+) -> tuple[int, int, int, int, int, bool]:
+    """统一解析组合变量预览分页；未传分页时保持全量预览兼容行为。"""
+    if page is None and size is None:
+        return 1, total_keys, 1, 0, total_keys, False
+
+    resolved_page = max(1, page or 1)
+    page_size = max(1, size or 200)
+    total_pages = max(1, (total_keys + page_size - 1) // page_size)
+    page_start = (resolved_page - 1) * page_size
+    return (
+        resolved_page,
+        page_size,
+        total_pages,
+        page_start,
+        page_start + page_size,
+        True,
+    )
+
+
+def _count_non_empty_composite_keys(source_series: pd.Series) -> int:
+    """统计组合变量 key 列中会进入映射的非空 key 数量。"""
+    normalized_values = source_series.apply(_normalize_preview_value)
+    return sum(1 for value in normalized_values.tolist() if not _is_empty_preview_value(value))
+
+
+def _select_composite_key_row_indices(
+    source_series: pd.Series,
+    *,
+    start: int,
+    end: int,
+) -> list[int]:
+    """按非空 key 的顺序选出当前预览页对应的原始数据行索引。"""
+    selected_indices: list[int] = []
+    valid_key_position = 0
+    normalized_values = source_series.apply(_normalize_preview_value)
+
+    for row_index, value in normalized_values.items():
+        if _is_empty_preview_value(value):
+            continue
+        if start <= valid_key_position < end:
+            selected_indices.append(int(row_index))
+        valid_key_position += 1
+        if valid_key_position >= end:
+            break
+
+    return selected_indices
+
+
+def _read_composite_preview_page(
+    workbook: pd.ExcelFile,
+    *,
+    sheet_name: str,
+    columns: list[str],
+    row_indices: list[int],
+) -> pd.DataFrame:
+    """只读取当前预览页需要的数据行，并恢复为原始 0-based 行索引。"""
+    if not row_indices:
+        return pd.DataFrame(columns=columns)
+
+    selected_indices = set(row_indices)
+
+    def _skip_unselected_data_rows(excel_row_index: int) -> bool:
+        if excel_row_index == 0:
+            return False
+        return (excel_row_index - 1) not in selected_indices
+
+    dataframe = workbook.parse(
+        sheet_name=sheet_name,
+        usecols=columns,
+        skiprows=_skip_unselected_data_rows,
+    )
+    dataframe.index = row_indices[: len(dataframe)]
+    return dataframe
+
+
 def _build_composite_mapping(
     dataframe: pd.DataFrame,
     *,
@@ -744,7 +863,7 @@ def _build_composite_runtime_keys(
     normalized_values = source_series.apply(_normalize_preview_value)
     runtime_keys: list[str | None] = []
 
-    for row_position, value in enumerate(normalized_values.tolist()):
+    for row_position, value in normalized_values.items():
         if _is_empty_preview_value(value):
             runtime_keys.append(None)
             continue

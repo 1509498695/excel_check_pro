@@ -1,4 +1,7 @@
 import type {
+  VariablePreviewLoadOptions,
+} from '../store/workbench/variableActions'
+import type {
   DataSource,
   SourceMetadata,
   SourceType,
@@ -38,7 +41,7 @@ export interface VariablePoolStoreLike extends SourceManagementStoreLike {
   ): Promise<SourceMetadata>
   loadVariablePreview(
     variable: VariableTag,
-    limit?: number,
+    options?: number | VariablePreviewLoadOptions,
     forceRefresh?: boolean,
   ): Promise<VariablePreviewData>
   upsertVariable(variable: VariableTag, originalTag?: string): void

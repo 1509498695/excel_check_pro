@@ -6,6 +6,7 @@ import { Plus } from '@element-plus/icons-vue'
 import { fetchCompositePreview } from '../../api/workbench'
 import EmptyState from '../shell/EmptyState.vue'
 import { useWorkbenchStore } from '../../store/workbench'
+import { COMPOSITE_PREVIEW_PAGE_SIZE } from '../../store/workbench/variableActions'
 import type { VariablePoolStoreLike } from '../../types/panelStores'
 import type {
   CompositeVariablePreviewData,
@@ -62,11 +63,14 @@ const compositeMetadataError = ref('')
 const compositePreviewLoading = ref(false)
 const compositePreviewError = ref('')
 const compositePreview = ref<CompositeVariablePreviewData | null>(null)
+const compositePreviewPage = ref(1)
+const compositePreviewSignature = ref('')
 
 const detailDialogVisible = ref(false)
 const detailDialogTag = ref<string | null>(null)
 const detailLoading = ref(false)
 const detailError = ref('')
+const detailPreviewPage = ref(1)
 
 const singleDraft = reactive<VariableTag>({
   tag: '',
@@ -187,6 +191,9 @@ const compositeKeyOptions = computed(() =>
   compositeDraft.columns?.filter((item): item is string => typeof item === 'string' && !!item) ?? [],
 )
 const hasDuplicateCompositeKeys = computed(() => compositePreview.value?.has_duplicate_keys ?? false)
+const shouldShowCompositePreviewPagination = computed(
+  () => (compositePreview.value?.total_keys ?? 0) > COMPOSITE_PREVIEW_PAGE_SIZE,
+)
 const showAppendIndexCheckbox = computed(
   () => hasDuplicateCompositeKeys.value || !!compositeDraft.append_index_to_key,
 )
@@ -203,12 +210,21 @@ const detailSource = computed<DataSource | null>(() =>
 const detailPreview = computed<VariablePreviewData | null>(() =>
   detailVariable.value ? store.variablePreviewMap[detailVariable.value.tag] ?? null : null,
 )
+const detailCompositePreview = computed<CompositeVariablePreviewData | null>(() =>
+  detailPreview.value?.variable_kind === 'composite' ? detailPreview.value : null,
+)
+const detailSinglePreview = computed(() =>
+  detailPreview.value?.variable_kind === 'single' ? detailPreview.value : null,
+)
+const shouldShowDetailPreviewPagination = computed(
+  () => (detailCompositePreview.value?.total_keys ?? 0) > COMPOSITE_PREVIEW_PAGE_SIZE,
+)
 const detailLoadedRows = computed(() => {
   const preview = detailPreview.value
   if (!preview) return 0
   return preview.variable_kind === 'single'
     ? preview.preview_rows.length
-    : preview.loaded_rows ?? Object.keys(preview.mapping).length
+    : preview.loaded_rows ?? 0
 })
 const detailSourcePath = computed(
   () =>
@@ -341,6 +357,8 @@ function resetCompositeDraft(): void {
   compositeMetadataError.value = ''
   compositePreviewError.value = ''
   compositePreview.value = null
+  compositePreviewPage.value = 1
+  compositePreviewSignature.value = ''
   clearCompositeErrors()
   syncCompositeTag()
 }
@@ -404,6 +422,7 @@ async function prepareCompositeEditorForSource(sourceId: string, preserve = fals
       compositeDraft.key_column = ''
     }
     compositePreview.value = null
+    compositePreviewSignature.value = ''
     syncCompositeTag()
     return
   }
@@ -441,11 +460,26 @@ async function prepareCompositeEditorForSource(sourceId: string, preserve = fals
   }
 }
 
-async function refreshCompositePreview(): Promise<void> {
+function buildCompositePreviewSignature(page = compositePreviewPage.value): string {
+  return JSON.stringify({
+    source_id: compositeDraft.source_id.trim(),
+    sheet: compositeDraft.sheet,
+    columns: compositeDraft.columns ?? [],
+    key_column: compositeDraft.key_column ?? '',
+    append_index_to_key: compositeDraft.append_index_to_key ?? false,
+    page,
+    size: COMPOSITE_PREVIEW_PAGE_SIZE,
+  })
+}
+
+async function refreshCompositePreview(page = compositePreviewPage.value): Promise<boolean> {
   compositePreview.value = null
   compositePreviewError.value = ''
-  if (!canSaveComposite.value || !compositeSource.value) return
+  compositePreviewSignature.value = ''
+  if (!canSaveComposite.value || !compositeSource.value) return false
 
+  const nextPage = Math.max(1, page)
+  compositePreviewPage.value = nextPage
   compositePreviewLoading.value = true
   try {
     const response = await fetchCompositePreview({
@@ -454,8 +488,12 @@ async function refreshCompositePreview(): Promise<void> {
       columns: compositeDraft.columns ?? [],
       key_column: compositeDraft.key_column ?? '',
       append_index_to_key: compositeDraft.append_index_to_key ?? false,
+      page: nextPage,
+      size: COMPOSITE_PREVIEW_PAGE_SIZE,
     })
     compositePreview.value = response.data
+    compositePreviewPage.value = response.data.page
+    compositePreviewSignature.value = buildCompositePreviewSignature(response.data.page)
     if (response.data.has_duplicate_keys && !compositeDraft.append_index_to_key) {
       const duplicateText =
         response.data.duplicate_keys_preview?.length
@@ -466,11 +504,36 @@ async function refreshCompositePreview(): Promise<void> {
     if (!response.data.has_duplicate_keys && compositeEditingTag.value === null) {
       compositeDraft.append_index_to_key = false
     }
+    return true
   } catch (error) {
     compositePreviewError.value = error instanceof Error ? error.message : '读取组合变量预览失败。'
+    return false
   } finally {
     compositePreviewLoading.value = false
   }
+}
+
+async function refreshFirstCompositePreviewPage(): Promise<boolean> {
+  compositePreviewPage.value = 1
+  return refreshCompositePreview(1)
+}
+
+function hasCurrentCompositePreview(): boolean {
+  return (
+    !!compositePreview.value &&
+    compositePreviewSignature.value === buildCompositePreviewSignature(compositePreviewPage.value)
+  )
+}
+
+async function ensureCompositePreviewForSave(): Promise<boolean> {
+  if (hasCurrentCompositePreview()) {
+    return true
+  }
+  return refreshCompositePreview(compositePreviewPage.value)
+}
+
+async function handleCompositePreviewPageChange(page: number): Promise<void> {
+  await refreshCompositePreview(page)
 }
 
 function applySinglePrefill(prefill?: SingleVariablePrefill): void {
@@ -520,7 +583,7 @@ async function openCompositeCreateTab(prefill?: CompositeVariablePrefill): Promi
   compositeEditingTag.value = null
   compositeDialogVisible.value = true
   await prepareCompositeEditorForSource(compositeDraft.source_id, Boolean(prefill))
-  await refreshCompositePreview()
+  await refreshFirstCompositePreviewPage()
 }
 
 async function openEditTab(variable: VariableTag): Promise<void> {
@@ -542,7 +605,7 @@ async function openEditTab(variable: VariableTag): Promise<void> {
       )
     compositeDialogVisible.value = true
     await prepareCompositeEditorForSource(variable.source_id, true)
-    await refreshCompositePreview()
+    await refreshFirstCompositePreviewPage()
     return
   }
 
@@ -618,7 +681,7 @@ async function handleCompositeSourceChange(value: string): Promise<void> {
   clearCompositeErrors()
   syncCompositeTag()
   await prepareCompositeEditorForSource(value, false)
-  await refreshCompositePreview()
+  await refreshFirstCompositePreviewPage()
 }
 
 async function handleCompositeSheetChange(value: string): Promise<void> {
@@ -630,7 +693,7 @@ async function handleCompositeSheetChange(value: string): Promise<void> {
   compositeErrors.columns = ''
   compositeErrors.key_column = ''
   syncCompositeTag()
-  await refreshCompositePreview()
+  await refreshFirstCompositePreviewPage()
 }
 
 async function handleCompositeColumnsChange(value: string[]): Promise<void> {
@@ -642,7 +705,7 @@ async function handleCompositeColumnsChange(value: string[]): Promise<void> {
   compositeErrors.columns = ''
   compositeErrors.key_column = ''
   syncCompositeTag()
-  await refreshCompositePreview()
+  await refreshFirstCompositePreviewPage()
 }
 
 async function handleCompositeKeyChange(value: string): Promise<void> {
@@ -650,7 +713,7 @@ async function handleCompositeKeyChange(value: string): Promise<void> {
   if (!value) compositeDraft.append_index_to_key = false
   compositeErrors.key_column = ''
   syncCompositeTag()
-  await refreshCompositePreview()
+  await refreshFirstCompositePreviewPage()
 }
 
 async function handleCompositeAppendIndexChange(value: boolean): Promise<void> {
@@ -734,7 +797,11 @@ async function saveCompositeVariable(): Promise<void> {
     ElMessage.warning('请先完整填写组合变量信息。')
     return
   }
-  await refreshCompositePreview()
+  const previewReady = await ensureCompositePreviewForSave()
+  if (!previewReady || !compositePreview.value) {
+    ElMessage.warning('请先确认组合变量预览可正常生成。')
+    return
+  }
   if (compositePreview.value?.has_duplicate_keys && !compositeDraft.append_index_to_key) {
     ElMessage.warning('当前 Key 列存在重复值，请先开启“Key 后追加序号”。')
     return
@@ -766,16 +833,23 @@ function removeVariable(tag: string): void {
   ElMessage.success('变量已移除。')
 }
 
-async function chooseTag(tag: string): Promise<void> {
-  const variable = store.variables.find((item) => item.tag === tag)
-  if (!variable) return
-  detailDialogTag.value = variable.tag
-  detailDialogVisible.value = true
-  store.setActiveTag(variable.tag)
+async function loadDetailPreview(variable: VariableTag, page = detailPreviewPage.value): Promise<void> {
   detailLoading.value = true
   detailError.value = ''
+  detailPreviewPage.value = Math.max(1, page)
   try {
-    await store.loadVariablePreview(variable, undefined, true)
+    if ((variable.variable_kind ?? 'single') === 'composite') {
+      await store.loadVariablePreview(
+        variable,
+        {
+          page: detailPreviewPage.value,
+          size: COMPOSITE_PREVIEW_PAGE_SIZE,
+        },
+        true,
+      )
+    } else {
+      await store.loadVariablePreview(variable, undefined, true)
+    }
   } catch (error) {
     detailError.value = error instanceof Error ? error.message : '读取变量详情失败。'
     ElMessage.error(detailError.value)
@@ -784,10 +858,27 @@ async function chooseTag(tag: string): Promise<void> {
   }
 }
 
+async function chooseTag(tag: string): Promise<void> {
+  const variable = store.variables.find((item) => item.tag === tag)
+  if (!variable) return
+  detailDialogTag.value = variable.tag
+  detailDialogVisible.value = true
+  store.setActiveTag(variable.tag)
+  detailPreviewPage.value = 1
+  await loadDetailPreview(variable, 1)
+}
+
+async function handleDetailPreviewPageChange(page: number): Promise<void> {
+  const variable = detailVariable.value
+  if (!variable || (variable.variable_kind ?? 'single') !== 'composite') return
+  await loadDetailPreview(variable, page)
+}
+
 function handleDetailDialogClosed(): void {
   detailDialogTag.value = null
   detailError.value = ''
   detailLoading.value = false
+  detailPreviewPage.value = 1
 }
 
 function formatJsonPreview(value: unknown): string {
@@ -1201,7 +1292,8 @@ defineExpose({
 
         <template v-else>
           <div class="rounded-field border border-line bg-card px-3 py-2 text-[12px] text-ink-500">
-            <div>共 <strong class="font-mono text-ink-900">{{ compositePreview.total_rows }}</strong> 行 / <strong class="font-mono text-ink-900">{{ Object.keys(compositePreview.mapping).length }}</strong> 个 key</div>
+            <div>源表 <strong class="font-mono text-ink-900">{{ compositePreview.total_rows }}</strong> 行 / 共 <strong class="font-mono text-ink-900">{{ compositePreview.total_keys }}</strong> 个 key</div>
+            <div class="mt-0.5">当前页：<strong class="font-mono text-ink-900">{{ compositePreview.loaded_rows ?? 0 }}</strong> 个 key</div>
             <div class="mt-0.5">Key 列：<span class="font-mono text-ink-700">{{ compositePreview.key_column }}</span></div>
             <div class="mt-0.5">Key 生成：<span class="font-mono text-ink-700">{{ compositeDraft.append_index_to_key ? `${compositePreview.key_column}_0` : compositePreview.key_column }}</span></div>
             <div
@@ -1210,6 +1302,17 @@ defineExpose({
             >当前 Key 列存在重复，可开启“Key 后追加序号”。</div>
           </div>
           <pre class="flex-1 rounded-field border border-line bg-canvas px-3 py-2 font-mono text-[11px] leading-[1.5] text-ink-700 whitespace-pre-wrap break-all overflow-auto max-h-[300px]">{{ formatJsonPreview(compositePreview.mapping) }}</pre>
+          <div v-if="shouldShowCompositePreviewPagination" class="flex justify-center">
+            <el-pagination
+              small
+              background
+              layout="prev, pager, next"
+              :current-page="compositePreviewPage"
+              :page-size="COMPOSITE_PREVIEW_PAGE_SIZE"
+              :total="compositePreview.total_keys"
+              @current-change="handleCompositePreviewPageChange"
+            />
+          </div>
           <div class="text-[11px] text-ink-500">外层 key 取 Key 列值{{ compositeDraft.append_index_to_key ? '并追加 _序号' : '' }}，内层对象保留其余列</div>
         </template>
       </div>
@@ -1276,18 +1379,33 @@ defineExpose({
         <div class="preview-summary">
           <span>预览数据</span>
           <strong>{{ detailVariable.tag }}</strong>
-          <small>已加载 {{ detailLoadedRows }} / {{ detailPreview?.total_rows ?? 0 }} 行。</small>
+          <small v-if="detailCompositePreview">
+            已加载本页 {{ detailLoadedRows }} / {{ detailCompositePreview.total_keys }} 个 key，源表 {{ detailCompositePreview.total_rows }} 行。
+          </small>
+          <small v-else>已加载 {{ detailLoadedRows }} / {{ detailPreview?.total_rows ?? 0 }} 行。</small>
         </div>
-        <div v-if="detailPreview?.variable_kind === 'composite'" class="json-preview-shell">
+        <div v-if="detailCompositePreview" class="json-preview-shell">
           <div class="preview-summary">
             <span>字段结构</span>
-            <strong>key: {{ detailPreview.key_column }}</strong>
-            <small>关联列：{{ detailPreview.columns.join('、') }}{{ detailVariable?.append_index_to_key ? ' / Key: 原值_序号' : '' }}</small>
+            <strong>key: {{ detailCompositePreview.key_column }}</strong>
+            <small>
+              关联列：{{ detailCompositePreview.columns.join('、') }}{{ detailVariable?.append_index_to_key ? ' / Key: 原值_序号' : '' }}
+            </small>
           </div>
-          <pre class="json-preview-block detail-json-block">{{ formatJsonPreview(detailPreview.mapping) }}</pre>
+          <pre class="json-preview-block detail-json-block">{{ formatJsonPreview(detailCompositePreview.mapping) }}</pre>
+          <div v-if="shouldShowDetailPreviewPagination" class="mt-3 flex justify-center">
+            <el-pagination
+              background
+              layout="prev, pager, next"
+              :current-page="detailPreviewPage"
+              :page-size="COMPOSITE_PREVIEW_PAGE_SIZE"
+              :total="detailCompositePreview.total_keys"
+              @current-change="handleDetailPreviewPageChange"
+            />
+          </div>
         </div>
         <div v-else class="detail-table-shell">
-          <el-table :data="detailPreview?.preview_rows ?? []" class="workbench-table preview-table" max-height="560" empty-text="当前没有可展示的预览数据。">
+          <el-table :data="detailSinglePreview?.preview_rows ?? []" class="workbench-table preview-table" max-height="560" empty-text="当前没有可展示的预览数据。">
             <el-table-column prop="row_index" label="行号" width="120" />
             <el-table-column label="值" min-width="260">
               <template #default="{ row }"><span class="preview-value">{{ row.value ?? '空值' }}</span></template>

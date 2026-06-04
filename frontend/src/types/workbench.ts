@@ -178,10 +178,15 @@ export interface CompositeVariablePreviewData {
   sheet: string
   columns: string[]
   key_column: string
+  append_index_to_key?: boolean
   has_duplicate_keys: boolean
   duplicate_keys_preview?: string[]
   mapping: Record<string, Record<string, unknown>>
   total_rows: number
+  total_keys: number
+  page: number
+  page_size: number
+  total_pages: number
   loaded_rows?: number
   loaded_all_rows?: boolean
 }
@@ -201,6 +206,8 @@ export interface CompositePreviewRequest {
   columns: string[]
   key_column: string
   append_index_to_key?: boolean
+  page?: number
+  size?: number
 }
 
 export type ColumnPreviewResponse = ApiResponse<SingleVariablePreviewData>

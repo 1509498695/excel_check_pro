@@ -112,6 +112,8 @@ class CompositePreviewRequest(BaseModel):
     columns: list[str] = Field(default_factory=list)
     key_column: str
     append_index_to_key: bool = False
+    page: int | None = Field(default=None, ge=1)
+    size: int | None = Field(default=None, ge=1, le=200)
 
 
 class SvnListRequest(BaseModel):
@@ -589,6 +591,8 @@ async def get_composite_variable_preview(
                 columns=payload.columns,
                 key_column=payload.key_column,
                 append_index_to_key=payload.append_index_to_key,
+                page=payload.page,
+                size=payload.size,
                 db=db,
                 project_id=project_id,
             )
@@ -610,6 +614,8 @@ async def get_composite_variable_preview(
             columns=payload.columns,
             key_column=payload.key_column,
             append_index_to_key=payload.append_index_to_key,
+            page=payload.page,
+            size=payload.size,
         )
     except LocalFileAccessDeniedError as error:
         raise HTTPException(status_code=403, detail=str(error)) from error

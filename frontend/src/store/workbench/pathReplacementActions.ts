@@ -1,5 +1,6 @@
 import type { WorkbenchState } from './state'
 import { fetchColumnPreview, fetchCompositePreview, fetchSourceMetadata } from '../../api/workbench'
+import { COMPOSITE_PREVIEW_PAGE_SIZE, type VariablePreviewLoadOptions } from './variableActions'
 import type { DataSource } from '../../types/workbench'
 import type { SourcePathReplacementGroup } from '../../utils/sourcePathReplacement'
 import {
@@ -69,7 +70,11 @@ type WorkbenchPathReplacementContext = WorkbenchState & {
   setSelectedPathReplacementPreset(group: SourcePathReplacementGroup, path: string | null): void
   saveConfigNow(): Promise<void>
   loadSourceMetadata(sourceId: string, forceRefresh?: boolean): Promise<unknown>
-  loadVariablePreview(variable: any, limit?: number, force?: boolean): Promise<unknown>
+  loadVariablePreview(
+    variable: any,
+    options?: number | VariablePreviewLoadOptions,
+    force?: boolean,
+  ): Promise<unknown>
   clearExecutionResult(): void
   clearPageError(): void
 }
@@ -166,6 +171,8 @@ export async function replaceSourceBasePathAction(
             columns: variable.columns ?? [],
             key_column: variable.key_column ?? '',
             append_index_to_key: variable.append_index_to_key ?? false,
+            page: 1,
+            size: COMPOSITE_PREVIEW_PAGE_SIZE,
           })
         } else {
           await fetchColumnPreview({

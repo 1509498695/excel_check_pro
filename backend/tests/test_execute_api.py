@@ -1644,6 +1644,138 @@ async def test_composite_preview_returns_json_mapping_for_same_sheet(
         "2": {"ItemName": "Wood", "Desc": "木头+200"},
         "3": {"ItemName": "Stone", "Desc": "石头+300"},
     }
+    assert payload["data"]["total_keys"] == 3
+    assert payload["data"]["page"] == 1
+    assert payload["data"]["page_size"] == 3
+    assert payload["data"]["total_pages"] == 1
+
+
+@pytest.mark.anyio
+async def test_composite_preview_paginates_local_mapping(
+    auth_client: AsyncClient,
+    tmp_path: Path,
+) -> None:
+    """本地组合变量分页只返回当前页 mapping，同时保留全量统计。"""
+    workbook_path = tmp_path / "composite_paged_preview.xlsx"
+    with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+        pd.DataFrame(
+            {
+                "ID": [1, 2, 3, 4, 5],
+                "ItemName": ["Gold", "Wood", "Stone", "Iron", "Gem"],
+                "Desc": ["A", "B", "C", "D", "E"],
+            }
+        ).to_excel(writer, sheet_name="items", index=False)
+
+    response = await auth_client.post(
+        "/api/v1/sources/composite-preview",
+        json={
+            "source": {
+                "id": "src_combo",
+                "type": "local_excel",
+                "path": str(workbook_path),
+            },
+            "sheet": "items",
+            "columns": ["ID", "ItemName", "Desc"],
+            "key_column": "ID",
+            "page": 2,
+            "size": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["total_rows"] == 5
+    assert payload["total_keys"] == 5
+    assert payload["page"] == 2
+    assert payload["page_size"] == 2
+    assert payload["total_pages"] == 3
+    assert payload["loaded_rows"] == 2
+    assert payload["loaded_all_rows"] is False
+    assert payload["mapping"] == {
+        "3": {"ItemName": "Stone", "Desc": "C"},
+        "4": {"ItemName": "Iron", "Desc": "D"},
+    }
+
+
+@pytest.mark.anyio
+async def test_composite_preview_detects_duplicate_keys_outside_current_page(
+    auth_client: AsyncClient,
+    tmp_path: Path,
+) -> None:
+    """重复 key 即使不在当前页内，也必须阻断未追加序号的预览。"""
+    workbook_path = tmp_path / "composite_paged_duplicate_keys.xlsx"
+    with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+        pd.DataFrame(
+            {
+                "ID": ["A", "B", "C", "D", "A"],
+                "Name": ["Alpha", "Beta", "Gamma", "Delta", "AlphaAgain"],
+            }
+        ).to_excel(writer, sheet_name="items", index=False)
+
+    response = await auth_client.post(
+        "/api/v1/sources/composite-preview",
+        json={
+            "source": {
+                "id": "src_combo",
+                "type": "local_excel",
+                "path": str(workbook_path),
+            },
+            "sheet": "items",
+            "columns": ["ID", "Name"],
+            "key_column": "ID",
+            "page": 1,
+            "size": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["has_duplicate_keys"] is True
+    assert payload["duplicate_keys_preview"] == ["A"]
+    assert payload["total_keys"] == 5
+    assert payload["mapping"] == {}
+    assert payload["loaded_rows"] == 0
+
+
+@pytest.mark.anyio
+async def test_composite_preview_pagination_keeps_original_index_suffix(
+    auth_client: AsyncClient,
+    tmp_path: Path,
+) -> None:
+    """分页追加序号时，后缀应沿用原始数据行位置而不是页内位置。"""
+    workbook_path = tmp_path / "composite_paged_append_index.xlsx"
+    with pd.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+        pd.DataFrame(
+            {
+                "ID": ["A", "A", "B", "C"],
+                "Name": ["Alpha", "Alpha2", "Beta", "Gamma"],
+            }
+        ).to_excel(writer, sheet_name="items", index=False)
+
+    response = await auth_client.post(
+        "/api/v1/sources/composite-preview",
+        json={
+            "source": {
+                "id": "src_combo",
+                "type": "local_excel",
+                "path": str(workbook_path),
+            },
+            "sheet": "items",
+            "columns": ["ID", "Name"],
+            "key_column": "ID",
+            "append_index_to_key": True,
+            "page": 2,
+            "size": 2,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["has_duplicate_keys"] is True
+    assert payload["mapping"] == {
+        "B_2": {"Name": "Beta"},
+        "C_3": {"Name": "Gamma"},
+    }
 
 
 @pytest.mark.anyio
@@ -1778,10 +1910,70 @@ async def test_feishu_composite_preview_returns_mapping_and_skips_empty_keys(
     assert payload["duplicate_keys_preview"] == []
     assert payload["total_rows"] == 3
     assert payload["loaded_rows"] == 2
-    assert payload["loaded_all_rows"] is False
+    assert payload["loaded_all_rows"] is True
     assert payload["mapping"] == {
         "1": {"name": "Alpha", "group": "A"},
         "3": {"name": None, "group": "C"},
+    }
+    assert payload["total_keys"] == 2
+    assert payload["page"] == 1
+    assert payload["page_size"] == 2
+    assert payload["total_pages"] == 1
+
+
+@pytest.mark.anyio
+async def test_feishu_composite_preview_paginates_mapping(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_bot_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _feishu_token_response()
+        if request.url.path == "/open-apis/sheets/v3/spreadsheets/shtcnabc123/sheets/query":
+            return _feishu_preview_sheets_response()
+        if request.url.path == "/open-apis/sheets/v2/spreadsheets/shtcnabc123/values/gid_preview!A1:C6":
+            return _feishu_preview_values_response(
+                [
+                    ["id", "name", "group"],
+                    [1, "Alpha", "A"],
+                    ["", "NoKey", "B"],
+                    [3, "Gamma", "C"],
+                    [4, "Delta", "D"],
+                ]
+            )
+        return httpx.Response(404, json={"code": 404, "msg": "not found"})
+
+    _install_feishu_metadata_mock(monkeypatch, handler)
+
+    response = await auth_client.post(
+        "/api/v1/sources/composite-preview",
+        json={
+            "source": {
+                "id": "src_feishu",
+                "type": "feishu",
+                "pathOrUrl": "https://demo.feishu.cn/sheets/shtcnabc123",
+            },
+            "sheet": "Preview",
+            "columns": ["id", "name", "group"],
+            "key_column": "id",
+            "page": 2,
+            "size": 1,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()["data"]
+    assert payload["total_rows"] == 4
+    assert payload["total_keys"] == 3
+    assert payload["page"] == 2
+    assert payload["page_size"] == 1
+    assert payload["total_pages"] == 3
+    assert payload["loaded_rows"] == 1
+    assert payload["mapping"] == {
+        "3": {"name": "Gamma", "group": "C"},
     }
 
 
