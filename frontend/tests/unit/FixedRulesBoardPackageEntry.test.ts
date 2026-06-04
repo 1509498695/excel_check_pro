@@ -22,10 +22,15 @@ describe('personal rule package items entry', () => {
 
   it('opens package items through the dedicated personal 03 rule entry', () => {
     expect(personalRulePanelSource).toContain(':show-package-items-rule-button="true"')
+    expect(personalRulePanelSource).toContain(':show-event-task-rule-button="true"')
     expect(personalRulePanelSource).toContain(
       '@create-package-items-rule="openPackageItemsRuleDialog"',
     )
+    expect(personalRulePanelSource).toContain(
+      '@create-event-task-rule="openEventTaskRuleDialog"',
+    )
     expect(personalRulePanelSource).toContain('PackageItemsRuleDialog')
+    expect(personalRulePanelSource).toContain('EventTaskRuleDialog')
     expect(personalRulePanelSource).toContain(':backend-ready="true"')
     expect(personalRulePanelSource).toContain('@preview="handlePreviewPackageItemsRule"')
     expect(personalRulePanelSource).toContain('@save="handleSavePackageItemsRule"')
@@ -34,6 +39,8 @@ describe('personal rule package items entry', () => {
 
   it('does not add the IAP package entry to the project rule board', () => {
     expect(fixedRulesBoardSource).not.toContain(':show-package-items-rule-button="true"')
+    expect(fixedRulesBoardSource).not.toContain(':show-event-task-rule-button="true"')
     expect(fixedRulesBoardSource).not.toContain('@create-package-items-rule')
+    expect(fixedRulesBoardSource).not.toContain('@create-event-task-rule')
   })
 })

@@ -31,6 +31,7 @@ const props = withDefaults(
     tableLabel: string
     emptyMode?: 'panel' | 'table'
     showPackageItemsRuleButton?: boolean
+    showEventTaskRuleButton?: boolean
     buildRuleCondition: (rule: FixedRuleDefinition) => string
     buildRuleVariableSummary: (rule: FixedRuleDefinition) => string
     buildRuleSourcePathSummary: (rule: FixedRuleDefinition) => string
@@ -40,6 +41,7 @@ const props = withDefaults(
   {
     emptyMode: 'table',
     showPackageItemsRuleButton: false,
+    showEventTaskRuleButton: false,
   },
 )
 
@@ -50,6 +52,7 @@ const emit = defineEmits<{
   (event: 'rename-group'): void
   (event: 'remove-group'): void
   (event: 'create-package-items-rule'): void
+  (event: 'create-event-task-rule'): void
   (event: 'create-rule'): void
   (event: 'edit-rule', rule: FixedRuleDefinition): void
   (event: 'remove-rule', rule: FixedRuleDefinition): void
@@ -126,6 +129,14 @@ const partiallySelectedVisibleRules = computed(() => {
               @click="emit('create-package-items-rule')"
             >
               IAP礼包校验
+            </SecondaryButton>
+            <SecondaryButton
+              v-if="showEventTaskRuleButton"
+              size="sm"
+              :disabled="!canCreateRule"
+              @click="emit('create-event-task-rule')"
+            >
+              节日任务校验
             </SecondaryButton>
             <PrimaryButton
               size="sm"

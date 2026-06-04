@@ -20,6 +20,10 @@ import PackageItemsRuleDialog, {
   type PackageItemsRuleDialogDraft,
   type PackageItemsRuleDialogPreview,
 } from '../fixed-rules/PackageItemsRuleDialog.vue'
+import EventTaskRuleDialog, {
+  type EventTaskFeishuAuthorizationState,
+  type EventTaskRuleDialogDraft,
+} from '../fixed-rules/EventTaskRuleDialog.vue'
 import type {
   FixedRuleDefinition,
   WorkbenchPackageItemsPreviewData,
@@ -63,11 +67,19 @@ const isRefreshingPackageItemsSheets = ref(false)
 const isPreviewingPackageItemsRule = ref(false)
 const isSavingPackageItemsRule = ref(false)
 const packageItemsRulePreview = ref<PackageItemsRuleDialogPreview>({ status: 'idle' })
+const isEventTaskRuleDialogVisible = ref(false)
+const isRefreshingEventTaskSheets = ref(false)
+const isSavingEventTaskRule = ref(false)
 const packageItemsFeishuAuthorizationMap = reactive<
   Record<string, PackageItemsFeishuAuthorizationState>
 >({})
+const eventTaskFeishuAuthorizationMap = reactive<Record<string, EventTaskFeishuAuthorizationState>>(
+  {},
+)
 const packageItemsPermissionRequestKey = ref('')
 const packageItemsPermissionInFlightKeys = new Set<string>()
+const eventTaskPermissionRequestKey = ref('')
+const eventTaskPermissionInFlightKeys = new Set<string>()
 
 const PACKAGE_ITEMS_SHEET_CACHE_PREFIX = 'excel-checkers:package-items-sheets:v1:'
 const PACKAGE_ITEMS_SHEET_CACHE_TTL_MS = 10 * 60 * 1000
@@ -86,6 +98,9 @@ const compositeVariableOptions = computed(() =>
   store.variables.filter((variable) => (variable.variable_kind ?? 'single') === 'composite'),
 )
 const packageItemsFeishuSources = computed(() =>
+  store.sources.filter((source): source is DataSource => source.type === 'feishu'),
+)
+const eventTaskFeishuSources = computed(() =>
   store.sources.filter((source): source is DataSource => source.type === 'feishu'),
 )
 const packageItemsRuleDraft = computed<Partial<PackageItemsRuleDialogDraft>>(() => {
@@ -117,6 +132,23 @@ const packageItemsRuleDraft = computed<Partial<PackageItemsRuleDialogDraft>>(() 
     ai_parse_mode: 'auto',
     validation_scope: 'all',
     package_id_filter: '',
+  }
+})
+const eventTaskRuleDraft = computed<Partial<EventTaskRuleDialogDraft>>(() => {
+  const ungroupedGroup =
+    store.allRuleGroups.find((group) => group.group_id === 'ungrouped') ??
+    store.allRuleGroups.find((group) => group.group_name === '未分组') ??
+    store.allRuleGroups[0]
+  return {
+    group_id: ungroupedGroup?.group_id ?? '',
+    rule_name: '节日任务校验',
+    enabled: true,
+    parse_strategy: 'group_desc',
+    ai_parse_mode: 'auto',
+    validation_scope: 'all',
+    task_group_id_filter: '',
+    key_delimiter: '_',
+    fallback_match_field: 'INT_TaskID',
   }
 })
 const isSingleRuleEntry = computed(() => ruleForm.rule_entry_type === 'single')
@@ -1377,6 +1409,18 @@ function setPackageItemsAuthorizationState(
     : { status }
 }
 
+function setEventTaskAuthorizationState(
+  sourceId: string,
+  status: EventTaskFeishuAuthorizationState['status'],
+  message = '',
+): void {
+  const normalizedSourceId = sourceId.trim()
+  if (!normalizedSourceId) {
+    return
+  }
+  eventTaskFeishuAuthorizationMap[normalizedSourceId] = message ? { status, message } : { status }
+}
+
 function isPackageItemsPermissionAuthorized(status: string): boolean {
   return status === 'authorized' || status === 'authorization_success'
 }
@@ -1397,7 +1441,15 @@ function getDefaultPackageItemsFeishuSourceId(): string {
   )
 }
 
+function getDefaultEventTaskFeishuSourceId(): string {
+  return eventTaskFeishuSources.value[0]?.id || ''
+}
+
 function buildPackageItemsPermissionRequestKey(source: DataSource): string {
+  return `${source.id}\n${getPackageItemsSourceLocator(source)}`
+}
+
+function buildEventTaskPermissionRequestKey(source: DataSource): string {
   return `${source.id}\n${getPackageItemsSourceLocator(source)}`
 }
 
@@ -1463,6 +1515,36 @@ async function loadPackageItemsSheetMetadata(
     ElMessage.error(error instanceof Error ? error.message : '刷新 Sheet 列表失败。')
   } finally {
     isRefreshingPackageItemsSheets.value = false
+  }
+}
+
+async function loadEventTaskSheetMetadata(
+  sourceId: string,
+  forceRefresh = false,
+): Promise<void> {
+  const normalizedSourceId = sourceId.trim()
+  const source = eventTaskFeishuSources.value.find((item) => item.id === normalizedSourceId)
+  if (!source) {
+    return
+  }
+
+  isRefreshingEventTaskSheets.value = true
+  try {
+    const metadata = await store.loadSourceMetadata(normalizedSourceId, forceRefresh, {
+      includeColumns: false,
+    })
+    if (metadata.authorization_status === 'authorized' || metadata.sheets.length > 0) {
+      setEventTaskAuthorizationState(normalizedSourceId, 'authorized')
+    }
+  } catch (error) {
+    setEventTaskAuthorizationState(
+      normalizedSourceId,
+      'error',
+      error instanceof Error ? error.message : '刷新 Sheet 列表失败。',
+    )
+    ElMessage.error(error instanceof Error ? error.message : '刷新 Sheet 列表失败。')
+  } finally {
+    isRefreshingEventTaskSheets.value = false
   }
 }
 
@@ -1547,12 +1629,90 @@ async function ensurePackageItemsFeishuAuthorization(
   }
 }
 
+async function ensureEventTaskFeishuAuthorization(
+  sourceId: string,
+  options: { forceRefreshSheets?: boolean } = {},
+): Promise<void> {
+  const normalizedSourceId = sourceId.trim()
+  const source = eventTaskFeishuSources.value.find((item) => item.id === normalizedSourceId)
+  if (!source) {
+    return
+  }
+  const sheetUrl = getPackageItemsSourceLocator(source)
+  if (!sheetUrl) {
+    setEventTaskAuthorizationState(normalizedSourceId, 'error', '飞书数据源缺少文档地址。')
+    return
+  }
+
+  const requestKey = buildEventTaskPermissionRequestKey(source)
+  if (!options.forceRefreshSheets && eventTaskPermissionInFlightKeys.has(requestKey)) {
+    return
+  }
+  eventTaskPermissionInFlightKeys.add(requestKey)
+  eventTaskPermissionRequestKey.value = requestKey
+  setEventTaskAuthorizationState(normalizedSourceId, 'checking')
+
+  try {
+    const response = await checkFeishuSourcePermission({
+      source_id: normalizedSourceId,
+      sheet_url: sheetUrl,
+    })
+    if (eventTaskPermissionRequestKey.value !== requestKey) {
+      return
+    }
+    const permission = response.data
+    if (isPackageItemsPermissionAuthorized(permission.status)) {
+      syncPackageItemsSourceUrl(normalizedSourceId, permission.sheet_url)
+      setEventTaskAuthorizationState(
+        normalizedSourceId,
+        'authorized',
+        permission.message || '飞书表格已授权。',
+      )
+      await loadEventTaskSheetMetadata(normalizedSourceId, Boolean(options.forceRefreshSheets))
+      return
+    }
+
+    if (isPackageItemsPermissionPending(permission.status)) {
+      setEventTaskAuthorizationState(
+        normalizedSourceId,
+        'pending_authorization',
+        permission.message || '机器人暂无该表格权限。',
+      )
+      return
+    }
+    setEventTaskAuthorizationState(
+      normalizedSourceId,
+      'error',
+      permission.message || '飞书授权状态检测失败。',
+    )
+  } catch (error) {
+    if (eventTaskPermissionRequestKey.value !== requestKey) {
+      return
+    }
+    setEventTaskAuthorizationState(
+      normalizedSourceId,
+      'error',
+      error instanceof Error ? error.message : '飞书授权状态检测失败。',
+    )
+  } finally {
+    eventTaskPermissionInFlightKeys.delete(requestKey)
+  }
+}
+
 function initializePackageItemsDialogAuthorization(): void {
   const sourceId = getDefaultPackageItemsFeishuSourceId()
   if (!sourceId) {
     return
   }
   void ensurePackageItemsFeishuAuthorization(sourceId)
+}
+
+function initializeEventTaskDialogAuthorization(): void {
+  const sourceId = getDefaultEventTaskFeishuSourceId()
+  if (!sourceId) {
+    return
+  }
+  void ensureEventTaskFeishuAuthorization(sourceId)
 }
 
 function openPackageItemsRuleDialog(rule?: FixedRuleDefinition): void {
@@ -1569,6 +1729,40 @@ function closePackageItemsRuleDialog(): void {
   isPackageItemsRuleDialogVisible.value = false
   packageItemsEditingRule.value = null
   packageItemsRulePreview.value = { status: 'idle' }
+}
+
+function openEventTaskRuleDialog(): void {
+  isEventTaskRuleDialogVisible.value = true
+  void nextTick(() => {
+    initializeEventTaskDialogAuthorization()
+  })
+}
+
+function closeEventTaskRuleDialog(): void {
+  isEventTaskRuleDialogVisible.value = false
+}
+
+async function handleRefreshEventTaskSheets(
+  sourceId: string,
+  forceRefresh = false,
+): Promise<void> {
+  const normalizedSourceId = sourceId.trim()
+  if (!normalizedSourceId) {
+    return
+  }
+  await ensureEventTaskFeishuAuthorization(normalizedSourceId, {
+    forceRefreshSheets: forceRefresh,
+  })
+}
+
+function handleSaveEventTaskRule(_draft: EventTaskRuleDialogDraft): void {
+  isSavingEventTaskRule.value = true
+  try {
+    ElMessage.success('保存成功（前端模拟）')
+    closeEventTaskRuleDialog()
+  } finally {
+    isSavingEventTaskRule.value = false
+  }
 }
 
 function buildPackageItemsPreviewModel(
@@ -1738,12 +1932,14 @@ async function handleRefreshPackageItemsSheets(
       :build-rule-selection-summary="buildRuleSelectionSummary"
       :build-rule-compare-value-summary="buildRuleCompareValueSummary"
       :show-package-items-rule-button="true"
+      :show-event-task-rule-button="true"
       @update:keyword="store.groupKeyword = $event"
       @select-group="store.setSelectedOrchestrationGroup"
       @create-group="openCreateGroupDialog"
       @rename-group="openRenameGroupDialog"
       @remove-group="handleRemoveGroup"
       @create-package-items-rule="openPackageItemsRuleDialog"
+      @create-event-task-rule="openEventTaskRuleDialog"
       @create-rule="openCreateRuleDialog"
       @edit-rule="openEditRuleDialog"
       @remove-rule="handleRemoveRule"
@@ -1771,6 +1967,23 @@ async function handleRefreshPackageItemsSheets(
       @preview="handlePreviewPackageItemsRule"
       @save="handleSavePackageItemsRule"
       @refresh-sheets="handleRefreshPackageItemsSheets"
+    />
+
+    <EventTaskRuleDialog
+      :visible="isEventTaskRuleDialogVisible"
+      mode="create"
+      :draft="eventTaskRuleDraft"
+      :groups="store.allRuleGroups"
+      :feishu-sources="eventTaskFeishuSources"
+      :source-metadata-map="store.sourceMetadataMap"
+      :feishu-authorization-map="eventTaskFeishuAuthorizationMap"
+      :task-variables="compositeVariableOptions"
+      :composite-variables="compositeVariableOptions"
+      :saving="isSavingEventTaskRule"
+      :refreshing-sheets="isRefreshingEventTaskSheets"
+      @close="closeEventTaskRuleDialog"
+      @save="handleSaveEventTaskRule"
+      @refresh-sheets="handleRefreshEventTaskSheets"
     />
 
     <!-- Dialog 4：新建规则组 / 重命名规则组 -->

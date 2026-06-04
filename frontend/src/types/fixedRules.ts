@@ -22,6 +22,9 @@ export type DualCompositeKeyCheckMode = 'baseline_only' | 'bidirectional'
 export type PackageParseStrategy = 'auto' | 'rule' | 'ai'
 export type PackageAiParseMode = 'auto' | 'enabled' | 'disabled'
 export type PackageItemsValidationScope = 'all' | 'specified'
+export type EventTaskParseStrategy = 'group_desc'
+export type EventTaskAiParseMode = 'auto' | 'enabled' | 'disabled'
+export type EventTaskValidationScope = 'all' | 'specified'
 export type FixedRuleType =
   | 'fixed_value_compare'
   | 'regex_check'
@@ -155,6 +158,19 @@ export interface PackageItemsPreviewRow {
   package_id: string
   item_id: string
   count: string
+}
+
+export interface EventTaskPreviewRow {
+  row_index: number
+  task_group_id: string
+  task_desc: string
+  task_id?: string
+  loot?: string
+  config_key?: string
+  config_task_desc?: string
+  config_task_id?: string
+  config_loot?: string
+  match_status?: 'matched' | 'missing_config' | 'missing_task' | 'mismatch'
 }
 
 export interface WorkbenchPackageItemsPreviewRequest {

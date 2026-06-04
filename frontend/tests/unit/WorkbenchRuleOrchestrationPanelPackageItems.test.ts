@@ -3,10 +3,12 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ElMessage } from 'element-plus'
 
-import { checkFeishuSourcePermission } from '../../src/api/workbench'
+import { checkFeishuSourcePermission, previewWorkbenchPackageItems } from '../../src/api/workbench'
 import WorkbenchRuleOrchestrationPanel from '../../src/components/workbench/WorkbenchRuleOrchestrationPanel.vue'
 import { useWorkbenchStore } from '../../src/store/workbench'
+import type { EventTaskRuleDialogDraft } from '../../src/components/fixed-rules/EventTaskRuleDialog.vue'
 import type { PackageItemsRuleDialogDraft } from '../../src/components/fixed-rules/PackageItemsRuleDialog.vue'
 import type { DataSource, SourceMetadata, VariableTag } from '../../src/types/workbench'
 
@@ -91,11 +93,14 @@ function mountPanel() {
       plugins: [pinia],
       stubs: {
         RuleOrchestrationContainer: {
-          emits: ['create-package-items-rule'],
+          emits: ['create-package-items-rule', 'create-event-task-rule'],
           template: `
             <section>
               <button type="button" data-testid="package-entry" @click="$emit('create-package-items-rule')">
                 IAP礼包校验
+              </button>
+              <button type="button" data-testid="event-task-entry" @click="$emit('create-event-task-rule')">
+                节日任务校验
               </button>
             </section>
           `,
@@ -125,6 +130,63 @@ function mountPanel() {
           template: `
             <section v-if="visible" data-testid="package-dialog">
               <button type="button" data-testid="save-package" @click="savePackageRule">保存礼包规则</button>
+            </section>
+          `,
+        },
+        EventTaskRuleDialog: {
+          props: [
+            'visible',
+            'draft',
+            'groups',
+            'feishuSources',
+            'compositeVariables',
+            'sourceMetadataMap',
+            'feishuAuthorizationMap',
+            'refreshingSheets',
+          ],
+          emits: ['save', 'close', 'refresh-sheets'],
+          methods: {
+            saveEventTaskRule() {
+              const draft = this.draft as Partial<EventTaskRuleDialogDraft>
+              const sourceId = this.feishuSources[0]?.id ?? ''
+              const firstSheet = this.sourceMetadataMap[sourceId]?.sheets?.[0]
+              const firstVariable = this.compositeVariables[0]
+              this.$emit('save', {
+                ...draft,
+                group_id: draft.group_id || 'ungrouped',
+                rule_name: draft.rule_name || '节日任务校验',
+                enabled: true,
+                description:
+                  '节日任务表与项目任务配置表一致性校验规则，校验任务组ID、任务描述及 STR_Loot 奖励内容是否一致。',
+                feishu_source_id: sourceId,
+                feishu_sheet_id: firstSheet?.sheet_id ?? firstSheet?.name ?? '',
+                feishu_sheet_name: firstSheet?.name ?? '',
+                config_variable_tag: firstVariable?.tag ?? '',
+                parse_strategy: 'group_desc',
+                ai_parse_mode: 'auto',
+                validation_scope: 'all',
+                task_group_id_filter: '',
+                key_delimiter: '_',
+                fallback_match_field: 'INT_TaskID',
+              })
+            },
+          },
+          template: `
+            <section v-if="visible" data-testid="event-task-dialog">
+              <div data-testid="event-task-draft-name">{{ draft.rule_name }}</div>
+              <div data-testid="event-task-groups">{{ groups.map((group) => group.group_name).join('|') }}</div>
+              <div data-testid="event-task-sources">{{ feishuSources.map((source) => source.id).join('|') }}</div>
+              <div data-testid="event-task-variables">{{ compositeVariables.map((variable) => variable.tag).join('|') }}</div>
+              <button
+                type="button"
+                data-testid="refresh-event-task"
+                @click="$emit('refresh-sheets', feishuSources[0]?.id || '', true)"
+              >
+                刷新节日任务 Sheet
+              </button>
+              <button type="button" data-testid="save-event-task" @click="saveEventTaskRule">
+                保存节日任务规则
+              </button>
             </section>
           `,
         },
@@ -239,5 +301,49 @@ describe('WorkbenchRuleOrchestrationPanel package items rule', () => {
       `__runtime_package_plan__:${store.orchestrationRules[0].rule_id}`,
     )
     expect(saveSpy).toHaveBeenCalledTimes(1)
+  })
+
+  it('opens event task dialog with store-backed selections and real sheet refresh flow', async () => {
+    const { wrapper, store, saveSpy, loadMetadataSpy } = mountPanel()
+
+    await wrapper.get('[data-testid="event-task-entry"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="event-task-dialog"]').exists()).toBe(true)
+    expect(wrapper.get('[data-testid="event-task-draft-name"]').text()).toBe('节日任务校验')
+    expect(wrapper.get('[data-testid="event-task-groups"]').text()).toContain('未分组')
+    expect(wrapper.get('[data-testid="event-task-sources"]').text()).toContain('feishu-plan')
+    expect(wrapper.get('[data-testid="event-task-variables"]').text()).toContain('[package-config]')
+    expect(checkFeishuSourcePermission).toHaveBeenCalledWith({
+      source_id: 'feishu-plan',
+      sheet_url: feishuSource.pathOrUrl,
+    })
+    expect(loadMetadataSpy).toHaveBeenCalledWith('feishu-plan', false, {
+      includeColumns: false,
+    })
+    expect(previewWorkbenchPackageItems).not.toHaveBeenCalled()
+
+    vi.mocked(checkFeishuSourcePermission).mockClear()
+    loadMetadataSpy.mockClear()
+    await wrapper.get('[data-testid="refresh-event-task"]').trigger('click')
+    await flushPromises()
+
+    expect(ElMessage.info).not.toHaveBeenCalledWith('Sheet 列表已刷新（前端模拟）')
+    expect(checkFeishuSourcePermission).toHaveBeenCalledWith({
+      source_id: 'feishu-plan',
+      sheet_url: feishuSource.pathOrUrl,
+    })
+    expect(loadMetadataSpy).toHaveBeenCalledWith('feishu-plan', true, {
+      includeColumns: false,
+    })
+    expect(previewWorkbenchPackageItems).not.toHaveBeenCalled()
+
+    await wrapper.get('[data-testid="save-event-task"]').trigger('click')
+    await flushPromises()
+
+    expect(ElMessage.success).toHaveBeenCalledWith('保存成功（前端模拟）')
+    expect(wrapper.find('[data-testid="event-task-dialog"]').exists()).toBe(false)
+    expect(store.orchestrationRules).toHaveLength(0)
+    expect(saveSpy).not.toHaveBeenCalled()
   })
 })
