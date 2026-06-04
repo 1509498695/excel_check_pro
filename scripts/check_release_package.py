@@ -44,6 +44,7 @@ EXACT_SENSITIVE_FILES = {
 
 DIR_COMPONENT_REASONS = {
     ".codex": "local Codex data directory",
+    ".e2e-runtime": "E2E runtime data directory",
     ".git": "Git metadata directory",
     ".pytest_cache": "pytest cache directory",
     ".ruff_cache": "ruff cache directory",

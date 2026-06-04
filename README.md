@@ -1,6 +1,6 @@
 # Excel Check
 
-文档更新时间：2026-06-03 14:03
+文档更新时间：2026-06-03 17:17
 
 > 当前稳定文档入口保留 8 份：本 README、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/MODULES.md](docs/MODULES.md)、[docs/STANDARDS.md](docs/STANDARDS.md)、[docs/FRONTEND_STYLE_GUIDE.md](docs/FRONTEND_STYLE_GUIDE.md)、[frontend/README.md](frontend/README.md)、[CHANGELOG.md](CHANGELOG.md) 与 [PROJECT_RECORD.md](PROJECT_RECORD.md)。历史需求、旧分钟级进度和一次性重构方案见 [docs/archive/](docs/archive/)。
 
@@ -37,7 +37,7 @@ Excel Check 是面向配置表校验的多用户 Web 应用。系统把数据源
 
 ## 3. 干净源码首次安装
 
-建议使用 Python 3.12、Node.js 20+ 和 npm 10+。源码包不会包含 `.venv`、`node_modules` 或 `frontend/dist`，解压后必须按 lock 文件重新安装依赖。
+建议使用 Python 3.12、Node.js 20+ 和 npm 10+。源码包不会包含 `.venv`、`node_modules` 或 `frontend/dist`，解压后必须按 lock 文件重新安装依赖。前端应用依赖以 `frontend/package-lock.json` 为准，统一在 `frontend/` 内执行 `npm ci`；根目录 `node_modules` 不属于源码交付内容，也不作为前端应用启动入口。
 
 Windows PowerShell：
 
@@ -219,6 +219,8 @@ npm run e2e
 
 E2E 失败时会在 `frontend/test-results/` 和 `frontend/playwright-report/` 保留截图、trace 和视频。CI 可在常规 lint、单元测试和构建之外单独执行 `cd frontend && npm run e2e`。
 
+GitHub Actions 已提供基础 CI：push、pull request 和手动触发会分别执行后端依赖安装、`ruff`、`pytest`、前端 `npm ci`、lint、单元测试和构建；手动触发 `workflow_dispatch` 时还会额外运行 Playwright E2E 冒烟测试。CI 不依赖任何已存在的 `node_modules`。
+
 ## 9. 源码交付包
 
 正式交付源码时使用 release 脚本生成干净 zip：
@@ -233,7 +235,7 @@ python scripts/release_package.py
 python scripts/release_package.py --output-dir D:\path\to\release
 ```
 
-交付包只包含源码、配置示例、文档、lock 文件和测试资源，不包含运行时数据、依赖目录、构建产物、数据库、日志、密钥或凭据。脚本会排除 `.git/`、`.venv/`、`node_modules/`、`frontend/node_modules/`、`frontend/dist/`、`backend/.runtime/`、`.runtime_uploads/`、`__pycache__/`、SVN 缓存目录、`*.db`、`*.sqlite`、`*.log`、`*.key`、`*secret*` 本地数据文件和 `svn-credentials.json`。
+交付包只包含源码、配置示例、文档、lock 文件和测试资源，不包含运行时数据、依赖目录、构建产物、数据库、日志、密钥或凭据。脚本会排除 `.git/`、`.venv/`、`node_modules/`、`frontend/node_modules/`、`frontend/dist/`、`backend/.runtime/`、`.runtime_uploads/`、`.e2e-runtime/`、`__pycache__/`、SVN 缓存目录、`*.db`、`*.sqlite`、`*.log`、`*.key`、`*secret*` 本地数据文件和 `svn-credentials.json`。
 
 如果从源码 zip 解压后构建失败，不要尝试修复压缩包中的 `node_modules` 权限或原生依赖；正确做法是确认包内没有 `node_modules`，然后按“干净源码首次安装”重新执行 `npm ci`。
 

@@ -60,6 +60,8 @@ def _make_project(root: Path) -> Path:
     _write_text(root / "backend" / ".runtime" / "svn-credentials.json", "ignored\n")
     _write_text(root / ".runtime_uploads" / "upload.xlsx", "ignored\n")
     _write_text(root / "backend" / ".runtime_uploads" / "local_excel" / "upload.xlsx", "ignored\n")
+    _write_text(root / ".e2e-runtime" / "backend" / "excel_check_e2e.db", "ignored\n")
+    _write_text(root / ".e2e-runtime" / "uploads" / "fixture.xlsx", "ignored\n")
     _write_text(root / "backend" / "app" / "__pycache__" / "module.pyc", "ignored\n")
     _write_text(root / ".svn" / "entries", "ignored\n")
     _write_text(root / "cache" / "svn-cache" / "file.xlsx", "ignored\n")
@@ -96,6 +98,7 @@ def test_release_package_keeps_source_and_excludes_runtime_data(tmp_path: Path) 
         "node_modules/",
         "frontend/dist/",
         "backend/.runtime/",
+        ".e2e-runtime/",
         ".runtime_uploads/",
         "backend/.runtime_uploads/",
         "__pycache__/",
@@ -128,6 +131,7 @@ def test_directory_checker_fails_for_unsafe_content_but_allows_source_credential
     assert "node_modules" in violation_paths
     assert "frontend/dist" in violation_paths
     assert "backend/.runtime" in violation_paths
+    assert ".e2e-runtime" in violation_paths
     assert ".runtime_uploads" in violation_paths
     assert "backend/.runtime_uploads" in violation_paths
     assert "backend/app/__pycache__" in violation_paths

@@ -2,6 +2,25 @@
 
 本文档记录当前活动执行进度。2026-04-20 之前的旧分钟级记录已归档到 [docs/archive/PROJECT_RECORD.md](docs/archive/PROJECT_RECORD.md)。
 
+## 进度记录 2026-06-03 17:17
+
+### 本次目标
+
+落实项目系统审计中阶段 1 的交付卫生和基础 CI 门禁，先处理不影响业务逻辑的 P0 可复现交付问题。
+
+### 本次完成
+
+- 从 Git 跟踪中移除根目录 `node_modules`，保留开发者本地目录并继续由 `.gitignore` 忽略。
+- 新增 GitHub Actions 基础 CI，push、pull request 和手动触发会执行后端 ruff/pytest、前端 `npm ci`、lint、单元测试和构建。
+- 将 Playwright E2E 冒烟测试接入手动触发的 CI job，避免普通检查默认承担浏览器依赖成本。
+- 将 `.e2e-runtime/` 纳入 release 检查黑名单，避免本地 E2E 数据混入源码包。
+- 更新 README 和 CHANGELOG，明确源码仓库、源码交付包和 CI 均不依赖已存在的 `node_modules`。
+
+### 未完成项与风险
+
+- 根目录 `package.json` 当前仅包含仓库级 ESLint/Prettier/TypeScript 依赖，是否保留为正式工具链入口仍需项目负责人确认。
+- 本次不处理固定/个人配置表唯一约束、旧 `regex` 规则兼容、SVN 密码回显等 P1 问题。
+
 ## 进度记录 2026-06-03 14:48
 
 ### 本次目标

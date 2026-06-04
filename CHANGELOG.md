@@ -10,10 +10,12 @@
 
 ### 交付能力
 
-- 新增干净源码交付包脚本和发布包检查脚本，源码 zip 会排除 `.git/`、依赖目录、前端构建产物、runtime 数据、数据库、日志、SVN 缓存、密钥和本地凭据文件，并在生成后自动复核 zip 内容。
+- 新增干净源码交付包脚本和发布包检查脚本，源码 zip 会排除 `.git/`、依赖目录、前端构建产物、runtime 数据、E2E runtime、数据库、日志、SVN 缓存、密钥和本地凭据文件，并在生成后自动复核 zip 内容。
 
 ### 开发流程
 
+- 新增 GitHub Actions 基础 CI，push、pull request 和手动触发会执行后端 ruff/pytest、前端 `npm ci`、lint、单元测试和构建；手动触发时可额外运行 Playwright E2E 冒烟测试。
+- 从 Git 跟踪中移除根目录 `node_modules`，源码仓库和交付包均不再依赖已存在的依赖目录。
 - 后端依赖新增 `backend/requirements.in` 直接依赖清单，`backend/requirements.txt` 改为 `pip-compile` 生成的锁定依赖文件。
 - 新增跨平台 `scripts/check-standards.py`，并由 `scripts/check-standards.ps1` 包装调用，统一执行后端依赖安装、ruff、pytest、前端 `npm ci`、lint、单元测试和构建。
 - 前端开发和构建文档统一使用 `npm ci`，源码交付包继续不包含 `node_modules`、`.venv` 和 `frontend/dist`。
