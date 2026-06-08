@@ -168,6 +168,32 @@ def _build_fixed_rule_params(
             "display_field": rule.display_field,
         }
 
+    if rule.rule_type in {"event_task_reward", "event_task_validation"}:
+        return {
+            "left_tag": target_variable.tag,
+            "right_tag": rule.reference_variable_tag,
+            "reference_variable_tag": rule.reference_variable_tag,
+            "rule_name": rule.rule_name,
+            "left_task_group_field": rule.left_task_group_field,
+            "left_task_id_field": rule.left_task_id_field,
+            "left_task_desc_field": rule.left_task_desc_field,
+            "left_task_loot_field": rule.left_task_loot_field,
+            "right_task_group_field": rule.right_task_group_field,
+            "right_task_id_field": rule.right_task_id_field,
+            "right_task_desc_field": rule.right_task_desc_field,
+            "right_task_loot_field": rule.right_task_loot_field,
+            "event_task_match_strategy": rule.event_task_match_strategy,
+            "match_strategy": rule.event_task_match_strategy,
+            "ai_assist_mode": rule.ai_assist_mode,
+            "task_group_id_filter": rule.task_group_id_filter,
+            "event_task_parse_config": rule.event_task_parse_config.model_dump(
+                mode="json", exclude_none=True
+            )
+            if rule.event_task_parse_config
+            else None,
+            "display_field": rule.display_field,
+        }
+
     location = f"{target_variable.sheet} -> {target_variable.column}"
 
     if rule.rule_type == "fixed_value_compare":

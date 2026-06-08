@@ -13,6 +13,10 @@ from backend.app.execution_pipeline import run_execution_pipeline
 from backend.app.fixed_rules.config_loader import parse_raw_fixed_rules_config
 from backend.app.fixed_rules.config_normalizer import validate_and_normalize_fixed_rules_config
 from backend.app.fixed_rules.db_service import load_fixed_rules_config_from_db
+from backend.app.fixed_rules.event_task_runtime import (
+    prepare_event_task_runtime_config,
+    prepare_event_task_runtime_task_tree,
+)
 from backend.app.fixed_rules.package_items_runtime import (
     prepare_package_items_runtime_config,
     prepare_package_items_runtime_task_tree,
@@ -36,18 +40,34 @@ async def build_workbench_execution_summary(
         project_id=project_id,
         user_id=user_id,
     )
+    event_task_preparation = await prepare_event_task_runtime_task_tree(
+        runtime_preparation.task_tree,
+        db=db,
+        project_id=project_id,
+        user_id=user_id,
+    )
+    preloaded_variable_frames = {
+        **runtime_preparation.preloaded_variable_frames,
+        **event_task_preparation.preloaded_variable_frames,
+    }
 
     execution_artifacts = await asyncio.to_thread(
         run_execution_pipeline,
-        runtime_preparation.task_tree,
+        event_task_preparation.task_tree,
         project_id=project_id,
-        preloaded_variable_frames=runtime_preparation.preloaded_variable_frames,
+        preloaded_variable_frames=preloaded_variable_frames,
     )
     abnormal_results = [
         *runtime_preparation.abnormal_results,
+        *event_task_preparation.abnormal_results,
         *execution_artifacts["abnormal_results"],
     ]
-    return _build_execution_summary_payload(start, abnormal_results, execution_artifacts)
+    summary = _build_execution_summary_payload(start, abnormal_results, execution_artifacts)
+    if runtime_preparation.parse_metadata:
+        summary["package_items_parse"] = runtime_preparation.parse_metadata
+    if event_task_preparation.parse_metadata:
+        summary["event_task_parse"] = event_task_preparation.parse_metadata
+    return summary
 
 
 async def build_fixed_rules_execution_summary(
@@ -70,17 +90,27 @@ async def build_fixed_rules_execution_summary(
         project_id=project_id,
         selected_rule_ids=selected_rule_ids,
     )
-    task_tree = build_fixed_rules_task_tree(
+    event_task_preparation = await prepare_event_task_runtime_config(
         runtime_preparation.config,
+        db=db,
+        project_id=project_id,
         selected_rule_ids=selected_rule_ids,
     )
+    task_tree = build_fixed_rules_task_tree(
+        event_task_preparation.config,
+        selected_rule_ids=selected_rule_ids,
+    )
+    preloaded_variable_frames = {
+        **runtime_preparation.preloaded_variable_frames,
+        **event_task_preparation.preloaded_variable_frames,
+    }
 
     start = time.perf_counter()
     execution_artifacts = await asyncio.to_thread(
         run_execution_pipeline,
         task_tree,
         project_id=project_id,
-        preloaded_variable_frames=runtime_preparation.preloaded_variable_frames,
+        preloaded_variable_frames=preloaded_variable_frames,
     )
     summary = _build_execution_summary_payload(
         start,
@@ -91,6 +121,7 @@ async def build_fixed_rules_execution_summary(
     project = await db.get(Project, project_id)
     summary["project_name"] = project.name if project is not None else f"项目 {project_id}"
     summary["package_items_parse"] = runtime_preparation.parse_metadata
+    summary["event_task_parse"] = event_task_preparation.parse_metadata
     summary["user_scope"] = user_scope
     return summary
 

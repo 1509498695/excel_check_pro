@@ -23,6 +23,18 @@ const ElementButtonStub = {
   template: '<button type="button" v-bind="$attrs"><slot /></button>',
 }
 
+const ElementPaginationStub = {
+  props: ['currentPage'],
+  emits: ['current-change'],
+  template: `
+    <nav data-testid="preview-pagination">
+      <button type="button" data-testid="preview-prev" @click="$emit('current-change', currentPage - 1)">上一页</button>
+      <span>第{{ currentPage }}页</span>
+      <button type="button" data-testid="preview-next" @click="$emit('current-change', currentPage + 1)">下一页</button>
+    </nav>
+  `,
+}
+
 const globalStubs = {
   'el-dialog': {
     props: ['modelValue', 'title'],
@@ -56,6 +68,7 @@ const globalStubs = {
     `,
   },
   'el-button': ElementButtonStub,
+  'el-pagination': ElementPaginationStub,
   'el-switch': {
     props: ['modelValue'],
     template: '<button type="button">启用开关</button>',
@@ -323,6 +336,43 @@ describe('PackageItemsRuleDialog', () => {
     expect(text).not.toContain('当前结果由 AI 辅助识别结构后，系统按识别区域重新抽取数据。')
     expect(text).toContain('识别到非标准表头')
     expect(text).toContain('演示错误')
+  })
+
+  it('paginates preview rows with five rows per page', async () => {
+    const previewRows = Array.from({ length: 6 }, (_, index) => ({
+      row_index: index + 2,
+      package_id: `2604241${index + 1}`,
+      item_id: String(39 + index),
+      count: String(index + 1),
+    }))
+    const wrapper = mountDialog({
+      preview: {
+        status: 'success',
+        parseStatus: 'success',
+        sourceId: 'feishu-plan',
+        sheetId: 'gid_plan',
+        parseStrategy: 'auto',
+        aiParseMode: 'auto',
+        validationScope: 'all',
+        packageIdFilter: '',
+        parseMode: 'rule',
+        aiUsed: false,
+        packageIds: previewRows.map((row) => row.package_id),
+        detailRowCount: previewRows.length,
+        warnings: [],
+        errors: [],
+        previewRows,
+      },
+    })
+
+    expect(wrapper.text()).toContain('第2行 / 礼包 26042411 / 道具 39 x 1')
+    expect(wrapper.text()).toContain('第6行 / 礼包 26042415 / 道具 43 x 5')
+    expect(wrapper.text()).not.toContain('第7行 / 礼包 26042416 / 道具 44 x 6')
+
+    await wrapper.get('[data-testid="preview-next"]').trigger('click')
+
+    expect(wrapper.text()).toContain('第7行 / 礼包 26042416 / 道具 44 x 6')
+    expect(wrapper.text()).not.toContain('第2行 / 礼包 26042411 / 道具 39 x 1')
   })
 
   it('shows preview error and validates save payload', async () => {

@@ -1,10 +1,21 @@
 <script lang="ts">
-import type { FixedRuleGroup } from '../../types/fixedRules'
+import type {
+  EventTaskAiSuggestion,
+  EventTaskFieldMapping,
+  EventTaskExtraVariableTask,
+  EventTaskRewardMatchStrategy,
+  EventTaskPreviewReward,
+  EventTaskPreviewRow,
+  EventTaskPreviewSampleRow,
+  EventTaskRewardValidationResult,
+  FixedRuleGroup,
+} from '../../types/fixedRules'
 import type { DataSource, SourceMetadata, SourceSheetMetadata, VariableTag } from '../../types/workbench'
 
 export type EventTaskRuleDialogMode = 'create' | 'edit'
 export type EventTaskParseStrategy = 'group_desc'
 export type EventTaskAiParseMode = 'auto' | 'enabled' | 'disabled'
+export type EventTaskAiAssistMode = 'auto' | 'on' | 'off'
 export type EventTaskValidationScope = 'all' | 'specified'
 
 export interface EventTaskRuleDialogDraft {
@@ -19,10 +30,59 @@ export interface EventTaskRuleDialogDraft {
   config_variable_tag: string
   parse_strategy: EventTaskParseStrategy
   ai_parse_mode: EventTaskAiParseMode
+  ai_assist_mode: EventTaskAiAssistMode
+  match_strategy: EventTaskRewardMatchStrategy
   validation_scope: EventTaskValidationScope
   task_group_id_filter: string
   key_delimiter: string
   fallback_match_field: string
+  event_task_field_mapping?: EventTaskFieldMapping | null
+}
+
+export interface EventTaskRuleDialogValidation {
+  status?: 'idle' | 'success' | 'failed'
+  errorMessage?: string
+  sourceId?: string
+  sheetId?: string
+  configVariableTag?: string
+  matchStrategy?: EventTaskRewardMatchStrategy
+  validationScope?: EventTaskValidationScope
+  taskGroupIdFilter?: string
+  warnings?: string[]
+  errors?: string[]
+  total?: number
+  passCount?: number
+  failCount?: number
+  unmatchedCount?: number
+  warningCount?: number
+  results?: EventTaskRewardValidationResult[]
+  extraVariableTasks?: EventTaskExtraVariableTask[]
+  aiSuggestions?: EventTaskAiSuggestion[]
+  aiSuggestionWarnings?: string[]
+  aiSuggestionUsed?: boolean
+}
+
+export interface EventTaskRuleDialogPreview {
+  status?: 'idle' | 'success' | 'failed'
+  parseStatus?: 'success' | 'failed'
+  warnings?: string[]
+  errors?: string[]
+  errorMessage?: string
+  sourceId?: string
+  sheetId?: string
+  parseStrategy?: EventTaskParseStrategy
+  aiParseMode?: EventTaskAiParseMode
+  validationScope?: EventTaskValidationScope
+  taskGroupIdFilter?: string
+  taskGroupIds?: string[]
+  totalRows?: number
+  parsedRows?: number
+  rewardGroupCount?: number
+  sampleRows?: EventTaskPreviewSampleRow[]
+  previewRows?: EventTaskPreviewRow[]
+  aiSuggestions?: EventTaskAiSuggestion[]
+  aiSuggestionWarnings?: string[]
+  aiSuggestionUsed?: boolean
 }
 
 export type EventTaskFeishuAuthorizationStatus =
@@ -47,14 +107,41 @@ export interface EventTaskRuleDialogProps {
   feishuAuthorizationMap?: Record<string, EventTaskFeishuAuthorizationState>
   taskVariables?: VariableTag[]
   compositeVariables?: VariableTag[]
+  preview?: EventTaskRuleDialogPreview
+  validation?: EventTaskRuleDialogValidation
   saving?: boolean
+  previewing?: boolean
+  validating?: boolean
+  aiSuggesting?: boolean
   refreshingSheets?: boolean
+  backendReady?: boolean
 }
 </script>
 
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
+import {
+  buildEventTaskErrorDetailText,
+  buildEventTaskValidationCsv,
+  buildEventTaskValidationCsvFilename,
+  downloadCsv,
+  formatEventTaskCountMismatches,
+  formatEventTaskResultWarnings,
+  formatEventTaskRewards,
+  getEventTaskResultActualRewards,
+  getEventTaskResultCountMismatches,
+  getEventTaskResultErrorMessage,
+  getEventTaskResultExpectedRewards,
+  getEventTaskResultExtraRewards,
+  getEventTaskResultMissingRewards,
+  getEventTaskResultTaskDesc,
+  getEventTaskResultTaskGroupId,
+  getEventTaskResultVariableKey,
+  hasEventTaskResultWarning,
+  isEventTaskResultUnmatched,
+  type EventTaskValidationExportMode,
+} from '../../utils/eventTaskValidationReport'
 
 const props = withDefaults(defineProps<EventTaskRuleDialogProps>(), {
   draft: undefined,
@@ -64,13 +151,22 @@ const props = withDefaults(defineProps<EventTaskRuleDialogProps>(), {
   feishuAuthorizationMap: () => ({}),
   taskVariables: () => [],
   compositeVariables: () => [],
+  preview: undefined,
+  validation: undefined,
   saving: false,
+  previewing: false,
+  validating: false,
+  aiSuggesting: false,
   refreshingSheets: false,
+  backendReady: true,
 })
 
 const emit = defineEmits<{
   (event: 'close'): void
   (event: 'save', payload: EventTaskRuleDialogDraft): void
+  (event: 'preview', payload: EventTaskRuleDialogDraft): void
+  (event: 'validate', payload: EventTaskRuleDialogDraft): void
+  (event: 'ai-analyze', payload: EventTaskRuleDialogDraft): void
   (event: 'refresh-sheets', sourceId: string, forceRefresh?: boolean): void
 }>()
 
@@ -78,13 +174,23 @@ const DEFAULT_RULE_DESCRIPTION =
   '节日任务表与项目任务配置表一致性校验规则，校验任务组ID、任务描述及 STR_Loot 奖励内容是否一致。'
 const DEFAULT_RULE_NAME = '节日任务校验'
 const RULE_DESCRIPTION_MAX_LENGTH = 500
-const MOCK_PREVIEW_LINES = [
-  '识别到任务组 ID（预览）：26051802，26051803，26051804',
-  '识别到任务明细数：34 行',
-  '示例匹配：26051802_4476 → 任务组ID 26051802 / 任务描述 累计登陆1天',
-]
+const PREVIEW_PAGE_SIZE = 5
+
+type EventTaskValidationStatusFilter = 'all' | 'pass' | 'fail' | 'unmatched' | 'warning'
+
+interface EventTaskPreviewDisplayRow {
+  rowIndex: number
+  taskGroupId: string
+  desc: string
+  rewards: EventTaskPreviewReward[]
+  rawLoot?: string | null
+}
 
 const form = reactive<EventTaskRuleDialogDraft>(createEmptyDraft())
+const previewPage = ref(1)
+const validationStatusFilter = ref<EventTaskValidationStatusFilter>('all')
+const validationTaskGroupQuery = ref('')
+const validationDescQuery = ref('')
 
 const dialogVisible = computed({
   get: () => props.visible,
@@ -190,6 +296,213 @@ const selectedConfigVariable = computed(
   () => compositeVariableOptions.value.find((variable) => variable.tag === form.config_variable_tag) ?? null,
 )
 
+const currentPreview = computed(() => {
+  const preview = props.preview
+  if (!preview) {
+    return null
+  }
+  const taskGroupFilter =
+    form.validation_scope === 'specified' ? normalizeTaskGroupIdFilter(form.task_group_id_filter) : ''
+  if (
+    preview.sourceId !== form.feishu_source_id ||
+    preview.sheetId !== form.feishu_sheet_id ||
+    preview.parseStrategy !== form.parse_strategy ||
+    preview.aiParseMode !== toPreviewAiParseMode(form.ai_assist_mode) ||
+    preview.validationScope !== form.validation_scope ||
+    (preview.taskGroupIdFilter ?? '') !== taskGroupFilter
+  ) {
+    return null
+  }
+  return preview
+})
+
+const currentValidation = computed(() => {
+  const validation = props.validation
+  if (!validation) {
+    return null
+  }
+  const taskGroupFilter =
+    form.validation_scope === 'specified' ? normalizeTaskGroupIdFilter(form.task_group_id_filter) : ''
+  if (
+    validation.sourceId !== form.feishu_source_id ||
+    validation.sheetId !== form.feishu_sheet_id ||
+    validation.configVariableTag !== form.config_variable_tag ||
+    validation.matchStrategy !== form.match_strategy ||
+    validation.validationScope !== form.validation_scope ||
+    (validation.taskGroupIdFilter ?? '') !== taskGroupFilter
+  ) {
+    return null
+  }
+  return validation
+})
+
+const hasPreviewSelection = computed(() => Boolean(form.feishu_source_id && form.feishu_sheet_id))
+
+const isPreviewSuccessful = computed(
+  () => currentPreview.value?.status === 'success' && currentPreview.value.parseStatus === 'success',
+)
+
+const previewWarnings = computed(() => currentPreview.value?.warnings ?? [])
+
+const previewErrors = computed(() => currentPreview.value?.errors ?? [])
+
+const previewSampleRows = computed(() => currentPreview.value?.sampleRows ?? [])
+
+const previewDisplayRows = computed<EventTaskPreviewDisplayRow[]>(() => {
+  if (!isPreviewSuccessful.value) {
+    return []
+  }
+  const previewRows = currentPreview.value?.previewRows ?? []
+  if (previewRows.length) {
+    return previewRows.map((row) => ({
+      rowIndex: row.row_index,
+      taskGroupId: row.task_group_id,
+      desc: row.task_desc,
+      rewards: row.rewards ?? [],
+      rawLoot: row.loot ?? null,
+    }))
+  }
+  return previewSampleRows.value.map((row) => ({
+    rowIndex: row.rowIndex,
+    taskGroupId: row.taskGroupId,
+    desc: row.desc,
+    rewards: row.rewards,
+    rawLoot: row.rawLoot ?? null,
+  }))
+})
+
+const paginatedPreviewRows = computed(() => {
+  const startIndex = (previewPage.value - 1) * PREVIEW_PAGE_SIZE
+  return previewDisplayRows.value.slice(startIndex, startIndex + PREVIEW_PAGE_SIZE)
+})
+
+const previewDetailLines = computed(() => paginatedPreviewRows.value.map(buildPreviewSampleLine))
+
+const shouldShowPreviewPagination = computed(
+  () => previewDisplayRows.value.length > PREVIEW_PAGE_SIZE,
+)
+
+const previewErrorMessage = computed(() => {
+  if (!props.backendReady) {
+    return '当前环境未启用节日任务解析预览能力。'
+  }
+  if (!hasPreviewSelection.value) {
+    return '请先选择飞书数据源和任务 Sheet。'
+  }
+  if (!currentPreview.value) {
+    return '尚未生成当前配置的解析预览。'
+  }
+  if (currentPreview.value.status === 'failed') {
+    return currentPreview.value.errorMessage || previewErrors.value[0] || '解析预览失败，请检查飞书数据源和 Sheet。'
+  }
+  if (currentPreview.value.parseStatus === 'failed') {
+    return currentPreview.value.errorMessage || previewErrors.value[0] || '未识别到有效的节日任务明细表头。'
+  }
+  return ''
+})
+
+const previewInfoLines = computed(() => {
+  if (isPreviewSuccessful.value) {
+    const taskGroupIds = currentPreview.value?.taskGroupIds ?? []
+    return [
+      `识别到任务组ID：${taskGroupIds.length ? taskGroupIds.join('、') : '未识别到任务组ID'}`,
+      `识别到任务明细数：${currentPreview.value?.parsedRows ?? 0} 行`,
+      `识别到奖励字段组：${currentPreview.value?.rewardGroupCount ?? 0} 组`,
+    ]
+  }
+  return [previewErrorMessage.value || '尚未生成当前配置的解析预览。']
+})
+
+const validationRows = computed(() => currentValidation.value?.results ?? [])
+
+const failedValidationRows = computed(() => validationRows.value.filter((row) => row.status === 'fail'))
+
+const validationDerivedStats = computed(() => ({
+  missingRewardTaskCount: validationRows.value.filter(
+    (row) => getEventTaskResultMissingRewards(row).length > 0,
+  ).length,
+  extraRewardTaskCount: validationRows.value.filter(
+    (row) => getEventTaskResultExtraRewards(row).length > 0,
+  ).length,
+  countMismatchTaskCount: validationRows.value.filter(
+    (row) => getEventTaskResultCountMismatches(row).length > 0,
+  ).length,
+  unmatchedTaskCount:
+    currentValidation.value?.unmatchedCount ??
+    validationRows.value.filter((row) => isEventTaskResultUnmatched(row)).length,
+}))
+
+const filteredValidationRows = computed(() => {
+  const taskGroupQuery = validationTaskGroupQuery.value.trim().toLowerCase()
+  const descQuery = validationDescQuery.value.trim().toLowerCase()
+  return validationRows.value.filter((row) => {
+    if (!matchesValidationStatusFilter(row, validationStatusFilter.value)) {
+      return false
+    }
+    if (
+      taskGroupQuery &&
+      !getEventTaskResultTaskGroupId(row).toLowerCase().includes(taskGroupQuery)
+    ) {
+      return false
+    }
+    if (descQuery && !getEventTaskResultTaskDesc(row).toLowerCase().includes(descQuery)) {
+      return false
+    }
+    return true
+  })
+})
+
+const validationWarnings = computed(() => currentValidation.value?.warnings ?? [])
+
+const validationErrors = computed(() => currentValidation.value?.errors ?? [])
+
+const extraVariableTasks = computed(() => currentValidation.value?.extraVariableTasks ?? [])
+
+const activeAiSuggestions = computed<EventTaskAiSuggestion[]>(() => {
+  if (form.ai_assist_mode === 'off') {
+    return []
+  }
+  const validationSuggestions = currentValidation.value?.aiSuggestions ?? []
+  if (validationSuggestions.length) {
+    return validationSuggestions
+  }
+  return currentPreview.value?.aiSuggestions ?? []
+})
+
+const activeAiSuggestionWarnings = computed(() => {
+  if (form.ai_assist_mode === 'off') {
+    return []
+  }
+  const validationWarnings = currentValidation.value?.aiSuggestionWarnings ?? []
+  if (validationWarnings.length) {
+    return validationWarnings
+  }
+  return currentPreview.value?.aiSuggestionWarnings ?? []
+})
+
+const activeAiSuggestionUsed = computed(() => {
+  if (form.ai_assist_mode === 'off') {
+    return false
+  }
+  return Boolean(currentValidation.value?.aiSuggestionUsed || currentPreview.value?.aiSuggestionUsed)
+})
+
+const shouldShowAiSuggestionSection = computed(() => form.ai_assist_mode !== 'off')
+
+const manualFieldMappingSummary = computed(() =>
+  buildFieldMappingSummary(form.event_task_field_mapping ?? null),
+)
+
+const validationErrorMessage = computed(() => {
+  if (!currentValidation.value) {
+    return '尚未执行当前配置的奖励校验。'
+  }
+  if (currentValidation.value.status === 'failed') {
+    return currentValidation.value.errorMessage || validationErrors.value[0] || '奖励校验失败。'
+  }
+  return ''
+})
+
 const ruleDescriptionCount = computed(() => form.description.length)
 
 watch(
@@ -197,6 +510,8 @@ watch(
   (visible) => {
     if (visible) {
       resetForm()
+      previewPage.value = 1
+      resetValidationFilters()
     }
   },
   { immediate: true },
@@ -207,9 +522,35 @@ watch(
   () => {
     if (props.visible) {
       resetForm()
+      previewPage.value = 1
+      resetValidationFilters()
     }
   },
   { deep: true },
+)
+
+watch(
+  () => currentPreview.value,
+  () => {
+    previewPage.value = 1
+  },
+)
+
+watch(
+  () => currentValidation.value,
+  () => {
+    resetValidationFilters()
+  },
+)
+
+watch(
+  () => previewDisplayRows.value.length,
+  (rowCount) => {
+    const maxPage = Math.max(1, Math.ceil(rowCount / PREVIEW_PAGE_SIZE))
+    if (previewPage.value > maxPage) {
+      previewPage.value = maxPage
+    }
+  },
 )
 
 watch(
@@ -298,10 +639,13 @@ function createEmptyDraft(): EventTaskRuleDialogDraft {
     config_variable_tag: '',
     parse_strategy: 'group_desc',
     ai_parse_mode: 'auto',
+    ai_assist_mode: 'auto',
+    match_strategy: 'groupId_desc_then_taskId',
     validation_scope: 'all',
     task_group_id_filter: '',
     key_delimiter: '_',
     fallback_match_field: 'INT_TaskID',
+    event_task_field_mapping: null,
   }
 }
 
@@ -339,11 +683,19 @@ function resetForm(): void {
     feishu_sheet_name: firstSheet?.name ?? '',
     config_variable_tag: preferredVariableTag,
     parse_strategy: props.draft?.parse_strategy ?? 'group_desc',
-    ai_parse_mode: props.draft?.ai_parse_mode ?? 'auto',
+    ai_assist_mode:
+      props.draft?.ai_assist_mode ?? toAiAssistMode(props.draft?.ai_parse_mode ?? 'auto'),
+    ai_parse_mode: toPreviewAiParseMode(
+      props.draft?.ai_assist_mode ?? toAiAssistMode(props.draft?.ai_parse_mode ?? 'auto'),
+    ),
+    match_strategy: props.draft?.match_strategy ?? 'groupId_desc_then_taskId',
     validation_scope: props.draft?.validation_scope ?? 'all',
     task_group_id_filter: props.draft?.task_group_id_filter ?? '',
     key_delimiter: props.draft?.key_delimiter ?? '_',
     fallback_match_field: props.draft?.fallback_match_field ?? 'INT_TaskID',
+    event_task_field_mapping: cloneEventTaskFieldMapping(
+      props.draft?.event_task_field_mapping ?? null,
+    ),
   })
   requestSheetRefreshIfNeeded(form.feishu_source_id)
 }
@@ -365,11 +717,14 @@ function buildPayload(): EventTaskRuleDialogDraft {
     feishu_sheet_name: form.feishu_sheet_name.trim(),
     config_variable_tag: form.config_variable_tag.trim(),
     parse_strategy: form.parse_strategy,
-    ai_parse_mode: form.ai_parse_mode,
+    ai_assist_mode: form.ai_assist_mode,
+    ai_parse_mode: toPreviewAiParseMode(form.ai_assist_mode),
+    match_strategy: form.match_strategy,
     validation_scope: form.validation_scope,
     task_group_id_filter: taskGroupFilter,
     key_delimiter: form.key_delimiter.trim() || '_',
     fallback_match_field: form.fallback_match_field.trim() || 'INT_TaskID',
+    event_task_field_mapping: cloneEventTaskFieldMapping(form.event_task_field_mapping ?? null),
   }
 }
 
@@ -413,12 +768,305 @@ function handleRefreshSheets(): void {
   emit('refresh-sheets', sourceId, true)
 }
 
+function handlePreview(): void {
+  if (!props.backendReady) {
+    ElMessage.info('当前环境未启用节日任务解析预览能力。')
+    return
+  }
+  const payload = buildPayload()
+  if (!payload.feishu_source_id) {
+    ElMessage.warning('请选择任务数据源。')
+    return
+  }
+  if (!payload.feishu_sheet_id) {
+    ElMessage.warning('请选择任务 Sheet。')
+    return
+  }
+  if (!isAuthorized.value) {
+    ElMessage.warning('请先完成飞书授权。')
+    return
+  }
+  emit('preview', payload)
+}
+
+function handleValidate(): void {
+  if (!props.backendReady) {
+    ElMessage.info('当前环境未启用节日任务奖励校验能力。')
+    return
+  }
+  const payload = buildPayload()
+  if (!validateForSave(payload)) {
+    return
+  }
+  if (!isAuthorized.value) {
+    ElMessage.warning('请先完成飞书授权。')
+    return
+  }
+  emit('validate', payload)
+}
+
+function handleAiAnalyze(): void {
+  if (form.ai_assist_mode !== 'on') {
+    return
+  }
+  if (!props.backendReady) {
+    ElMessage.info('当前环境未启用节日任务 AI 辅助建议能力。')
+    return
+  }
+  const payload = buildPayload()
+  if (!validateForSave(payload)) {
+    return
+  }
+  if (!isAuthorized.value) {
+    ElMessage.warning('请先完成飞书授权。')
+    return
+  }
+  emit('ai-analyze', payload)
+}
+
 function handleSave(): void {
   const payload = buildPayload()
   if (!validateForSave(payload)) {
     return
   }
   emit('save', payload)
+}
+
+function resetValidationFilters(): void {
+  validationStatusFilter.value = 'all'
+  validationTaskGroupQuery.value = ''
+  validationDescQuery.value = ''
+}
+
+function matchesValidationStatusFilter(
+  row: EventTaskRewardValidationResult,
+  filter: EventTaskValidationStatusFilter,
+): boolean {
+  if (filter === 'all') {
+    return true
+  }
+  if (filter === 'pass') {
+    return row.status === 'pass'
+  }
+  if (filter === 'fail') {
+    return row.status === 'fail'
+  }
+  if (filter === 'unmatched') {
+    return isEventTaskResultUnmatched(row)
+  }
+  return hasEventTaskResultWarning(row)
+}
+
+async function handleCopyValidationDetail(row: EventTaskRewardValidationResult): Promise<void> {
+  try {
+    await copyTextToClipboard(buildEventTaskErrorDetailText(row))
+    ElMessage.success('已复制错误详情。')
+  } catch {
+    ElMessage.warning('复制失败，请展开详情后手动复制。')
+  }
+}
+
+function handleExportValidationResults(mode: EventTaskValidationExportMode): void {
+  const rows = mode === 'failed' ? failedValidationRows.value : validationRows.value
+  if (!rows.length) {
+    ElMessage.warning(mode === 'failed' ? '没有失败结果可导出。' : '没有校验结果可导出。')
+    return
+  }
+  const filename = buildEventTaskValidationCsvFilename(mode)
+  downloadCsv(filename, buildEventTaskValidationCsv(rows))
+  ElMessage.success(mode === 'failed' ? '已导出失败校验结果。' : '已导出全部校验结果。')
+}
+
+function handleApplyFieldMappingSuggestion(suggestion: EventTaskAiSuggestion): void {
+  const fieldMapping = extractEventTaskFieldMappingSuggestion(suggestion)
+  if (!fieldMapping) {
+    ElMessage.warning('AI 建议中没有可应用的字段映射。')
+    return
+  }
+  form.event_task_field_mapping = fieldMapping
+  ElMessage.success('已应用字段映射建议，请重新生成预览或执行校验。')
+}
+
+function getAiSuggestionTitle(suggestion: EventTaskAiSuggestion): string {
+  if (suggestion.type === 'field_mapping_suggestion') {
+    return '字段映射建议'
+  }
+  if (suggestion.type === 'match_suggestion') {
+    return '任务匹配建议'
+  }
+  return '异常解释'
+}
+
+function formatAiSuggestionConfidence(value: number): string {
+  if (!Number.isFinite(value)) {
+    return '-'
+  }
+  return `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`
+}
+
+function formatAiSuggestionPayload(payload: Record<string, unknown>): string {
+  return Object.entries(payload)
+    .filter(([, value]) => value != null && value !== '')
+    .map(([key, value]) => `${key}=${formatUnknownValue(value)}`)
+    .join('；')
+}
+
+function formatUnknownValue(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map((item) => formatUnknownValue(item)).join(', ')
+  }
+  if (isRecord(value)) {
+    return `{${formatAiSuggestionPayload(value)}}`
+  }
+  return String(value)
+}
+
+function canApplyFieldMappingSuggestion(suggestion: EventTaskAiSuggestion): boolean {
+  return suggestion.type === 'field_mapping_suggestion' && Boolean(extractEventTaskFieldMappingSuggestion(suggestion))
+}
+
+function extractEventTaskFieldMappingSuggestion(
+  suggestion: EventTaskAiSuggestion,
+): EventTaskFieldMapping | null {
+  for (const item of suggestion.suggestions) {
+    const candidates = [
+      item.event_task_field_mapping,
+      item.eventTaskFieldMapping,
+      item.field_mapping,
+      item.fieldMapping,
+      item,
+    ]
+    for (const candidate of candidates) {
+      const mapping = normalizeEventTaskFieldMapping(candidate)
+      if (mapping) {
+        return mapping
+      }
+    }
+  }
+  return null
+}
+
+function normalizeEventTaskFieldMapping(value: unknown): EventTaskFieldMapping | null {
+  if (!isRecord(value)) {
+    return null
+  }
+  const lootGroups = Array.isArray(value.loot_groups)
+    ? value.loot_groups
+    : Array.isArray(value.lootGroups)
+      ? value.lootGroups
+      : []
+  const normalizedLootGroups = lootGroups
+    .filter(isRecord)
+    .map((group) => {
+      const itemId = normalizeOptionalText(group.item_id ?? group.itemId)
+      const count = normalizeOptionalText(group.count)
+      return {
+        item_id: itemId ?? '',
+        count: count ?? '',
+        name: normalizeOptionalText(group.name),
+        value_type: normalizeOptionalText(group.value_type ?? group.valueType),
+      }
+    })
+    .filter((group) => group.item_id && group.count)
+
+  const mapping: EventTaskFieldMapping = {
+    header_row_index: normalizeOptionalNumber(value.header_row_index ?? value.headerRowIndex),
+    task_group_id: normalizeOptionalText(value.task_group_id ?? value.taskGroupId),
+    task_id: normalizeOptionalText(value.task_id ?? value.taskId),
+    day: normalizeOptionalText(value.day),
+    task_desc: normalizeOptionalText(value.task_desc ?? value.taskDesc),
+    loot: normalizeOptionalText(value.loot),
+    loot_groups: normalizedLootGroups,
+  }
+  const hasAnyMapping =
+    mapping.header_row_index != null ||
+    Boolean(mapping.task_group_id) ||
+    Boolean(mapping.task_id) ||
+    Boolean(mapping.day) ||
+    Boolean(mapping.task_desc) ||
+    Boolean(mapping.loot) ||
+    normalizedLootGroups.length > 0
+  return hasAnyMapping ? mapping : null
+}
+
+function normalizeOptionalText(value: unknown): string | null {
+  if (value == null) {
+    return null
+  }
+  const text = String(value).trim()
+  return text || null
+}
+
+function normalizeOptionalNumber(value: unknown): number | null {
+  if (value == null || value === '') {
+    return null
+  }
+  const numericValue = Number(value)
+  return Number.isFinite(numericValue) ? numericValue : null
+}
+
+function cloneEventTaskFieldMapping(
+  value: EventTaskFieldMapping | null | undefined,
+): EventTaskFieldMapping | null {
+  if (!value) {
+    return null
+  }
+  return {
+    header_row_index: value.header_row_index ?? null,
+    task_group_id: value.task_group_id ?? null,
+    task_id: value.task_id ?? null,
+    day: value.day ?? null,
+    task_desc: value.task_desc ?? null,
+    loot: value.loot ?? null,
+    loot_groups: (value.loot_groups ?? []).map((group) => ({
+      item_id: group.item_id,
+      count: group.count,
+      name: group.name ?? null,
+      value_type: group.value_type ?? null,
+    })),
+  }
+}
+
+function buildFieldMappingSummary(mapping: EventTaskFieldMapping | null): string {
+  if (!mapping) {
+    return ''
+  }
+  const segments = [
+    mapping.header_row_index ? `表头行 ${mapping.header_row_index}` : '',
+    mapping.task_group_id ? `任务组ID=${mapping.task_group_id}` : '',
+    mapping.task_id ? `INT_TaskID=${mapping.task_id}` : '',
+    mapping.task_desc ? `任务描述=${mapping.task_desc}` : '',
+    mapping.loot_groups?.length ? `奖励组 ${mapping.loot_groups.length} 组` : '',
+  ].filter(Boolean)
+  return segments.join('；')
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  const clipboard = globalThis.navigator?.clipboard
+  if (clipboard?.writeText) {
+    await clipboard.writeText(text)
+    return
+  }
+  copyTextWithTextarea(text)
+}
+
+function copyTextWithTextarea(text: string): void {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', 'readonly')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) {
+    throw new Error('copy failed')
+  }
 }
 
 function requestSheetRefreshIfNeeded(sourceId: string): void {
@@ -481,6 +1129,58 @@ function normalizeTaskGroupIdFilter(value: string): string {
     .map((item) => item.trim())
     .filter(Boolean)
     .join(', ')
+}
+
+function toAiAssistMode(value: EventTaskAiParseMode | EventTaskAiAssistMode): EventTaskAiAssistMode {
+  if (value === 'enabled') {
+    return 'on'
+  }
+  if (value === 'disabled') {
+    return 'off'
+  }
+  return value
+}
+
+function toPreviewAiParseMode(value: EventTaskAiAssistMode): EventTaskAiParseMode {
+  if (value === 'on') {
+    return 'enabled'
+  }
+  if (value === 'off') {
+    return 'disabled'
+  }
+  return 'auto'
+}
+
+function handlePreviewPageChange(page: number): void {
+  previewPage.value = Math.max(1, page)
+}
+
+function formatRewards(
+  rewards: EventTaskPreviewReward[] | Array<{ itemId?: number; item_id?: number; count?: number; type?: string | null; name?: string | null }>,
+): string {
+  return formatEventTaskRewards(rewards)
+}
+
+function formatCountMismatches(row: EventTaskRewardValidationResult): string {
+  return formatEventTaskCountMismatches(getEventTaskResultCountMismatches(row))
+}
+
+function formatRowWarnings(row: EventTaskRewardValidationResult): string {
+  return formatEventTaskResultWarnings(row)
+}
+
+function buildPreviewSampleLine(row: EventTaskPreviewDisplayRow): string {
+  const rewards = row.rewards.length
+    ? row.rewards
+        .map((reward) => {
+          const itemName = reward.name ? `（${reward.name}）` : ''
+          return `${reward.itemId}x${reward.count}${itemName}`
+        })
+        .join(', ')
+    : row.rawLoot?.trim() || '无'
+  return `第${row.rowIndex}行 / ${row.taskGroupId || '任务组ID为空'} / ${
+    row.desc || '任务描述为空'
+  } / 奖励 ${rewards}`
 }
 </script>
 
@@ -635,17 +1335,19 @@ function normalizeTaskGroupIdFilter(value: string): string {
         </div>
         <div class="package-items-rule-dialog__strategy-grid">
           <div class="package-items-rule-dialog__field">
-            <label>解析方式</label>
-            <el-select v-model="form.parse_strategy" class="w-full">
-              <el-option label="任务组ID + 任务描述双重匹配（推荐）" value="group_desc" />
+            <label>匹配策略</label>
+            <el-select v-model="form.match_strategy" class="w-full">
+              <el-option label="任务组ID + 描述，失败后按任务ID兜底" value="groupId_desc_then_taskId" />
+              <el-option label="任务组ID + 描述" value="groupId_desc" />
+              <el-option label="任务组ID + INT_TaskID" value="groupId_taskId" />
             </el-select>
           </div>
           <div class="package-items-rule-dialog__field">
             <label>AI 辅助解析</label>
-            <el-radio-group v-model="form.ai_parse_mode" class="event-task-rule-dialog__mode-radios">
+            <el-radio-group v-model="form.ai_assist_mode" class="event-task-rule-dialog__mode-radios">
               <el-radio label="auto">自动</el-radio>
-              <el-radio label="enabled">开启</el-radio>
-              <el-radio label="disabled">关闭</el-radio>
+              <el-radio label="on">开启</el-radio>
+              <el-radio label="off">关闭</el-radio>
             </el-radio-group>
           </div>
         </div>
@@ -653,6 +1355,240 @@ function normalizeTaskGroupIdFilter(value: string): string {
           <span>key 分隔符：{{ form.key_delimiter || '_' }}</span>
           <span>任务组ID：取 key 前缀</span>
           <span>备用匹配：{{ form.fallback_match_field || 'INT_TaskID' }}</span>
+          <span v-if="manualFieldMappingSummary">人工字段映射：{{ manualFieldMappingSummary }}</span>
+        </div>
+      </section>
+
+      <section v-if="shouldShowAiSuggestionSection" class="package-items-rule-dialog__section">
+        <div class="package-items-rule-dialog__section-head">
+          <div>
+            <h3>AI 建议，仅供参考</h3>
+            <p>建议不会改变解析结果和校验状态</p>
+          </div>
+          <el-button
+            v-if="form.ai_assist_mode === 'on'"
+            size="small"
+            plain
+            :loading="aiSuggesting"
+            :disabled="aiSuggesting"
+            @click="handleAiAnalyze"
+          >
+            AI 分析当前结果
+          </el-button>
+        </div>
+        <div class="event-task-rule-dialog__ai-box">
+          <div
+            v-if="!activeAiSuggestions.length && !activeAiSuggestionWarnings.length"
+            class="event-task-rule-dialog__ai-empty"
+          >
+            {{
+              form.ai_assist_mode === 'auto'
+                ? '当前规则解析未触发 AI 分析。'
+                : '尚未请求 AI 分析。'
+            }}
+          </div>
+          <div
+            v-for="suggestion in activeAiSuggestions"
+            :key="`${suggestion.type}-${suggestion.reason}-${suggestion.confidence}`"
+            class="event-task-rule-dialog__ai-card"
+          >
+            <div class="event-task-rule-dialog__ai-card-head">
+              <strong>{{ getAiSuggestionTitle(suggestion) }}</strong>
+              <span>置信度 {{ formatAiSuggestionConfidence(suggestion.confidence) }}</span>
+            </div>
+            <div class="event-task-rule-dialog__ai-reason">{{ suggestion.reason || '-' }}</div>
+            <div
+              v-for="(item, index) in suggestion.suggestions"
+              :key="index"
+              class="event-task-rule-dialog__ai-item"
+            >
+              {{ formatAiSuggestionPayload(item) }}
+            </div>
+            <el-button
+              v-if="canApplyFieldMappingSuggestion(suggestion)"
+              size="small"
+              type="primary"
+              plain
+              @click="handleApplyFieldMappingSuggestion(suggestion)"
+            >
+              应用字段映射建议
+            </el-button>
+          </div>
+          <div v-if="activeAiSuggestionWarnings.length" class="event-task-rule-dialog__preview-warnings">
+            <div v-for="warning in activeAiSuggestionWarnings" :key="warning">AI Warning：{{ warning }}</div>
+          </div>
+          <div v-if="activeAiSuggestionUsed" class="event-task-rule-dialog__ai-footnote">
+            AI 建议未参与最终校验结果。
+          </div>
+        </div>
+      </section>
+
+      <section class="package-items-rule-dialog__section">
+        <div class="package-items-rule-dialog__section-head">
+          <div>
+            <h3>校验结果</h3>
+          </div>
+          <div class="event-task-rule-dialog__validation-actions">
+            <el-button
+              size="small"
+              plain
+              :disabled="!validationRows.length"
+              @click="handleExportValidationResults('all')"
+            >
+              导出全部
+            </el-button>
+            <el-button
+              size="small"
+              plain
+              :disabled="!failedValidationRows.length"
+              @click="handleExportValidationResults('failed')"
+            >
+              导出失败
+            </el-button>
+            <el-button
+              size="small"
+              type="primary"
+              :loading="validating"
+              :disabled="validating"
+              @click="handleValidate"
+            >
+              执行校验
+            </el-button>
+          </div>
+        </div>
+        <div
+          v-if="currentValidation?.status === 'success'"
+          class="event-task-rule-dialog__validation"
+        >
+          <div class="event-task-rule-dialog__summary-grid">
+            <div>总任务数：{{ currentValidation.total ?? 0 }}</div>
+            <div>通过数：{{ currentValidation.passCount ?? 0 }}</div>
+            <div>失败数：{{ currentValidation.failCount ?? 0 }}</div>
+            <div>未匹配数：{{ validationDerivedStats.unmatchedTaskCount }}</div>
+            <div>Warning 数：{{ currentValidation.warningCount ?? 0 }}</div>
+            <div>缺失奖励任务数：{{ validationDerivedStats.missingRewardTaskCount }}</div>
+            <div>多余奖励任务数：{{ validationDerivedStats.extraRewardTaskCount }}</div>
+            <div>数量不一致任务数：{{ validationDerivedStats.countMismatchTaskCount }}</div>
+          </div>
+          <div v-if="validationRows.length" class="event-task-rule-dialog__filters">
+            <el-radio-group v-model="validationStatusFilter" class="event-task-rule-dialog__filter-status">
+              <el-radio label="all">全部</el-radio>
+              <el-radio label="pass">只看通过</el-radio>
+              <el-radio label="fail">只看失败</el-radio>
+              <el-radio label="unmatched">只看未匹配</el-radio>
+              <el-radio label="warning">只看 warning</el-radio>
+            </el-radio-group>
+            <el-input
+              v-model="validationTaskGroupQuery"
+              clearable
+              class="event-task-rule-dialog__filter-input"
+              placeholder="按任务组ID筛选"
+            />
+            <el-input
+              v-model="validationDescQuery"
+              clearable
+              class="event-task-rule-dialog__filter-input"
+              placeholder="按任务描述关键词搜索"
+            />
+          </div>
+          <el-table
+            v-if="filteredValidationRows.length"
+            :data="filteredValidationRows"
+            size="small"
+            class="event-task-rule-dialog__result-table"
+          >
+            <el-table-column type="expand">
+              <template #default="{ row }">
+                <div class="event-task-rule-dialog__reward-detail">
+                  <div>飞书行号：{{ row.feishuRowIndex ?? row.feishu_row_index ?? '-' }}</div>
+                  <div>任务组ID：{{ getEventTaskResultTaskGroupId(row) || '-' }}</div>
+                  <div>任务描述：{{ getEventTaskResultTaskDesc(row) || '任务描述为空' }}</div>
+                  <div>组合变量 key：{{ getEventTaskResultVariableKey(row) || '-' }}</div>
+                  <div>Expected：{{ formatRewards(getEventTaskResultExpectedRewards(row)) }}</div>
+                  <div>Actual：{{ formatRewards(getEventTaskResultActualRewards(row)) }}</div>
+                  <div>缺失奖励：{{ formatRewards(getEventTaskResultMissingRewards(row)) }}</div>
+                  <div>多余奖励：{{ formatRewards(getEventTaskResultExtraRewards(row)) }}</div>
+                  <div>数量不一致：{{ formatCountMismatches(row) }}</div>
+                  <div>Parse Warning：{{ formatRowWarnings(row) }}</div>
+                  <div>错误信息：{{ getEventTaskResultErrorMessage(row) || '-' }}</div>
+                </div>
+              </template>
+            </el-table-column>
+            <el-table-column label="任务组ID" min-width="110">
+              <template #default="{ row }">{{ getEventTaskResultTaskGroupId(row) }}</template>
+            </el-table-column>
+            <el-table-column label="任务描述" min-width="180" show-overflow-tooltip>
+              <template #default="{ row }">{{ getEventTaskResultTaskDesc(row) || '任务描述为空' }}</template>
+            </el-table-column>
+            <el-table-column label="飞书行号" width="90">
+              <template #default="{ row }">{{ row.feishuRowIndex ?? row.feishu_row_index ?? '-' }}</template>
+            </el-table-column>
+            <el-table-column label="组合变量 key" min-width="150" show-overflow-tooltip>
+              <template #default="{ row }">{{ getEventTaskResultVariableKey(row) || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="匹配策略" width="130">
+              <template #default="{ row }">{{ row.matchStrategy || row.match_strategy }}</template>
+            </el-table-column>
+            <el-table-column label="状态" width="80">
+              <template #default="{ row }">
+                <span
+                  :class="{
+                    'event-task-rule-dialog__status-pass': row.status === 'pass',
+                    'event-task-rule-dialog__status-fail': row.status === 'fail',
+                  }"
+                >
+                  {{ row.status === 'pass' ? '通过' : '失败' }}
+                </span>
+              </template>
+            </el-table-column>
+            <el-table-column label="缺失奖励" min-width="130" show-overflow-tooltip>
+              <template #default="{ row }">{{ formatRewards(getEventTaskResultMissingRewards(row)) }}</template>
+            </el-table-column>
+            <el-table-column label="多余奖励" min-width="130" show-overflow-tooltip>
+              <template #default="{ row }">{{ formatRewards(getEventTaskResultExtraRewards(row)) }}</template>
+            </el-table-column>
+            <el-table-column label="数量不一致" min-width="130" show-overflow-tooltip>
+              <template #default="{ row }">{{ formatCountMismatches(row) }}</template>
+            </el-table-column>
+            <el-table-column label="Warning" min-width="180" show-overflow-tooltip>
+              <template #default="{ row }">{{ formatRowWarnings(row) }}</template>
+            </el-table-column>
+            <el-table-column label="错误信息" min-width="150" show-overflow-tooltip>
+              <template #default="{ row }">{{ getEventTaskResultErrorMessage(row) || '-' }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="100">
+              <template #default="{ row }">
+                <el-button
+                  v-if="row.status === 'fail'"
+                  size="small"
+                  plain
+                  @click="handleCopyValidationDetail(row)"
+                >
+                  复制详情
+                </el-button>
+                <span v-else>-</span>
+              </template>
+            </el-table-column>
+          </el-table>
+          <div v-else class="event-task-rule-dialog__empty-result">
+            {{ validationRows.length ? '暂无符合筛选条件的校验结果' : '暂无校验明细' }}
+          </div>
+          <div v-if="extraVariableTasks.length" class="event-task-rule-dialog__extra-tasks">
+            <div v-for="task in extraVariableTasks" :key="task.variableKey || task.variable_key">
+              多余组合变量：{{ task.taskGroupId || task.task_group_id }} /
+              {{ task.taskDesc || task.task_desc || '任务描述为空' }} /
+              {{ task.variableKey || task.variable_key }}
+            </div>
+          </div>
+          <div v-if="validationWarnings.length" class="event-task-rule-dialog__preview-warnings">
+            <div v-for="warning in validationWarnings" :key="warning">Warning：{{ warning }}</div>
+          </div>
+        </div>
+        <div v-else class="package-items-rule-dialog__preview-box">
+          <div>{{ validationErrorMessage }}</div>
+          <div v-if="validationErrors.length" class="event-task-rule-dialog__preview-errors">
+            <div v-for="error in validationErrors" :key="error">Error：{{ error }}</div>
+          </div>
         </div>
       </section>
 
@@ -679,9 +1615,42 @@ function normalizeTaskGroupIdFilter(value: string): string {
           <div>
             <h3>解析预览</h3>
           </div>
+          <el-button
+            size="small"
+            type="primary"
+            :loading="previewing"
+            :disabled="previewing"
+            @click="handlePreview"
+          >
+            生成预览
+          </el-button>
         </div>
         <div class="package-items-rule-dialog__preview-box">
-          <div v-for="line in MOCK_PREVIEW_LINES" :key="line">{{ line }}</div>
+          <div v-for="line in previewInfoLines" :key="line">{{ line }}</div>
+          <div
+            v-for="line in previewDetailLines"
+            :key="line"
+            class="event-task-rule-dialog__preview-detail-line"
+          >
+            {{ line }}
+          </div>
+          <div v-if="shouldShowPreviewPagination" class="event-task-rule-dialog__preview-pagination">
+            <el-pagination
+              small
+              background
+              layout="prev, pager, next"
+              :current-page="previewPage"
+              :page-size="PREVIEW_PAGE_SIZE"
+              :total="previewDisplayRows.length"
+              @current-change="handlePreviewPageChange"
+            />
+          </div>
+          <div v-if="previewWarnings.length" class="event-task-rule-dialog__preview-warnings">
+            <div v-for="warning in previewWarnings" :key="warning">Warning：{{ warning }}</div>
+          </div>
+          <div v-if="previewErrors.length" class="event-task-rule-dialog__preview-errors">
+            <div v-for="error in previewErrors" :key="error">Error：{{ error }}</div>
+          </div>
         </div>
       </section>
 
@@ -907,6 +1876,147 @@ function normalizeTaskGroupIdFilter(value: string): string {
   line-height: 24px;
 }
 
+.event-task-rule-dialog__preview-detail-line {
+  word-break: break-all;
+}
+
+.event-task-rule-dialog__preview-pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
+}
+
+.event-task-rule-dialog__preview-warnings {
+  margin-top: 8px;
+  color: #b45309;
+}
+
+.event-task-rule-dialog__preview-errors {
+  margin-top: 8px;
+  color: #b91c1c;
+}
+
+.event-task-rule-dialog__ai-box {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border-radius: 6px;
+  background: #f5f7fb;
+  padding: 12px 16px;
+  color: var(--color-ink-600, #475569);
+  font-size: 13px;
+  line-height: 22px;
+}
+
+.event-task-rule-dialog__ai-empty,
+.event-task-rule-dialog__ai-footnote {
+  color: var(--color-ink-500, #64748b);
+}
+
+.event-task-rule-dialog__ai-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+  background: #fff;
+  padding: 10px 12px;
+}
+
+.event-task-rule-dialog__ai-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--color-ink-800, #1f2937);
+}
+
+.event-task-rule-dialog__ai-card-head span {
+  color: var(--color-ink-500, #64748b);
+  font-size: 12px;
+}
+
+.event-task-rule-dialog__ai-reason,
+.event-task-rule-dialog__ai-item {
+  word-break: break-all;
+}
+
+.event-task-rule-dialog__validation {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.event-task-rule-dialog__validation-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.event-task-rule-dialog__summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(130px, 1fr));
+  gap: 8px;
+  border-radius: 6px;
+  background: #f5f7fb;
+  padding: 10px 14px;
+  color: var(--color-ink-600, #475569);
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.event-task-rule-dialog__filters {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, 190px) minmax(180px, 240px);
+  align-items: center;
+  gap: 10px;
+}
+
+.event-task-rule-dialog__filter-status {
+  min-width: 0;
+}
+
+.event-task-rule-dialog__filter-input {
+  width: 100%;
+}
+
+.event-task-rule-dialog__result-table {
+  width: 100%;
+}
+
+.event-task-rule-dialog__reward-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 18px;
+  color: var(--color-ink-700, #334155);
+  font-size: 12px;
+  line-height: 18px;
+  word-break: break-all;
+}
+
+.event-task-rule-dialog__status-pass {
+  color: #16a34a;
+  font-weight: 600;
+}
+
+.event-task-rule-dialog__status-fail {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.event-task-rule-dialog__empty-result,
+.event-task-rule-dialog__extra-tasks {
+  border-radius: 6px;
+  background: #f5f7fb;
+  padding: 10px 14px;
+  color: var(--color-ink-600, #475569);
+  font-size: 13px;
+  line-height: 22px;
+}
+
 .package-items-rule-dialog__textarea-wrap {
   position: relative;
 }
@@ -955,6 +2065,14 @@ function normalizeTaskGroupIdFilter(value: string): string {
   .package-items-rule-dialog__section-head {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .event-task-rule-dialog__summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .event-task-rule-dialog__filters {
+    grid-template-columns: 1fr;
   }
 }
 </style>

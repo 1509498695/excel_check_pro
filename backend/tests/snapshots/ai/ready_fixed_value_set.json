@@ -5,10 +5,15 @@
     ],
     "rules_to_add": [
       {
+        "ai_assist_mode": null,
         "binding": null,
         "comparisons": [],
         "composite_config": null,
+        "description": null,
         "display_field": null,
+        "enabled": true,
+        "event_task_match_strategy": null,
+        "event_task_parse_config": null,
         "expected_value": "0,1",
         "expected_value_mode": "set",
         "group_id": "ungrouped",
@@ -18,6 +23,10 @@
         "left_item_field": null,
         "left_key_field": null,
         "left_package_field": null,
+        "left_task_desc_field": null,
+        "left_task_group_field": null,
+        "left_task_id_field": null,
+        "left_task_loot_field": null,
         "mapping_config": null,
         "operator": "eq",
         "package_id_filter": null,
@@ -28,6 +37,10 @@
         "right_items_field": null,
         "right_key_field": null,
         "right_package_field": null,
+        "right_task_desc_field": null,
+        "right_task_group_field": null,
+        "right_task_id_field": null,
+        "right_task_loot_field": null,
         "rule_id": "<dynamic>",
         "rule_name": "ID-eq-0,1",
         "rule_type": "fixed_value_compare",
@@ -35,7 +48,8 @@
         "sequence_start_mode": null,
         "sequence_start_value": null,
         "sequence_step": null,
-        "target_variable_tag": "[src_demo-items-ID]"
+        "target_variable_tag": "[src_demo-items-ID]",
+        "task_group_id_filter": null
       }
     ],
     "sources_to_add": [],

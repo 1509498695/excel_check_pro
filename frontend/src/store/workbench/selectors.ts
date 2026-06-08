@@ -112,6 +112,9 @@ function isInvalidOrchestrationRule(
   if (rule.rule_type === 'package_items_compare') {
     return isInvalidPackageItemsRule(rule, variableMap)
   }
+  if (rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation') {
+    return isInvalidEventTaskRewardRule(rule, variableMap)
+  }
 
   const targetTag = rule.target_variable_tag.trim()
   const variable = variableMap.get(targetTag)
@@ -132,6 +135,56 @@ function isInvalidOrchestrationRule(
     return !isValidDualCompositeRule(rule, variableMap)
   }
   return true
+}
+
+function isInvalidEventTaskRewardRule(
+  rule: FixedRuleDefinition,
+  variableMap: Map<string, VariableTag>,
+): boolean {
+  if (!rule.rule_name.trim()) {
+    return true
+  }
+  const referenceTag = rule.reference_variable_tag?.trim() ?? ''
+  if (!referenceTag || !isCompositeVariable(variableMap.get(referenceTag))) {
+    return true
+  }
+  if (
+    !rule.left_task_group_field?.trim() ||
+    !rule.left_task_id_field?.trim() ||
+    !rule.left_task_desc_field?.trim() ||
+    !rule.left_task_loot_field?.trim() ||
+    !rule.right_task_group_field?.trim() ||
+    !rule.right_task_id_field?.trim() ||
+    !rule.right_task_desc_field?.trim() ||
+    !rule.right_task_loot_field?.trim()
+  ) {
+    return true
+  }
+  const parseConfig = rule.event_task_parse_config
+  if (!parseConfig?.feishu_source_id?.trim() || !parseConfig.feishu_sheet_id?.trim()) {
+    return true
+  }
+  if ((parseConfig.parse_strategy ?? 'group_desc') !== 'group_desc') {
+    return true
+  }
+  if (!['auto', 'enabled', 'disabled'].includes(parseConfig.ai_parse_mode ?? 'auto')) {
+    return true
+  }
+  if (!['auto', 'on', 'off'].includes(rule.ai_assist_mode ?? 'auto')) {
+    return true
+  }
+  if (
+    !['groupId_desc', 'groupId_taskId', 'groupId_desc_then_taskId'].includes(
+      rule.event_task_match_strategy ?? 'groupId_desc_then_taskId',
+    )
+  ) {
+    return true
+  }
+  const validationScope = parseConfig.validation_scope ?? 'all'
+  if (!['all', 'specified'].includes(validationScope)) {
+    return true
+  }
+  return validationScope === 'specified' && !parseConfig.task_group_id_filter?.trim()
 }
 
 function isInvalidPackageItemsRule(

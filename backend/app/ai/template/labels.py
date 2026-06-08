@@ -12,6 +12,8 @@ SUPPORTED_RULE_TYPES = {
     "multi_composite_pipeline_check",
     "multi_composite_mapping_check",
     "package_items_compare",
+    "event_task_reward",
+    "event_task_validation",
 }
 RULE_TYPE_ALIASES = {
     "非空": "not_null",
@@ -55,6 +57,10 @@ RULE_TYPE_ALIASES = {
     "IAP 礼包校验": "package_items_compare",
     "礼包校验": "package_items_compare",
     "礼包道具校验": "package_items_compare",
+    "节日任务校验": "event_task_reward",
+    "节日任务奖励校验": "event_task_reward",
+    "EventTask校验": "event_task_reward",
+    "EventTask奖励校验": "event_task_reward",
 }
 TEMPLATE_LABELS = (
     "数据源",

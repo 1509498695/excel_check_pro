@@ -5,6 +5,7 @@
     ],
     "rules_to_add": [
       {
+        "ai_assist_mode": null,
         "binding": null,
         "comparisons": [
           {
@@ -45,7 +46,11 @@
           }
         ],
         "composite_config": null,
+        "description": null,
         "display_field": null,
+        "enabled": true,
+        "event_task_match_strategy": null,
+        "event_task_parse_config": null,
         "expected_value": null,
         "expected_value_mode": null,
         "group_id": "ungrouped",
@@ -65,6 +70,10 @@
         "left_item_field": null,
         "left_key_field": "INT_Level",
         "left_package_field": null,
+        "left_task_desc_field": null,
+        "left_task_group_field": null,
+        "left_task_id_field": null,
+        "left_task_loot_field": null,
         "mapping_config": null,
         "operator": null,
         "package_id_filter": null,
@@ -85,6 +94,10 @@
         "right_items_field": null,
         "right_key_field": "INT_Level",
         "right_package_field": null,
+        "right_task_desc_field": null,
+        "right_task_group_field": null,
+        "right_task_id_field": null,
+        "right_task_loot_field": null,
         "rule_id": "<dynamic>",
         "rule_name": "level_reward-INT_Level-两组配置比对",
         "rule_type": "dual_composite_compare",
@@ -92,7 +105,8 @@
         "sequence_start_mode": null,
         "sequence_start_value": null,
         "sequence_step": null,
-        "target_variable_tag": "bpcherks"
+        "target_variable_tag": "bpcherks",
+        "task_group_id_filter": null
       }
     ],
     "sources_to_add": [],

@@ -3,7 +3,13 @@ import { computed, nextTick, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus } from '@element-plus/icons-vue'
 
-import { checkFeishuSourcePermission, previewWorkbenchPackageItems } from '../../api/workbench'
+import {
+  checkFeishuSourcePermission,
+  previewWorkbenchEventTaskAiSuggestions,
+  previewWorkbenchEventTasks,
+  previewWorkbenchPackageItems,
+  validateWorkbenchEventTasks,
+} from '../../api/workbench'
 import { useWorkbenchStore } from '../../store/workbench'
 import {
   RuleOrchestrationContainer,
@@ -23,9 +29,13 @@ import PackageItemsRuleDialog, {
 import EventTaskRuleDialog, {
   type EventTaskFeishuAuthorizationState,
   type EventTaskRuleDialogDraft,
+  type EventTaskRuleDialogPreview,
+  type EventTaskRuleDialogValidation,
 } from '../fixed-rules/EventTaskRuleDialog.vue'
 import type {
   FixedRuleDefinition,
+  WorkbenchEventTaskPreviewData,
+  WorkbenchEventTaskValidationData,
   WorkbenchPackageItemsPreviewData,
 } from '../../types/fixedRules'
 import type { DataSource, SourceMetadata, VariableTag } from '../../types/workbench'
@@ -69,7 +79,14 @@ const isSavingPackageItemsRule = ref(false)
 const packageItemsRulePreview = ref<PackageItemsRuleDialogPreview>({ status: 'idle' })
 const isEventTaskRuleDialogVisible = ref(false)
 const isRefreshingEventTaskSheets = ref(false)
+const isPreviewingEventTaskRule = ref(false)
 const isSavingEventTaskRule = ref(false)
+const eventTaskRulePreview = ref<EventTaskRuleDialogPreview>({ status: 'idle' })
+const eventTaskRuleValidation = ref<EventTaskRuleDialogValidation>({ status: 'idle' })
+const eventTaskRuleDialogMode = ref<'create' | 'edit'>('create')
+const eventTaskEditingRule = ref<FixedRuleDefinition | null>(null)
+const isValidatingEventTaskRule = ref(false)
+const isSuggestingEventTaskRule = ref(false)
 const packageItemsFeishuAuthorizationMap = reactive<
   Record<string, PackageItemsFeishuAuthorizationState>
 >({})
@@ -135,6 +152,31 @@ const packageItemsRuleDraft = computed<Partial<PackageItemsRuleDialogDraft>>(() 
   }
 })
 const eventTaskRuleDraft = computed<Partial<EventTaskRuleDialogDraft>>(() => {
+  const editingRule = eventTaskEditingRule.value
+  if (editingRule?.rule_type === 'event_task_reward' || editingRule?.rule_type === 'event_task_validation') {
+    const parseConfig = editingRule.event_task_parse_config
+    return {
+      rule_id: editingRule.rule_id,
+      group_id: editingRule.group_id,
+      rule_name: editingRule.rule_name,
+      enabled: editingRule.enabled ?? true,
+      description: editingRule.description ?? '',
+      feishu_source_id: parseConfig?.feishu_source_id ?? '',
+      feishu_sheet_id: parseConfig?.feishu_sheet_id ?? '',
+      feishu_sheet_name: parseConfig?.feishu_sheet_name ?? '',
+      config_variable_tag: editingRule.reference_variable_tag ?? parseConfig?.config_variable_tag ?? '',
+      parse_strategy: parseConfig?.parse_strategy ?? 'group_desc',
+      ai_parse_mode: parseConfig?.ai_parse_mode ?? 'auto',
+      ai_assist_mode: editingRule.ai_assist_mode ?? 'auto',
+      match_strategy: editingRule.event_task_match_strategy ?? 'groupId_desc_then_taskId',
+      validation_scope: parseConfig?.validation_scope ?? 'all',
+      task_group_id_filter:
+        parseConfig?.task_group_id_filter ?? editingRule.task_group_id_filter ?? '',
+      key_delimiter: parseConfig?.key_delimiter ?? '_',
+      fallback_match_field: parseConfig?.fallback_match_field ?? 'INT_TaskID',
+      event_task_field_mapping: parseConfig?.event_task_field_mapping ?? null,
+    }
+  }
   const ungroupedGroup =
     store.allRuleGroups.find((group) => group.group_id === 'ungrouped') ??
     store.allRuleGroups.find((group) => group.group_name === '未分组') ??
@@ -145,10 +187,13 @@ const eventTaskRuleDraft = computed<Partial<EventTaskRuleDialogDraft>>(() => {
     enabled: true,
     parse_strategy: 'group_desc',
     ai_parse_mode: 'auto',
+    ai_assist_mode: 'auto',
+    match_strategy: 'groupId_desc_then_taskId',
     validation_scope: 'all',
     task_group_id_filter: '',
     key_delimiter: '_',
     fallback_match_field: 'INT_TaskID',
+    event_task_field_mapping: null,
   }
 })
 const isSingleRuleEntry = computed(() => ruleForm.rule_entry_type === 'single')
@@ -389,6 +434,9 @@ const currentGroupVariableCount = computed(() => {
       if (rule.rule_type === 'package_items_compare') {
         return [rule.reference_variable_tag?.trim() ?? ''].filter(Boolean)
       }
+      if (rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation') {
+        return [rule.reference_variable_tag?.trim() ?? ''].filter(Boolean)
+      }
       return [rule.target_variable_tag.trim()].filter(Boolean)
     }),
   )
@@ -408,6 +456,14 @@ function buildRuleCondition(rule: FixedRuleDefinition): string {
         ? `指定礼包：${parseConfig.package_id_filter}`
         : '飞书页签全部礼包'
     return `飞书礼包规划 ${parseConfig?.feishu_sheet_name || parseConfig?.feishu_sheet_id || '未绑定 Sheet'} 对比 ${rule.reference_variable_tag ?? '未绑定礼包配置变量'}（${packageScope}）`
+  }
+  if (rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation') {
+    const parseConfig = rule.event_task_parse_config
+    const taskScope =
+      parseConfig?.validation_scope === 'specified' && parseConfig.task_group_id_filter
+        ? `指定任务组：${parseConfig.task_group_id_filter}`
+        : '飞书页签全部任务'
+    return `飞书节日任务 ${parseConfig?.feishu_sheet_name || parseConfig?.feishu_sheet_id || '未绑定 Sheet'} 对比 ${rule.reference_variable_tag ?? '未绑定 EventTask 组合变量'}（${taskScope}，${rule.event_task_match_strategy ?? 'groupId_desc_then_taskId'}）`
   }
 
   const variable = resolveRuleVariable(rule)
@@ -516,6 +572,9 @@ function buildRuleSelectionSummary(rule: FixedRuleDefinition): string {
   if (rule.rule_type === 'package_items_compare') {
     return 'IAP礼包校验'
   }
+  if (rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation') {
+    return '节日任务奖励校验'
+  }
   if (rule.rule_type === 'dual_composite_compare') {
     return `跨组变量校验（${getDualCompositeKeyCheckModeLabel(rule.key_check_mode)}，${rule.comparisons?.length ?? 0} 条比较）`
   }
@@ -549,6 +608,10 @@ function buildRuleVariableSummary(rule: FixedRuleDefinition): string {
     const parseConfig = rule.package_parse_config
     return `飞书规划：${parseConfig?.feishu_source_id || '未绑定数据源'} / ${parseConfig?.feishu_sheet_name || parseConfig?.feishu_sheet_id || '未绑定 Sheet'}；配置变量：${rule.reference_variable_tag ?? '未绑定'}`
   }
+  if (rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation') {
+    const parseConfig = rule.event_task_parse_config
+    return `飞书任务：${parseConfig?.feishu_source_id || '未绑定数据源'} / ${parseConfig?.feishu_sheet_name || parseConfig?.feishu_sheet_id || '未绑定 Sheet'}；配置变量：${rule.reference_variable_tag ?? '未绑定'}`
+  }
   const variable = resolveRuleVariable(rule)
   if (!variable) {
     return '目标变量已失效，请重新选择变量。'
@@ -561,6 +624,10 @@ function buildRuleSourcePathSummary(rule: FixedRuleDefinition): string {
     const sourceId = rule.package_parse_config?.feishu_source_id ?? ''
     return getSourcePath(sourceMap.value.get(sourceId) ?? null) || '当前飞书数据源未记录地址'
   }
+  if (rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation') {
+    const sourceId = rule.event_task_parse_config?.feishu_source_id ?? ''
+    return getSourcePath(sourceMap.value.get(sourceId) ?? null) || '当前飞书数据源未记录地址'
+  }
   return getSourcePath(resolveRuleSource(rule)) || '当前数据源未记录路径'
 }
 
@@ -569,6 +636,11 @@ function buildRuleCompareValueSummary(rule: FixedRuleDefinition): string {
     return rule.package_parse_config?.validation_scope === 'specified'
       ? rule.package_parse_config.package_id_filter || '未填写指定礼包 ID'
       : '飞书页签全部礼包'
+  }
+  if (rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation') {
+    return rule.event_task_parse_config?.validation_scope === 'specified'
+      ? rule.event_task_parse_config.task_group_id_filter || '未填写指定任务组 ID'
+      : '飞书页签全部任务'
   }
   if (rule.rule_type === 'fixed_value_compare') {
     return rule.expected_value ?? ''
@@ -715,6 +787,10 @@ async function openCreateRuleDialog(): Promise<void> {
 async function openEditRuleDialog(rule: FixedRuleDefinition): Promise<void> {
   if (rule.rule_type === 'package_items_compare') {
     openPackageItemsRuleDialog(rule)
+    return
+  }
+  if (rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation') {
+    openEventTaskRuleDialog(rule)
     return
   }
 
@@ -1731,7 +1807,17 @@ function closePackageItemsRuleDialog(): void {
   packageItemsRulePreview.value = { status: 'idle' }
 }
 
-function openEventTaskRuleDialog(): void {
+function openEventTaskRuleDialog(rule?: FixedRuleDefinition): void {
+  eventTaskRuleDialogMode.value =
+    rule?.rule_type === 'event_task_reward' || rule?.rule_type === 'event_task_validation'
+      ? 'edit'
+      : 'create'
+  eventTaskEditingRule.value =
+    rule?.rule_type === 'event_task_reward' || rule?.rule_type === 'event_task_validation'
+      ? rule
+      : null
+  eventTaskRulePreview.value = { status: 'idle' }
+  eventTaskRuleValidation.value = { status: 'idle' }
   isEventTaskRuleDialogVisible.value = true
   void nextTick(() => {
     initializeEventTaskDialogAuthorization()
@@ -1740,6 +1826,9 @@ function openEventTaskRuleDialog(): void {
 
 function closeEventTaskRuleDialog(): void {
   isEventTaskRuleDialogVisible.value = false
+  eventTaskEditingRule.value = null
+  eventTaskRulePreview.value = { status: 'idle' }
+  eventTaskRuleValidation.value = { status: 'idle' }
 }
 
 async function handleRefreshEventTaskSheets(
@@ -1755,13 +1844,268 @@ async function handleRefreshEventTaskSheets(
   })
 }
 
-function handleSaveEventTaskRule(_draft: EventTaskRuleDialogDraft): void {
+async function handleSaveEventTaskRule(draft: EventTaskRuleDialogDraft): Promise<void> {
+  const ruleId = draft.rule_id?.trim() || createId('wb-rule')
+  const taskGroupFilter =
+    draft.validation_scope === 'specified' ? draft.task_group_id_filter.trim() : ''
+
   isSavingEventTaskRule.value = true
   try {
-    ElMessage.success('保存成功（前端模拟）')
-    closeEventTaskRuleDialog()
+    store.upsertOrchestrationRule({
+      rule_id: ruleId,
+      group_id: draft.group_id,
+      rule_name: draft.rule_name,
+      enabled: draft.enabled,
+      description: draft.description,
+      target_variable_tag: `__runtime_event_task_plan__:${ruleId}`,
+      display_field: '任务组ID',
+      rule_type: 'event_task_reward',
+      reference_variable_tag: draft.config_variable_tag,
+      left_task_group_field: '任务组ID',
+      left_task_id_field: 'INT_TaskID',
+      left_task_desc_field: '任务描述',
+      left_task_loot_field: 'STR_Loot',
+      right_task_group_field: 'INT_ID',
+      right_task_id_field: 'INT_TaskID',
+      right_task_desc_field: 'STR_Desc',
+      right_task_loot_field: 'STR_Loot',
+      event_task_match_strategy: draft.match_strategy,
+      ai_assist_mode: draft.ai_assist_mode,
+      task_group_id_filter: taskGroupFilter || undefined,
+      event_task_parse_config: {
+        feishu_source_id: draft.feishu_source_id,
+        feishu_sheet_id: draft.feishu_sheet_id,
+        feishu_sheet_name: draft.feishu_sheet_name || undefined,
+        config_variable_tag: draft.config_variable_tag,
+        parse_strategy: draft.parse_strategy,
+        ai_parse_mode: draft.ai_parse_mode,
+        validation_scope: draft.validation_scope,
+        task_group_id_filter: taskGroupFilter || undefined,
+        key_delimiter: draft.key_delimiter || '_',
+        fallback_match_field: draft.fallback_match_field || 'INT_TaskID',
+        event_task_field_mapping: draft.event_task_field_mapping || undefined,
+      },
+    })
+
+    const success = await persistConfig(
+      eventTaskRuleDialogMode.value === 'create'
+        ? '节日任务奖励校验规则已创建并保存。'
+        : '节日任务奖励校验规则已更新并保存。',
+      false,
+    )
+    if (success) {
+      closeEventTaskRuleDialog()
+    }
   } finally {
     isSavingEventTaskRule.value = false
+  }
+}
+
+function buildEventTaskValidationModel(
+  draft: EventTaskRuleDialogDraft,
+  data: WorkbenchEventTaskValidationData,
+): EventTaskRuleDialogValidation {
+  const taskGroupFilter =
+    draft.validation_scope === 'specified' ? draft.task_group_id_filter.trim() : ''
+  return {
+    status: data.success ? 'success' : 'failed',
+    errorMessage: data.success ? '' : data.message || data.errors?.[0] || '奖励校验失败。',
+    sourceId: draft.feishu_source_id,
+    sheetId: draft.feishu_sheet_id,
+    configVariableTag: draft.config_variable_tag,
+    matchStrategy: draft.match_strategy,
+    validationScope: draft.validation_scope,
+    taskGroupIdFilter: taskGroupFilter,
+    warnings: data.warnings ?? [],
+    errors: data.errors ?? [],
+    total: data.total ?? 0,
+    passCount: data.passCount ?? data.pass_count ?? 0,
+    failCount: data.failCount ?? data.fail_count ?? 0,
+    unmatchedCount: data.unmatchedCount ?? data.unmatched_count ?? 0,
+    warningCount: data.warningCount ?? data.warning_count ?? 0,
+    results: data.results ?? [],
+    extraVariableTasks: data.extraVariableTasks ?? data.extra_variable_tasks ?? [],
+    aiSuggestions: data.aiSuggestions ?? data.ai_suggestions ?? [],
+    aiSuggestionWarnings: data.aiSuggestionWarnings ?? data.ai_suggestion_warnings ?? [],
+    aiSuggestionUsed: data.aiSuggestionUsed ?? data.ai_suggestion_used ?? false,
+  }
+}
+
+async function handleValidateEventTaskRule(draft: EventTaskRuleDialogDraft): Promise<void> {
+  const taskGroupFilter =
+    draft.validation_scope === 'specified' ? draft.task_group_id_filter.trim() : ''
+  isValidatingEventTaskRule.value = true
+  eventTaskRuleValidation.value = {
+    status: 'idle',
+    sourceId: draft.feishu_source_id,
+    sheetId: draft.feishu_sheet_id,
+    configVariableTag: draft.config_variable_tag,
+    matchStrategy: draft.match_strategy,
+    validationScope: draft.validation_scope,
+    taskGroupIdFilter: taskGroupFilter,
+  }
+  try {
+    const response = await validateWorkbenchEventTasks({
+      feishu_source_id: draft.feishu_source_id,
+      feishu_sheet_id: draft.feishu_sheet_id,
+      feishu_sheet_name: draft.feishu_sheet_name || null,
+      config_variable_tag: draft.config_variable_tag,
+      match_strategy: draft.match_strategy,
+      ai_assist_mode: draft.ai_assist_mode,
+      validation_scope: draft.validation_scope,
+      task_group_id_filter: taskGroupFilter || null,
+      parse_strategy: draft.parse_strategy,
+      ai_parse_mode: draft.ai_parse_mode,
+      key_delimiter: draft.key_delimiter || '_',
+      fallback_match_field: draft.fallback_match_field || 'INT_TaskID',
+      event_task_field_mapping: draft.event_task_field_mapping || null,
+    })
+    eventTaskRuleValidation.value = buildEventTaskValidationModel(draft, response.data)
+  } catch (error) {
+    eventTaskRuleValidation.value = {
+      status: 'failed',
+      errorMessage: error instanceof Error ? error.message : '奖励校验失败。',
+      sourceId: draft.feishu_source_id,
+      sheetId: draft.feishu_sheet_id,
+      configVariableTag: draft.config_variable_tag,
+      matchStrategy: draft.match_strategy,
+      validationScope: draft.validation_scope,
+      taskGroupIdFilter: taskGroupFilter,
+      errors: [error instanceof Error ? error.message : '奖励校验失败。'],
+    }
+  } finally {
+    isValidatingEventTaskRule.value = false
+  }
+}
+
+async function handleAnalyzeEventTaskRule(draft: EventTaskRuleDialogDraft): Promise<void> {
+  const taskGroupFilter =
+    draft.validation_scope === 'specified' ? draft.task_group_id_filter.trim() : ''
+  isSuggestingEventTaskRule.value = true
+  try {
+    const response = await previewWorkbenchEventTaskAiSuggestions({
+      feishu_source_id: draft.feishu_source_id,
+      feishu_sheet_id: draft.feishu_sheet_id,
+      feishu_sheet_name: draft.feishu_sheet_name || null,
+      config_variable_tag: draft.config_variable_tag,
+      match_strategy: draft.match_strategy,
+      ai_assist_mode: draft.ai_assist_mode,
+      validation_scope: draft.validation_scope,
+      task_group_id_filter: taskGroupFilter || null,
+      parse_strategy: draft.parse_strategy,
+      ai_parse_mode: draft.ai_parse_mode,
+      key_delimiter: draft.key_delimiter || '_',
+      fallback_match_field: draft.fallback_match_field || 'INT_TaskID',
+      event_task_field_mapping: draft.event_task_field_mapping || null,
+      analysis_context:
+        eventTaskRuleValidation.value.status && eventTaskRuleValidation.value.status !== 'idle'
+          ? 'validation'
+          : 'preview',
+    })
+    const aiPatch = {
+      aiSuggestions: response.data.aiSuggestions ?? response.data.ai_suggestions ?? [],
+      aiSuggestionWarnings:
+        response.data.aiSuggestionWarnings ?? response.data.ai_suggestion_warnings ?? [],
+      aiSuggestionUsed:
+        response.data.aiSuggestionUsed ?? response.data.ai_suggestion_used ?? false,
+    }
+    if (eventTaskRuleValidation.value.status && eventTaskRuleValidation.value.status !== 'idle') {
+      eventTaskRuleValidation.value = {
+        ...eventTaskRuleValidation.value,
+        ...aiPatch,
+      }
+    } else {
+      eventTaskRulePreview.value = {
+        ...eventTaskRulePreview.value,
+        ...aiPatch,
+      }
+    }
+    if (!response.data.success) {
+      ElMessage.warning(response.data.message || 'AI 分析失败。')
+    } else if (!aiPatch.aiSuggestions.length && aiPatch.aiSuggestionWarnings.length) {
+      ElMessage.warning(aiPatch.aiSuggestionWarnings[0])
+    }
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : 'AI 分析失败。')
+  } finally {
+    isSuggestingEventTaskRule.value = false
+  }
+}
+
+function buildEventTaskPreviewModel(
+  draft: EventTaskRuleDialogDraft,
+  data: WorkbenchEventTaskPreviewData,
+): EventTaskRuleDialogPreview {
+  const taskGroupFilter =
+    draft.validation_scope === 'specified' ? draft.task_group_id_filter.trim() : ''
+  return {
+    status: data.success ? 'success' : 'failed',
+    parseStatus: data.success ? 'success' : 'failed',
+    warnings: data.warnings ?? [],
+    errors: data.errors ?? [],
+    errorMessage: data.success ? '' : data.message || data.errors?.[0] || '解析预览失败。',
+    sourceId: draft.feishu_source_id,
+    sheetId: draft.feishu_sheet_id,
+    parseStrategy: draft.parse_strategy,
+    aiParseMode: draft.ai_parse_mode,
+    validationScope: draft.validation_scope,
+    taskGroupIdFilter: taskGroupFilter,
+    taskGroupIds: data.taskGroupIds ?? data.task_group_ids ?? [],
+    totalRows: data.totalRows ?? data.total_rows ?? 0,
+    parsedRows: data.parsedRows ?? data.parsed_rows ?? data.detail_row_count ?? 0,
+    rewardGroupCount: data.rewardGroupCount ?? data.reward_group_count ?? 0,
+    sampleRows: data.sampleRows ?? [],
+    previewRows: data.preview_rows ?? [],
+    aiSuggestions: data.aiSuggestions ?? data.ai_suggestions ?? [],
+    aiSuggestionWarnings: data.aiSuggestionWarnings ?? data.ai_suggestion_warnings ?? [],
+    aiSuggestionUsed: data.aiSuggestionUsed ?? data.ai_suggestion_used ?? false,
+  }
+}
+
+async function handlePreviewEventTaskRule(draft: EventTaskRuleDialogDraft): Promise<void> {
+  const taskGroupFilter =
+    draft.validation_scope === 'specified' ? draft.task_group_id_filter.trim() : ''
+  isPreviewingEventTaskRule.value = true
+  eventTaskRulePreview.value = {
+    status: 'idle',
+    sourceId: draft.feishu_source_id,
+    sheetId: draft.feishu_sheet_id,
+    parseStrategy: draft.parse_strategy,
+    aiParseMode: draft.ai_parse_mode,
+    validationScope: draft.validation_scope,
+    taskGroupIdFilter: taskGroupFilter,
+  }
+  try {
+    const response = await previewWorkbenchEventTasks({
+      feishu_source_id: draft.feishu_source_id,
+      feishu_sheet_id: draft.feishu_sheet_id,
+      feishu_sheet_name: draft.feishu_sheet_name || null,
+      config_variable_tag: draft.config_variable_tag || null,
+      parse_strategy: draft.parse_strategy,
+      ai_parse_mode: draft.ai_parse_mode,
+      ai_assist_mode: draft.ai_assist_mode,
+      validation_scope: draft.validation_scope,
+      task_group_id_filter: taskGroupFilter || null,
+      key_delimiter: draft.key_delimiter || '_',
+      fallback_match_field: draft.fallback_match_field || 'INT_TaskID',
+      event_task_field_mapping: draft.event_task_field_mapping || null,
+    })
+    eventTaskRulePreview.value = buildEventTaskPreviewModel(draft, response.data)
+  } catch (error) {
+    eventTaskRulePreview.value = {
+      status: 'failed',
+      parseStatus: 'failed',
+      errorMessage: error instanceof Error ? error.message : '解析预览失败。',
+      sourceId: draft.feishu_source_id,
+      sheetId: draft.feishu_sheet_id,
+      parseStrategy: draft.parse_strategy,
+      aiParseMode: draft.ai_parse_mode,
+      validationScope: draft.validation_scope,
+      taskGroupIdFilter: taskGroupFilter,
+      errors: [error instanceof Error ? error.message : '解析预览失败。'],
+    }
+  } finally {
+    isPreviewingEventTaskRule.value = false
   }
 }
 
@@ -1971,7 +2315,7 @@ async function handleRefreshPackageItemsSheets(
 
     <EventTaskRuleDialog
       :visible="isEventTaskRuleDialogVisible"
-      mode="create"
+      :mode="eventTaskRuleDialogMode"
       :draft="eventTaskRuleDraft"
       :groups="store.allRuleGroups"
       :feishu-sources="eventTaskFeishuSources"
@@ -1979,9 +2323,18 @@ async function handleRefreshPackageItemsSheets(
       :feishu-authorization-map="eventTaskFeishuAuthorizationMap"
       :task-variables="compositeVariableOptions"
       :composite-variables="compositeVariableOptions"
+      :preview="eventTaskRulePreview"
+      :validation="eventTaskRuleValidation"
+      :backend-ready="true"
       :saving="isSavingEventTaskRule"
+      :previewing="isPreviewingEventTaskRule"
+      :validating="isValidatingEventTaskRule"
+      :ai-suggesting="isSuggestingEventTaskRule"
       :refreshing-sheets="isRefreshingEventTaskSheets"
       @close="closeEventTaskRuleDialog"
+      @preview="handlePreviewEventTaskRule"
+      @validate="handleValidateEventTaskRule"
+      @ai-analyze="handleAnalyzeEventTaskRule"
       @save="handleSaveEventTaskRule"
       @refresh-sheets="handleRefreshEventTaskSheets"
     />

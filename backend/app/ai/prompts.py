@@ -20,6 +20,8 @@ SUPPORTED_RULE_TYPES = [
     "multi_composite_pipeline_check",
     "multi_composite_mapping_check",
     "package_items_compare",
+    "event_task_reward",
+    "event_task_validation",
 ]
 
 

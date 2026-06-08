@@ -78,7 +78,7 @@ export interface PackageItemsRuleDialogProps {
 </script>
 
 <script setup lang="ts">
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 
 const props = withDefaults(defineProps<PackageItemsRuleDialogProps>(), {
@@ -105,12 +105,14 @@ const emit = defineEmits<{
 
 const DEFAULT_RULE_DESCRIPTION = '登峰礼包规划表与项目礼包配置表一致性校验规则'
 const RULE_DESCRIPTION_MAX_LENGTH = 500
+const PREVIEW_PAGE_SIZE = 5
 
 const form = reactive<PackageItemsRuleDialogDraft>(createEmptyDraft())
 const uiState = reactive({
   enabled: true,
   ruleDescription: DEFAULT_RULE_DESCRIPTION,
 })
+const previewPage = ref(1)
 
 const dialogVisible = computed({
   get: () => props.visible,
@@ -297,6 +299,19 @@ const previewWarnings = computed(() => currentPreview.value?.warnings ?? [])
 
 const previewErrors = computed(() => currentPreview.value?.errors ?? [])
 
+const previewRows = computed(() =>
+  isPreviewSuccessful.value ? currentPreview.value?.previewRows ?? [] : [],
+)
+
+const paginatedPreviewRows = computed(() => {
+  const startIndex = (previewPage.value - 1) * PREVIEW_PAGE_SIZE
+  return previewRows.value.slice(startIndex, startIndex + PREVIEW_PAGE_SIZE)
+})
+
+const previewDetailLines = computed(() => paginatedPreviewRows.value.map(buildPreviewRowLine))
+
+const shouldShowPreviewPagination = computed(() => previewRows.value.length > PREVIEW_PAGE_SIZE)
+
 const ruleDescriptionCount = computed(() => uiState.ruleDescription.length)
 
 const previewInfoLines = computed(() => {
@@ -338,6 +353,7 @@ watch(
   (visible) => {
     if (visible) {
       resetForm()
+      previewPage.value = 1
     }
   },
   { immediate: true },
@@ -348,9 +364,27 @@ watch(
   () => {
     if (props.visible) {
       resetForm()
+      previewPage.value = 1
     }
   },
   { deep: true },
+)
+
+watch(
+  () => currentPreview.value,
+  () => {
+    previewPage.value = 1
+  },
+)
+
+watch(
+  () => previewRows.value.length,
+  (rowCount) => {
+    const maxPage = Math.max(1, Math.ceil(rowCount / PREVIEW_PAGE_SIZE))
+    if (previewPage.value > maxPage) {
+      previewPage.value = maxPage
+    }
+  },
 )
 
 watch(
@@ -602,6 +636,16 @@ function normalizePackageIdFilter(value: string): string {
     .filter(Boolean)
     .join(', ')
 }
+
+function handlePreviewPageChange(page: number): void {
+  previewPage.value = Math.max(1, page)
+}
+
+function buildPreviewRowLine(row: PackageItemsPreviewRow): string {
+  return `第${row.row_index}行 / 礼包 ${row.package_id || '礼包ID为空'} / 道具 ${
+    row.item_id || '道具ID为空'
+  } x ${row.count || '数量为空'}`
+}
 </script>
 
 <template>
@@ -825,6 +869,24 @@ function normalizePackageIdFilter(value: string): string {
         </div>
         <div v-else class="package-items-rule-dialog__preview-box">
           <div v-for="line in previewInfoLines" :key="line">{{ line }}</div>
+          <div
+            v-for="line in previewDetailLines"
+            :key="line"
+            class="package-items-rule-dialog__preview-detail-line"
+          >
+            {{ line }}
+          </div>
+          <div v-if="shouldShowPreviewPagination" class="package-items-rule-dialog__preview-pagination">
+            <el-pagination
+              small
+              background
+              layout="prev, pager, next"
+              :current-page="previewPage"
+              :page-size="PREVIEW_PAGE_SIZE"
+              :total="previewRows.length"
+              @current-change="handlePreviewPageChange"
+            />
+          </div>
         </div>
         <div v-if="previewWarnings.length" class="package-items-rule-dialog__warnings">
           <div
@@ -1056,6 +1118,16 @@ function normalizePackageIdFilter(value: string): string {
   color: var(--color-ink-600, #475569);
   font-size: 13px;
   line-height: 24px;
+}
+
+.package-items-rule-dialog__preview-detail-line {
+  word-break: break-all;
+}
+
+.package-items-rule-dialog__preview-pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: 10px;
 }
 
 .package-items-rule-dialog__textarea-wrap {

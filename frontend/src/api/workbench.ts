@@ -1,4 +1,10 @@
 import type {
+  WorkbenchEventTaskAiSuggestionRequest,
+  WorkbenchEventTaskAiSuggestionResponse,
+  WorkbenchEventTaskPreviewRequest,
+  WorkbenchEventTaskPreviewResponse,
+  WorkbenchEventTaskValidationRequest,
+  WorkbenchEventTaskValidationResponse,
   WorkbenchPackageItemsPreviewRequest,
   WorkbenchPackageItemsPreviewResponse,
 } from '../types/fixedRules'
@@ -154,6 +160,36 @@ export async function previewWorkbenchPackageItems(
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export async function previewWorkbenchEventTasks(
+  payload: WorkbenchEventTaskPreviewRequest,
+): Promise<WorkbenchEventTaskPreviewResponse> {
+  return apiFetch<WorkbenchEventTaskPreviewResponse>('/api/v1/workbench/event-tasks/preview', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function validateWorkbenchEventTasks(
+  payload: WorkbenchEventTaskValidationRequest,
+): Promise<WorkbenchEventTaskValidationResponse> {
+  return apiFetch<WorkbenchEventTaskValidationResponse>('/api/v1/workbench/event-tasks/validate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function previewWorkbenchEventTaskAiSuggestions(
+  payload: WorkbenchEventTaskAiSuggestionRequest,
+): Promise<WorkbenchEventTaskAiSuggestionResponse> {
+  return apiFetch<WorkbenchEventTaskAiSuggestionResponse>(
+    '/api/v1/workbench/event-tasks/ai-suggestions',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
 }
 
 export async function triggerWorkbenchSvnUpdate(): Promise<WorkbenchSvnUpdateResponse> {

@@ -39,6 +39,34 @@ export function orchestrationRulesToValidationRules(
       }
     }
 
+    if (rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation') {
+      return {
+        rule_id: rule.rule_id,
+        rule_type: rule.rule_type,
+        params: {
+          reference_variable_tag: rule.reference_variable_tag?.trim() ?? '',
+          right_task_group_field: rule.right_task_group_field ?? 'INT_ID',
+          right_task_id_field: rule.right_task_id_field ?? 'INT_TaskID',
+          right_task_desc_field: rule.right_task_desc_field ?? 'STR_Desc',
+          right_task_loot_field: rule.right_task_loot_field ?? 'STR_Loot',
+          left_task_group_field: rule.left_task_group_field ?? '任务组ID',
+          left_task_id_field: rule.left_task_id_field ?? 'INT_TaskID',
+          left_task_desc_field: rule.left_task_desc_field ?? '任务描述',
+          left_task_loot_field: rule.left_task_loot_field ?? 'STR_Loot',
+          event_task_match_strategy:
+            rule.event_task_match_strategy ?? 'groupId_desc_then_taskId',
+          match_strategy: rule.event_task_match_strategy ?? 'groupId_desc_then_taskId',
+          ai_assist_mode: rule.ai_assist_mode ?? 'auto',
+          task_group_id_filter: rule.task_group_id_filter,
+          event_task_parse_config: rule.event_task_parse_config
+            ? JSON.parse(JSON.stringify(rule.event_task_parse_config))
+            : undefined,
+          rule_name: rule.rule_name,
+          display_field: rule.display_field,
+        },
+      }
+    }
+
     if (rule.rule_type === 'multi_composite_pipeline_check') {
       const firstNodeTag = rule.pipeline_config?.nodes[0]?.variable_tag.trim() ?? ''
       const variable = variableMap.get(firstNodeTag)

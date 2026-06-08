@@ -11,14 +11,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.api.fixed_rules_schemas import (
     EventTaskAiParseMode,
+    EventTaskFieldMapping,
     EventTaskParseStrategy,
     EventTaskPlanRow,
     EventTaskPreviewDetailRow,
+    EventTaskPreviewRewardItem,
     EventTaskPreviewResult,
 )
 from backend.app.api.schemas import DataSource, VariableTag
 from backend.app.loaders.feishu_reader import parse_feishu_sheet_url, preview_feishu_composite_variable
 from backend.app.loaders.local_reader import load_variables_by_source
+from backend.app.services.reward_parser import RewardItem, mergeDuplicateRewards, parseLootString
 
 
 _FIELD_ALIASES: dict[str, set[str]] = {
@@ -36,11 +39,18 @@ _FIELD_ALIASES: dict[str, set[str]] = {
         "intid",
     },
     "task_id": {
-        "任务id",
-        "任务ID",
+        "int_task_id",
+        "int_taskID",
         "taskid",
         "inttaskid",
         "int_taskid",
+    },
+    "day": {
+        "天数",
+        "day",
+        "days",
+        "intday",
+        "int_day",
     },
     "task_desc": {
         "任务描述",
@@ -62,7 +72,9 @@ _FIELD_ALIASES: dict[str, set[str]] = {
 }
 _REQUIRED_FIELDS = ("task_group_id", "task_desc")
 _LOOT_ITEM_ID_HEADERS = {"道具id", "itemid", "intitemid", "intitemid"}
+_LOOT_NAME_HEADERS = {"道具名称", "itemname", "stritemname", "name"}
 _LOOT_COUNT_HEADERS = {"数量", "个数", "count", "num"}
+_LOOT_VALUE_TYPE_HEADERS = {"价值类型", "valuetype", "value_type"}
 
 
 @dataclass(frozen=True)
@@ -94,6 +106,8 @@ class _ConfigTaskRow:
 class _LootColumnGroup:
     item_id_index: int
     count_index: int
+    name_index: int | None = None
+    value_type_index: int | None = None
 
 
 async def preview_event_tasks_from_feishu(
@@ -108,6 +122,7 @@ async def preview_event_tasks_from_feishu(
     fallback_match_field: str = "INT_TaskID",
     db: AsyncSession,
     project_id: int,
+    event_task_field_mapping: EventTaskFieldMapping | dict[str, Any] | None = None,
 ) -> EventTaskPreviewResult:
     """读取飞书 Sheet 显示值并执行节日任务解析与配置变量轻量匹配。"""
     del parse_strategy, ai_parse_mode
@@ -121,8 +136,12 @@ async def preview_event_tasks_from_feishu(
         sheet_id=sheet_id,
         value_render_option="FormattedValue",
     )
-    result = parse_event_task_sheet(table.raw_values)
+    result = parse_feishu_event_task_sheet(
+        table.raw_values,
+        event_task_field_mapping=event_task_field_mapping,
+    )
     result.raw_sheet_name = table.sheet_title
+    result.raw_values = table.raw_values
     if result.parse_status != "success":
         return result
 
@@ -149,14 +168,31 @@ async def preview_event_tasks_from_feishu(
     return result
 
 
-def parse_event_task_sheet(raw_values: list[list[Any]]) -> EventTaskPreviewResult:
-    """从二维数组中扫描节日任务明细区域，保留原始 Sheet 行号。"""
-    if not raw_values:
+def parseFeishuEventTaskSheet(
+    sheetRows: list[list[Any]],
+    eventTaskFieldMapping: EventTaskFieldMapping | dict[str, Any] | None = None,
+) -> EventTaskPreviewResult:
+    """兼容需求中的 camelCase 命名入口。"""
+
+    return parse_feishu_event_task_sheet(
+        sheetRows,
+        event_task_field_mapping=eventTaskFieldMapping,
+    )
+
+
+def parse_feishu_event_task_sheet(
+    sheet_rows: list[list[Any]],
+    *,
+    event_task_field_mapping: EventTaskFieldMapping | dict[str, Any] | None = None,
+) -> EventTaskPreviewResult:
+    """从飞书二维数组中解析节日任务宽表，保留原始 Sheet 行号。"""
+    if not sheet_rows:
         return EventTaskPreviewResult(
             parse_status="failed",
             parse_mode="rule",
             ai_used=False,
             errors=["Sheet 为空"],
+            total_rows=0,
         )
 
     warnings: list[str] = []
@@ -165,14 +201,30 @@ def parse_event_task_sheet(raw_values: list[list[Any]]) -> EventTaskPreviewResul
     seen_task_group_ids: set[str] = set()
     active_header: _HeaderDetection | None = None
     partial_headers: list[_HeaderDetection] = []
+    reward_group_count = 0
+    manual_header, manual_header_errors = _detect_manual_header(
+        sheet_rows,
+        event_task_field_mapping,
+    )
+    if manual_header_errors:
+        return EventTaskPreviewResult(
+            parse_status="failed",
+            parse_mode="rule",
+            errors=manual_header_errors,
+            total_rows=len(sheet_rows),
+        )
 
-    for row_offset, row in enumerate(raw_values):
+    for row_offset, row in enumerate(sheet_rows):
         row_index = row_offset + 1
-        header_detection = _detect_header(row, row_index=row_index)
+        if manual_header is not None:
+            header_detection = manual_header if row_index == manual_header.row_index else None
+        else:
+            header_detection = _detect_header(row, row_index=row_index)
         if header_detection is not None:
             if header_detection.is_complete:
                 active_header = header_detection
                 partial_headers = []
+                reward_group_count = max(reward_group_count, len(header_detection.loot_groups))
             else:
                 active_header = None
                 partial_headers.append(header_detection)
@@ -183,16 +235,14 @@ def parse_event_task_sheet(raw_values: list[list[Any]]) -> EventTaskPreviewResul
         if _is_empty_row(row):
             continue
 
-        parsed_row, row_warning = _parse_task_row(
+        parsed_row = _parse_feishu_task_row(
             row,
             row_index=row_index,
             header=active_header,
         )
-        if parsed_row is None:
-            warnings.append(row_warning or f"跳过第 {row_index} 行：缺少任务组 ID 或任务描述。")
-            continue
         rows.append(parsed_row)
-        if parsed_row.task_group_id not in seen_task_group_ids:
+        warnings.extend(parsed_row.warnings)
+        if parsed_row.task_group_id and parsed_row.task_group_id not in seen_task_group_ids:
             seen_task_group_ids.add(parsed_row.task_group_id)
             task_group_ids.append(parsed_row.task_group_id)
 
@@ -204,12 +254,16 @@ def parse_event_task_sheet(raw_values: list[list[Any]]) -> EventTaskPreviewResul
                 parse_mode="rule",
                 warnings=warnings,
                 errors=[f"任务表头缺少字段：{missing}"],
+                total_rows=len(sheet_rows),
+                reward_group_count=reward_group_count,
             )
         return EventTaskPreviewResult(
             parse_status="failed",
             parse_mode="rule",
             warnings=warnings,
             errors=["未识别到任务明细"],
+            total_rows=len(sheet_rows),
+            reward_group_count=reward_group_count,
         )
 
     return EventTaskPreviewResult(
@@ -217,20 +271,20 @@ def parse_event_task_sheet(raw_values: list[list[Any]]) -> EventTaskPreviewResul
         parse_mode="rule",
         ai_used=False,
         task_group_ids=task_group_ids,
+        total_rows=len(sheet_rows),
+        parsed_rows=len(rows),
         detail_row_count=len(rows),
+        reward_group_count=reward_group_count,
         rows=rows,
-        detail_rows=[
-            EventTaskPreviewDetailRow(
-                row_index=row.row_index,
-                task_group_id=row.task_group_id,
-                task_id=row.task_id,
-                task_desc=row.task_desc,
-                loot=row.loot,
-            )
-            for row in rows
-        ],
+        detail_rows=[_build_preview_detail_row(row) for row in rows],
         warnings=warnings,
     )
+
+
+def parse_event_task_sheet(raw_values: list[list[Any]]) -> EventTaskPreviewResult:
+    """兼容旧入口：从二维数组中扫描节日任务明细区域。"""
+
+    return parse_feishu_event_task_sheet(raw_values)
 
 
 async def load_event_task_config_frame(
@@ -307,17 +361,23 @@ def build_event_task_config_rows(
             )
         )
 
-    seen_group_desc: dict[tuple[str, str], int] = {}
+    seen_config_keys: dict[tuple[str, str, str], int] = {}
     for config_row in rows:
-        key = (config_row.task_group_id, _normalize_desc(config_row.task_desc))
-        previous_row = seen_group_desc.get(key)
+        if not config_row.task_id:
+            continue
+        key = (
+            config_row.task_group_id,
+            config_row.task_id,
+            _normalize_desc(config_row.task_desc),
+        )
+        previous_row = seen_config_keys.get(key)
         if previous_row is not None:
             warnings.append(
-                f"任务配置重复：任务组 {config_row.task_group_id} 的描述 {config_row.task_desc} "
-                f"在第 {previous_row} 行和第 {config_row.row_index} 行重复。"
+                f"任务配置重复：任务组 {config_row.task_group_id} 的任务 {config_row.task_id} "
+                f"描述 {config_row.task_desc} 在第 {previous_row} 行和第 {config_row.row_index} 行重复。"
             )
         else:
-            seen_group_desc[key] = config_row.row_index
+            seen_config_keys[key] = config_row.row_index
     return rows, warnings
 
 
@@ -361,13 +421,91 @@ def build_event_task_preview_rows(
                 row_index=task_row.row_index,
                 task_group_id=task_row.task_group_id,
                 task_id=task_row.task_id,
+                day=task_row.day,
                 task_desc=task_row.task_desc,
                 loot=task_row.loot,
+                rewards=list(task_row.rewards),
+                warnings=list(task_row.warnings),
                 config_key=matched_config.config_key if matched_config else None,
+                config_task_desc=matched_config.task_desc if matched_config else None,
+                config_task_id=matched_config.task_id if matched_config else None,
+                config_loot=matched_config.loot if matched_config else None,
                 match_type=match_type,
+                match_status="matched" if match_type != "unmatched" else "missing_config",
             )
         )
     return preview_rows
+
+
+def _detect_manual_header(
+    sheet_rows: list[list[Any]],
+    raw_mapping: EventTaskFieldMapping | dict[str, Any] | None,
+) -> tuple[_HeaderDetection | None, list[str]]:
+    if raw_mapping is None:
+        return None, []
+    mapping = (
+        raw_mapping
+        if isinstance(raw_mapping, EventTaskFieldMapping)
+        else EventTaskFieldMapping.model_validate(raw_mapping)
+    )
+    if mapping.header_row_index is None:
+        return None, []
+    if mapping.header_row_index < 1 or mapping.header_row_index > len(sheet_rows):
+        return None, [f"人工字段映射表头行越界：{mapping.header_row_index}。"]
+
+    header_row = sheet_rows[mapping.header_row_index - 1]
+    column_mapping: dict[str, int] = {}
+    for field_name in ("task_group_id", "task_id", "day", "task_desc", "loot"):
+        header_text = getattr(mapping, field_name)
+        if not header_text:
+            continue
+        column_index = _find_header_column_by_text(header_row, header_text)
+        if column_index is not None:
+            column_mapping[field_name] = column_index
+
+    loot_groups: list[_LootColumnGroup] = []
+    for group in mapping.loot_groups:
+        item_id_index = _find_header_column_by_text(header_row, group.item_id)
+        count_index = _find_header_column_by_text(header_row, group.count)
+        if item_id_index is None or count_index is None:
+            continue
+        name_index = _find_header_column_by_text(header_row, group.name) if group.name else None
+        value_type_index = (
+            _find_header_column_by_text(header_row, group.value_type)
+            if group.value_type
+            else None
+        )
+        loot_groups.append(
+            _LootColumnGroup(
+                item_id_index=item_id_index,
+                count_index=count_index,
+                name_index=name_index,
+                value_type_index=value_type_index,
+            )
+        )
+
+    return (
+        _HeaderDetection(
+            row_index=mapping.header_row_index,
+            mapping=column_mapping,
+            loot_groups=loot_groups,
+        ),
+        [],
+    )
+
+
+def _find_header_column_by_text(row: list[Any], header_text: str | None) -> int | None:
+    expected = _stringify(header_text)
+    if expected is None:
+        return None
+    for index, value in enumerate(row):
+        if _stringify(value) == expected:
+            return index
+    normalized_expected = _normalize_header(expected)
+    for index, value in enumerate(row):
+        if _normalize_header(value) == normalized_expected:
+            return index
+    return None
 
 
 def _detect_header(row: list[Any], *, row_index: int) -> _HeaderDetection | None:
@@ -388,6 +526,75 @@ def _detect_header(row: list[Any], *, row_index: int) -> _HeaderDetection | None
         row_index=row_index,
         mapping=mapping,
         loot_groups=_detect_loot_column_groups(row),
+    )
+
+
+def _parse_feishu_task_row(
+    row: list[Any],
+    *,
+    row_index: int,
+    header: _HeaderDetection,
+) -> EventTaskPlanRow:
+    def _value(field_name: str) -> Any:
+        column_index = header.mapping.get(field_name)
+        if column_index is None or column_index >= len(row):
+            return None
+        return row[column_index]
+
+    warnings: list[str] = []
+    task_group_id = _normalize_id_text(_value("task_group_id")) or ""
+    task_id = _normalize_id_text(_value("task_id"))
+    task_desc = _stringify(_value("task_desc")) or ""
+    day, day_warning = _normalize_optional_int(_value("day"), "天数")
+    if day_warning:
+        warnings.append(f"第 {row_index} 行{day_warning}")
+    if not task_group_id:
+        warnings.append(f"第 {row_index} 行任务组 ID 为空。")
+    if not task_desc:
+        warnings.append(f"第 {row_index} 行任务描述为空。")
+
+    rewards, reward_warnings = _build_reward_items(row, row_index, header.loot_groups)
+    warnings.extend(reward_warnings)
+    raw_loot = _stringify(_value("loot"))
+    if rewards:
+        loot = _build_loot_from_rewards(rewards)
+    elif raw_loot:
+        loot_parse_result = parseLootString(raw_loot, field_label=f"第 {row_index} 行 STR_Loot")
+        rewards = [
+            _to_event_task_reward_item(reward)
+            for reward in loot_parse_result.rewards
+        ]
+        warnings.extend(
+            issue.message
+            for issue in [*loot_parse_result.warnings, *loot_parse_result.errors]
+        )
+        loot = raw_loot
+    else:
+        loot = None
+
+    return EventTaskPlanRow(
+        row_index=row_index,
+        task_group_id=task_group_id,
+        task_id=task_id,
+        day=day,
+        task_desc=task_desc,
+        loot=loot,
+        rewards=rewards,
+        warnings=warnings,
+        raw_row=list(row),
+    )
+
+
+def _build_preview_detail_row(row: EventTaskPlanRow) -> EventTaskPreviewDetailRow:
+    return EventTaskPreviewDetailRow(
+        row_index=row.row_index,
+        task_group_id=row.task_group_id,
+        task_id=row.task_id,
+        day=row.day,
+        task_desc=row.task_desc,
+        loot=row.loot,
+        rewards=list(row.rewards),
+        warnings=list(row.warnings),
     )
 
 
@@ -446,8 +653,97 @@ def _detect_loot_column_groups(row: list[Any]) -> list[_LootColumnGroup]:
         )
         if count_index is None:
             continue
-        groups.append(_LootColumnGroup(item_id_index=index, count_index=count_index))
+        name_index = next(
+            (
+                name_candidate
+                for name_candidate in range(index + 1, next_item_index)
+                if normalized_headers[name_candidate] in _LOOT_NAME_HEADERS
+            ),
+            None,
+        )
+        value_type_index = next(
+            (
+                value_type_candidate
+                for value_type_candidate in range(index + 1, next_item_index)
+                if normalized_headers[value_type_candidate] in _LOOT_VALUE_TYPE_HEADERS
+            ),
+            None,
+        )
+        groups.append(
+            _LootColumnGroup(
+                item_id_index=index,
+                count_index=count_index,
+                name_index=name_index,
+                value_type_index=value_type_index,
+            )
+        )
     return groups
+
+
+def _build_reward_items(
+    row: list[Any],
+    row_index: int,
+    loot_groups: list[_LootColumnGroup],
+) -> tuple[list[EventTaskPreviewRewardItem], list[str]]:
+    rewards: list[RewardItem] = []
+    warnings: list[str] = []
+    for loot_group in loot_groups:
+        raw_item_id = _row_value(row, loot_group.item_id_index)
+        if _stringify(raw_item_id) is None:
+            continue
+
+        item_id, item_id_warning = _normalize_optional_int(raw_item_id, "道具ID")
+        if item_id_warning or item_id is None:
+            warnings.append(f"第 {row_index} 行{item_id_warning or '道具ID 必须是整数。'}")
+            continue
+
+        raw_count = _row_value(row, loot_group.count_index)
+        if _stringify(raw_count) is None:
+            warnings.append(f"第 {row_index} 行道具ID {item_id} 不为空但数量为空。")
+            continue
+
+        count, count_warning = _normalize_optional_int(raw_count, "数量")
+        if count_warning or count is None:
+            warnings.append(f"第 {row_index} 行道具ID {item_id} 的数量不是数字。")
+            continue
+
+        name = (
+            _stringify(_row_value(row, loot_group.name_index))
+            if loot_group.name_index is not None
+            else None
+        )
+        rewards.append(
+            RewardItem(
+                type="item",
+                item_id=item_id,
+                count=count,
+                name=name,
+            )
+        )
+
+    merge_result = mergeDuplicateRewards(rewards)
+    for duplicate_warning in merge_result.duplicate_warnings:
+        warnings.append(f"第 {row_index} 行{duplicate_warning.message}")
+    return (
+        [_to_event_task_reward_item(reward) for reward in merge_result.rewards],
+        warnings,
+    )
+
+
+def _to_event_task_reward_item(reward: RewardItem) -> EventTaskPreviewRewardItem:
+    return EventTaskPreviewRewardItem(
+        type=reward.type or "item",
+        item_id=reward.item_id,
+        itemId=reward.item_id,
+        count=reward.count,
+        name=reward.name,
+    )
+
+
+def _build_loot_from_rewards(rewards: list[EventTaskPreviewRewardItem]) -> str | None:
+    if not rewards:
+        return None
+    return ",".join(f"{{item,{reward.item_id},{reward.count}}}" for reward in rewards)
 
 
 def _build_loot_value(row: list[Any], loot_groups: list[_LootColumnGroup]) -> str | None:
@@ -481,6 +777,19 @@ def _extract_task_group_id(
     if normalized_key and key_delimiter and key_delimiter in normalized_key:
         return normalized_key.split(key_delimiter, 1)[0].strip()
     return _normalize_id_text(fallback_value) or normalized_key
+
+
+def _normalize_optional_int(value: Any, field_label: str) -> tuple[int | None, str | None]:
+    if value is None or isinstance(value, bool):
+        return None, None if value is None else f"{field_label} 必须是整数。"
+    text = str(value).strip()
+    if not text:
+        return None, None
+    if re.fullmatch(r"[+-]?\d+", text):
+        return int(text), None
+    if re.fullmatch(r"[+-]?\d+\.0+", text):
+        return int(float(text)), None
+    return None, f"{field_label} 必须是整数。"
 
 
 def _normalize_header(value: Any) -> str:

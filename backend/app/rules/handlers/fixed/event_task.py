@@ -1,8 +1,7 @@
-"""节日任务表与 EventTask 配置比对 handler。"""
+"""节日任务奖励校验 handler。"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
 from typing import Any
 
@@ -16,26 +15,30 @@ from backend.app.rules.handlers.fixed.common import (
     COMPOSITE_KEY_FIELD,
     _build_rule_location,
     _get_composite_variable_frame,
-    _get_display_field_param,
     _get_field_display_name,
     _get_fixed_rule_param,
-    _get_row_display_value,
 )
 from backend.app.rules.infrastructure.tag_extractor import by_left_and_right_tag
+from backend.app.services.event_task_reward_validator import (
+    EventTaskExtraVariableTask,
+    EventTaskRewardValidationTaskResult,
+    validateEventTaskRewards,
+)
+from backend.app.services.event_task_variable_parser import parseEventTaskVariables
+from backend.app.services.reward_parser import RewardCountMismatch, RewardItem, parseLootString
 
 
-@dataclass(frozen=True)
-class _TaskRow:
-    task_group_id: str
-    task_id: str | None
-    task_desc: str
-    loot: str | None
-    row_index: int
-    raw_group_id: Any
-    raw_task_id: Any
-    raw_desc: Any
-    raw_loot: Any
-    display_value: Any = None
+EVENT_TASK_RULE_TYPES = {"event_task_reward", "event_task_validation"}
+
+
+@register_rule("event_task_reward", dependent_tags=by_left_and_right_tag)
+def check_event_task_reward(
+    rule: ValidationRule,
+    context: RuleExecutionContext,
+) -> list[dict[str, Any]]:
+    """校验飞书节日任务规划奖励与 EventTask 组合变量 STR_Loot 是否一致。"""
+
+    return _check_event_task_reward(rule, context)
 
 
 @register_rule("event_task_validation", dependent_tags=by_left_and_right_tag)
@@ -43,7 +46,15 @@ def check_event_task_validation(
     rule: ValidationRule,
     context: RuleExecutionContext,
 ) -> list[dict[str, Any]]:
-    """按任务组 ID + 描述对齐任务表与 EventTask，并比较任务 ID 与 STR_Loot。"""
+    """旧 rule_type 兼容入口，内部使用节日任务奖励集合校验。"""
+
+    return _check_event_task_reward(rule, context)
+
+
+def _check_event_task_reward(
+    rule: ValidationRule,
+    context: RuleExecutionContext,
+) -> list[dict[str, Any]]:
     left_tag = _get_fixed_rule_param(rule, "left_tag")
     right_tag = _get_fixed_rule_param(rule, "right_tag")
     rule_name = _get_fixed_rule_param(rule, "rule_name")
@@ -55,11 +66,10 @@ def check_event_task_validation(
     right_task_id_field = _get_fixed_rule_param(rule, "right_task_id_field")
     right_task_desc_field = _get_fixed_rule_param(rule, "right_task_desc_field")
     right_task_loot_field = _get_fixed_rule_param(rule, "right_task_loot_field")
+    match_strategy = _get_match_strategy(rule)
     task_group_filters = _normalize_task_group_id_filters(
         rule.params.get("task_group_id_filter")
     )
-    display_field = _get_display_field_param(rule)
-
     left_variable, left_frame = _get_composite_variable_frame(context, left_tag, rule.rule_type)
     right_variable, right_frame = _get_composite_variable_frame(context, right_tag, rule.rule_type)
     _ensure_composite_fields(
@@ -85,61 +95,38 @@ def check_event_task_validation(
         rule_type=rule.rule_type,
     )
 
-    abnormal_results: list[dict[str, Any]] = []
-    left_tasks, left_group_order = _build_task_rows(
+    feishu_tasks = _build_feishu_tasks(
         left_frame,
-        variable=left_variable,
-        rule_name=rule_name,
         task_group_field=left_task_group_field,
         task_id_field=left_task_id_field,
         task_desc_field=left_task_desc_field,
         task_loot_field=left_task_loot_field,
         task_group_filters=task_group_filters,
-        display_field=display_field,
-        side_label="飞书任务表",
-        abnormal_results=abnormal_results,
     )
-    right_tasks, right_group_order = _build_task_rows(
-        right_frame,
-        variable=right_variable,
-        rule_name=rule_name,
-        task_group_field=right_task_group_field,
-        task_id_field=right_task_id_field,
-        task_desc_field=right_task_desc_field,
-        task_loot_field=right_task_loot_field,
-        task_group_filters=task_group_filters,
-        display_field=None,
-        side_label="EventTask 配置",
-        abnormal_results=abnormal_results,
-        extract_group_from_key=True,
+    variable_tasks = parseEventTaskVariables(
+        _build_variable_data(
+            right_frame,
+            task_group_field=right_task_group_field,
+            task_id_field=right_task_id_field,
+            task_desc_field=right_task_desc_field,
+            task_loot_field=right_task_loot_field,
+            task_group_filters=task_group_filters,
+        )
     )
-
-    left_by_group_desc = _index_by_group_desc(left_tasks)
-    right_by_group_desc = _index_by_group_desc(right_tasks)
-    right_by_task_id = _index_by_task_id(right_tasks)
-    _append_duplicate_results(
-        abnormal_results,
-        grouped_rows=left_by_group_desc,
-        rule_name=rule_name,
-        location=_build_rule_location(left_variable, left_task_desc_field),
-        error_type="left_duplicate_task",
-        message_prefix="飞书任务表重复任务",
-        left_side=True,
+    scope = (
+        {"taskGroupIds": task_group_filters}
+        if task_group_filters is not None
+        else "all"
     )
-    _append_duplicate_results(
-        abnormal_results,
-        grouped_rows=right_by_group_desc,
-        rule_name=rule_name,
-        location=_build_rule_location(right_variable, right_task_desc_field),
-        error_type="right_duplicate_task",
-        message_prefix="EventTask 重复任务",
-        left_side=False,
+    summary = validateEventTaskRewards(
+        {
+            "feishuTasks": feishu_tasks,
+            "variableTasks": variable_tasks,
+            "matchStrategy": match_strategy,
+            "scope": scope,
+        }
     )
 
-    checked_group_ids = task_group_filters or _merge_task_group_order(
-        left_group_order,
-        right_group_order,
-    )
     compare_location = _build_compare_location(
         left_variable=left_variable,
         right_variable=right_variable,
@@ -148,309 +135,347 @@ def check_event_task_validation(
     )
     right_location = _build_rule_location(right_variable, right_task_desc_field)
     left_location = _build_rule_location(left_variable, left_task_desc_field)
-    matched_right_keys: set[tuple[int, str, str]] = set()
+    abnormal_results: list[dict[str, Any]] = []
 
-    for task_group_id in checked_group_ids:
-        left_rows = [row for row in left_tasks if row.task_group_id == task_group_id]
-        right_rows = [row for row in right_tasks if row.task_group_id == task_group_id]
-        if not left_rows:
-            for right_row in right_rows:
-                _append_event_task_result(
-                    abnormal_results,
-                    row_index=right_row.row_index,
-                    raw_value=right_row.raw_desc,
-                    rule_name=rule_name,
-                    location=left_location,
-                    message=(
-                        f"飞书任务表缺失：任务组 {task_group_id} 未找到任务 "
-                        f"{right_row.task_desc}。"
-                    ),
-                    task_group_id=task_group_id,
-                    task_id=right_row.task_id,
-                    error_type="left_missing_task",
-                    left_value=None,
-                    right_value=right_row.task_desc,
-                )
-            continue
-        if not right_rows:
-            for left_row in left_rows:
-                _append_event_task_result(
-                    abnormal_results,
-                    row_index=left_row.row_index,
-                    raw_value=left_row.raw_desc,
-                    display_value=left_row.display_value,
-                    rule_name=rule_name,
-                    location=right_location,
-                    message=(
-                        f"EventTask 缺失：任务组 {task_group_id} 未找到任务 "
-                        f"{left_row.task_desc}。"
-                    ),
-                    task_group_id=task_group_id,
-                    task_id=left_row.task_id,
-                    error_type="right_missing_task",
-                    left_value=left_row.task_desc,
-                    right_value=None,
-                )
-            continue
-
-        for left_row in left_rows:
-            matched_row, match_type = _match_right_task(
-                left_row,
-                right_by_group_desc=right_by_group_desc,
-                right_by_task_id=right_by_task_id,
-            )
-            if matched_row is None:
-                _append_event_task_result(
-                    abnormal_results,
-                    row_index=left_row.row_index,
-                    raw_value=left_row.raw_desc,
-                    display_value=left_row.display_value,
-                    rule_name=rule_name,
-                    location=right_location,
-                    message=(
-                        f"EventTask 缺失：任务组 {task_group_id} 未找到任务 "
-                        f"{left_row.task_desc}。"
-                    ),
-                    task_group_id=task_group_id,
-                    task_id=left_row.task_id,
-                    error_type="right_missing_task",
-                    left_value=left_row.task_desc,
-                    right_value=None,
-                )
-                continue
-
-            matched_right_keys.add(_task_identity(matched_row))
-            if match_type == "task_id" and _normalize_desc(left_row.task_desc) != _normalize_desc(
-                matched_row.task_desc
-            ):
-                _append_event_task_result(
-                    abnormal_results,
-                    row_index=left_row.row_index,
-                    raw_value=left_row.raw_desc,
-                    display_value=left_row.display_value,
-                    rule_name=rule_name,
-                    location=compare_location,
-                    message=(
-                        f"任务描述不一致：任务组 {task_group_id} / INT_TaskID "
-                        f"{left_row.task_id}，飞书={left_row.task_desc}，"
-                        f"EventTask={matched_row.task_desc}。"
-                    ),
-                    task_group_id=task_group_id,
-                    task_id=left_row.task_id,
-                    error_type="desc_mismatch",
-                    left_value=left_row.task_desc,
-                    right_value=matched_row.task_desc,
-                )
-
-            if _normalize_loot(left_row.loot) != _normalize_loot(matched_row.loot):
-                _append_event_task_result(
-                    abnormal_results,
-                    row_index=left_row.row_index,
-                    raw_value=left_row.raw_loot,
-                    display_value=left_row.display_value,
-                    rule_name=rule_name,
-                    location=compare_location,
-                    message=(
-                        f"STR_Loot 不一致：任务组 {task_group_id} / "
-                        f"{left_row.task_desc}，飞书={_display_value(left_row.loot)}，"
-                        f"EventTask={_display_value(matched_row.loot)}。"
-                    ),
-                    task_group_id=task_group_id,
-                    task_id=left_row.task_id or matched_row.task_id,
-                    error_type="loot_mismatch",
-                    left_value=left_row.loot,
-                    right_value=matched_row.loot,
-                )
-
-    for right_row in right_tasks:
-        if checked_group_ids and right_row.task_group_id not in checked_group_ids:
-            continue
-        if _task_identity(right_row) in matched_right_keys:
-            continue
-        if any(
-            left_row.task_group_id == right_row.task_group_id
-            for left_row in left_tasks
-        ):
-            _append_event_task_result(
-                abnormal_results,
-                row_index=right_row.row_index,
-                raw_value=right_row.raw_desc,
-                rule_name=rule_name,
-                location=left_location,
-                message=(
-                    f"飞书任务表缺失：任务组 {right_row.task_group_id} 未找到任务 "
-                    f"{right_row.task_desc}。"
-                ),
-                task_group_id=right_row.task_group_id,
-                task_id=right_row.task_id,
-                error_type="left_missing_task",
-                left_value=None,
-                right_value=right_row.task_desc,
-            )
+    for result in summary.results:
+        _append_validation_result_abnormals(
+            abnormal_results,
+            result=result,
+            rule_name=rule_name,
+            location=compare_location,
+            missing_location=right_location,
+            warning_location=compare_location,
+        )
+    for extra_task in summary.extra_variable_tasks:
+        _append_extra_variable_task_result(
+            abnormal_results,
+            extra_task=extra_task,
+            rule_name=rule_name,
+            location=left_location,
+        )
 
     return abnormal_results
 
 
-def _build_task_rows(
+def _build_feishu_tasks(
     frame: pd.DataFrame,
     *,
-    variable: VariableTag,
-    rule_name: str,
     task_group_field: str,
     task_id_field: str,
     task_desc_field: str,
     task_loot_field: str,
     task_group_filters: list[str] | None,
-    display_field: str | None,
-    side_label: str,
-    abnormal_results: list[dict[str, Any]],
-    extract_group_from_key: bool = False,
-) -> tuple[list[_TaskRow], list[str]]:
-    task_rows: list[_TaskRow] = []
-    task_group_order: list[str] = []
-    seen_group_ids: set[str] = set()
-    group_location = _build_rule_location(variable, task_group_field)
-    desc_location = _build_rule_location(variable, task_desc_field)
-
+) -> list[dict[str, Any]]:
+    tasks: list[dict[str, Any]] = []
     for _, row in frame.iterrows():
-        row_index = int(row["_row_index"])
-        task_group_id = (
-            _extract_task_group_id_from_key(row.get(COMPOSITE_KEY_FIELD))
-            if extract_group_from_key
-            else None
-        ) or _normalize_id_text(row[task_group_field])
-        task_desc = _normalize_text(row[task_desc_field])
-        task_id = _normalize_id_text(row[task_id_field])
-        if task_group_id is None:
-            _append_event_task_result(
-                abnormal_results,
-                row_index=row_index,
-                raw_value=row[task_group_field],
-                display_value=_get_row_display_value(row, display_field),
-                rule_name=rule_name,
-                location=group_location,
-                message=f"{side_label}任务组 ID 为空，无法参与节日任务校验。",
-                task_group_id=None,
-                task_id=task_id,
-                error_type="invalid_task_group_id",
-                left_value=row[task_group_field],
-                right_value=None,
-            )
-            continue
+        task_group_id = _normalize_id_text(row[task_group_field]) or ""
         if task_group_filters is not None and task_group_id not in task_group_filters:
             continue
-        if not task_desc:
-            _append_event_task_result(
-                abnormal_results,
-                row_index=row_index,
-                raw_value=row[task_desc_field],
-                display_value=_get_row_display_value(row, display_field),
-                rule_name=rule_name,
-                location=desc_location,
-                message=f"{side_label}任务描述为空，无法参与节日任务校验。",
-                task_group_id=task_group_id,
-                task_id=task_id,
-                error_type="invalid_task_desc",
-                left_value=row[task_desc_field],
-                right_value=None,
-            )
-            continue
-
-        if task_group_id not in seen_group_ids:
-            task_group_order.append(task_group_id)
-            seen_group_ids.add(task_group_id)
-        task_rows.append(
-            _TaskRow(
-                task_group_id=task_group_id,
-                task_id=task_id,
-                task_desc=task_desc,
-                loot=_normalize_text(row[task_loot_field]),
-                row_index=row_index,
-                raw_group_id=row[task_group_field],
-                raw_task_id=row[task_id_field],
-                raw_desc=row[task_desc_field],
-                raw_loot=row[task_loot_field],
-                display_value=_get_row_display_value(row, display_field),
-            )
+        raw_loot = _normalize_text(row[task_loot_field])
+        parse_result = parseLootString(raw_loot, field_label="STR_Loot")
+        tasks.append(
+            {
+                "taskGroupId": task_group_id,
+                "taskId": _normalize_id_text(row[task_id_field]),
+                "desc": _normalize_text(row[task_desc_field]) or "",
+                "rowIndex": _normalize_row_index(row.get("_row_index")),
+                "rewards": list(parse_result.rewards),
+                "warnings": [
+                    issue.message
+                    for issue in [*parse_result.warnings, *parse_result.errors]
+                ],
+            }
         )
+    return tasks
 
-    return task_rows, task_group_order
 
-
-def _match_right_task(
-    left_row: _TaskRow,
+def _build_variable_data(
+    frame: pd.DataFrame,
     *,
-    right_by_group_desc: dict[tuple[str, str], list[_TaskRow]],
-    right_by_task_id: dict[str, list[_TaskRow]],
-) -> tuple[_TaskRow | None, str | None]:
-    primary = right_by_group_desc.get(
-        (left_row.task_group_id, _normalize_desc(left_row.task_desc)),
-        [],
-    )
-    if primary:
-        return primary[0], "group_desc"
-    if not left_row.task_id:
-        return None, None
-    fallback = [
-        row
-        for row in right_by_task_id.get(left_row.task_id, [])
-        if row.task_group_id == left_row.task_group_id
-    ]
-    if not fallback:
-        fallback = right_by_task_id.get(left_row.task_id, [])
-    if fallback:
-        return fallback[0], "task_id"
-    return None, None
+    task_group_field: str,
+    task_id_field: str,
+    task_desc_field: str,
+    task_loot_field: str,
+    task_group_filters: list[str] | None,
+) -> dict[str, dict[str, Any]]:
+    variable_data: dict[str, dict[str, Any]] = {}
+    for _, row in frame.iterrows():
+        task_group_id = _normalize_id_text(row[task_group_field]) or ""
+        if task_group_filters is not None and task_group_id not in task_group_filters:
+            continue
+        row_index = _normalize_row_index(row.get("_row_index"))
+        variable_key = _normalize_text(row.get(COMPOSITE_KEY_FIELD)) or f"{task_group_id}_{row_index}"
+        variable_data[variable_key] = {
+            "INT_TaskID": row[task_id_field],
+            "STR_Title": row["STR_Title"] if "STR_Title" in row.index else None,
+            "STR_Desc": row[task_desc_field],
+            "STR_Loot": row[task_loot_field],
+        }
+    return variable_data
 
 
-def _index_by_group_desc(rows: list[_TaskRow]) -> dict[tuple[str, str], list[_TaskRow]]:
-    result: dict[tuple[str, str], list[_TaskRow]] = {}
-    for row in rows:
-        result.setdefault((row.task_group_id, _normalize_desc(row.task_desc)), []).append(row)
-    return result
-
-
-def _index_by_task_id(rows: list[_TaskRow]) -> dict[str, list[_TaskRow]]:
-    result: dict[str, list[_TaskRow]] = {}
-    for row in rows:
-        if row.task_id:
-            result.setdefault(row.task_id, []).append(row)
-    return result
-
-
-def _append_duplicate_results(
+def _append_validation_result_abnormals(
     abnormal_results: list[dict[str, Any]],
     *,
-    grouped_rows: dict[tuple[str, str], list[_TaskRow]],
+    result: EventTaskRewardValidationTaskResult,
     rule_name: str,
     location: str,
-    error_type: str,
-    message_prefix: str,
-    left_side: bool,
+    missing_location: str,
+    warning_location: str,
 ) -> None:
-    for (_task_group_id, _desc), rows in grouped_rows.items():
-        if len(rows) <= 1:
-            continue
-        first_row = rows[0]
-        for duplicate_row in rows[1:]:
-            _append_event_task_result(
-                abnormal_results,
-                row_index=duplicate_row.row_index,
-                raw_value=duplicate_row.raw_desc,
-                display_value=duplicate_row.display_value,
-                rule_name=rule_name,
-                location=location,
-                message=(
-                    f"{message_prefix}：任务组 {duplicate_row.task_group_id} / "
-                    f"{duplicate_row.task_desc} 在第 {first_row.row_index} 行和 "
-                    f"第 {duplicate_row.row_index} 行重复。"
-                ),
-                task_group_id=duplicate_row.task_group_id,
-                task_id=duplicate_row.task_id,
-                error_type=error_type,
-                left_value=duplicate_row.task_desc if left_side else None,
-                right_value=None if left_side else duplicate_row.task_desc,
-            )
+    if result.error_message == "未找到对应组合变量任务":
+        _append_event_task_result(
+            abnormal_results,
+            row_index=result.feishu_row_index or 0,
+            raw_value=result.task_desc,
+            rule_name=rule_name,
+            location=missing_location,
+            message=(
+                f"EventTask 缺失：任务组 {result.task_group_id} 未找到任务 "
+                f"{result.task_desc}。"
+            ),
+            result=result,
+            error_type="right_missing_task",
+            left_value=result.task_desc,
+            right_value=None,
+        )
+    elif result.error_message == "匹配到多个组合变量任务":
+        _append_event_task_result(
+            abnormal_results,
+            row_index=result.feishu_row_index or 0,
+            raw_value=result.task_desc,
+            rule_name=rule_name,
+            location=location,
+            message=(
+                f"匹配到多个 EventTask 任务：任务组 {result.task_group_id} / "
+                f"{result.task_desc}。"
+            ),
+            result=result,
+            error_type="duplicate_variable_match",
+            left_value=result.task_desc,
+            right_value=None,
+        )
+
+    should_emit_reward_diffs = result.error_message not in {
+        "未找到对应组合变量任务",
+        "匹配到多个组合变量任务",
+    }
+
+    for reward in (result.missing_rewards if should_emit_reward_diffs else []):
+        _append_event_task_result(
+            abnormal_results,
+            row_index=result.feishu_row_index or 0,
+            raw_value=_format_rewards(result.expected_rewards),
+            rule_name=rule_name,
+            location=location,
+            message=(
+                f"EventTask 缺少奖励：任务组 {result.task_group_id} / "
+                f"{result.task_desc} 缺少 {reward.item_id}x{reward.count}。"
+            ),
+            result=result,
+            error_type="missing_reward",
+            item_id=reward.item_id,
+            left_value=_reward_to_dict(reward),
+            right_value=None,
+        )
+    for reward in (result.extra_rewards if should_emit_reward_diffs else []):
+        _append_event_task_result(
+            abnormal_results,
+            row_index=result.feishu_row_index or 0,
+            raw_value=_format_rewards(result.actual_rewards),
+            rule_name=rule_name,
+            location=location,
+            message=(
+                f"EventTask 多余奖励：任务组 {result.task_group_id} / "
+                f"{result.task_desc} 多出 {reward.item_id}x{reward.count}。"
+            ),
+            result=result,
+            error_type="extra_reward",
+            item_id=reward.item_id,
+            left_value=None,
+            right_value=_reward_to_dict(reward),
+        )
+    for mismatch in (result.count_mismatches if should_emit_reward_diffs else []):
+        _append_event_task_result(
+            abnormal_results,
+            row_index=result.feishu_row_index or 0,
+            raw_value=_format_rewards(result.expected_rewards),
+            rule_name=rule_name,
+            location=location,
+            message=(
+                f"奖励数量不一致：任务组 {result.task_group_id} / {result.task_desc} / "
+                f"道具 {mismatch.item_id}，飞书={mismatch.expected_count}，"
+                f"EventTask={mismatch.actual_count}。"
+            ),
+            result=result,
+            error_type="count_mismatch",
+            item_id=mismatch.item_id,
+            left_value=mismatch.expected_count,
+            right_value=mismatch.actual_count,
+            count_mismatch=mismatch,
+        )
+
+    if (
+        result.status == "fail"
+        and not result.missing_rewards
+        and not result.extra_rewards
+        and not result.count_mismatches
+        and result.error_message not in {"未找到对应组合变量任务", "匹配到多个组合变量任务"}
+    ):
+        _append_event_task_result(
+            abnormal_results,
+            row_index=result.feishu_row_index or 0,
+            raw_value=result.task_desc,
+            rule_name=rule_name,
+            location=location,
+            message=result.error_message or "节日任务奖励校验失败。",
+            result=result,
+            error_type="event_task_reward_failed",
+            left_value=_format_rewards(result.expected_rewards),
+            right_value=_format_rewards(result.actual_rewards),
+        )
+
+    for warning in [*result.duplicate_warnings, *result.parse_warnings]:
+        _append_event_task_result(
+            abnormal_results,
+            row_index=result.feishu_row_index or 0,
+            raw_value=warning,
+            rule_name=rule_name,
+            location=warning_location,
+            message=f"Warning：{warning}",
+            result=result,
+            error_type="event_task_warning",
+            left_value=warning,
+            right_value=None,
+        )
+
+
+def _append_extra_variable_task_result(
+    abnormal_results: list[dict[str, Any]],
+    *,
+    extra_task: EventTaskExtraVariableTask,
+    rule_name: str,
+    location: str,
+) -> None:
+    result = build_fixed_result(
+        row_index=0,
+        raw_value=extra_task.task_desc,
+        rule_name=rule_name,
+        location=location,
+        message=(
+            f"飞书任务表缺失：任务组 {extra_task.task_group_id} 未找到 EventTask 任务 "
+            f"{extra_task.task_desc}。"
+        ),
+    )
+    result.update(
+        {
+            "task_group_id": extra_task.task_group_id,
+            "task_desc": extra_task.task_desc,
+            "task_id": extra_task.variable_task_id,
+            "variable_key": extra_task.variable_key,
+            "variable_task_id": extra_task.variable_task_id,
+            "match_strategy": None,
+            "status": "fail",
+            "error_type": "extra_variable_task",
+            "left_value": None,
+            "right_value": _format_rewards(extra_task.actual_rewards),
+            "actual_rewards": [_reward_to_dict(reward) for reward in extra_task.actual_rewards],
+            "parse_warnings": list(extra_task.parse_warnings),
+        }
+    )
+    abnormal_results.append(result)
+
+
+def _append_event_task_result(
+    abnormal_results: list[dict[str, Any]],
+    *,
+    row_index: int,
+    raw_value: Any,
+    rule_name: str,
+    location: str,
+    message: str,
+    result: EventTaskRewardValidationTaskResult,
+    error_type: str,
+    left_value: Any,
+    right_value: Any,
+    item_id: int | None = None,
+    count_mismatch: RewardCountMismatch | None = None,
+) -> None:
+    fixed_result = build_fixed_result(
+        row_index=row_index,
+        raw_value=raw_value,
+        display_value=result.task_desc,
+        rule_name=rule_name,
+        location=location,
+        message=message,
+    )
+    fixed_result.update(
+        {
+            "task_group_id": result.task_group_id,
+            "task_desc": result.task_desc,
+            "task_id": result.variable_task_id,
+            "item_id": item_id,
+            "variable_key": result.variable_key,
+            "variable_task_id": result.variable_task_id,
+            "match_strategy": result.match_strategy,
+            "status": result.status,
+            "error_type": error_type,
+            "left_value": left_value,
+            "right_value": right_value,
+            "expected_rewards": [
+                _reward_to_dict(reward) for reward in result.expected_rewards
+            ],
+            "actual_rewards": [_reward_to_dict(reward) for reward in result.actual_rewards],
+            "missing_rewards": [
+                _reward_to_dict(reward) for reward in result.missing_rewards
+            ],
+            "extra_rewards": [_reward_to_dict(reward) for reward in result.extra_rewards],
+            "count_mismatches": [
+                _mismatch_to_dict(mismatch) for mismatch in result.count_mismatches
+            ],
+            "duplicate_warnings": list(result.duplicate_warnings),
+            "parse_warnings": list(result.parse_warnings),
+            "error_message": result.error_message,
+        }
+    )
+    if count_mismatch is not None:
+        fixed_result["count_mismatch"] = _mismatch_to_dict(count_mismatch)
+    abnormal_results.append(fixed_result)
+
+
+def _get_match_strategy(rule: ValidationRule) -> str:
+    raw_value = rule.params.get("event_task_match_strategy") or rule.params.get("match_strategy")
+    if isinstance(raw_value, str) and raw_value.strip():
+        return raw_value.strip()
+    return "groupId_desc_then_taskId"
+
+
+def _reward_to_dict(reward: RewardItem) -> dict[str, Any]:
+    return {
+        "type": reward.type,
+        "item_id": reward.item_id,
+        "itemId": reward.item_id,
+        "count": reward.count,
+        "name": reward.name,
+        "source": reward.source,
+    }
+
+
+def _mismatch_to_dict(mismatch: RewardCountMismatch) -> dict[str, Any]:
+    return {
+        "item_id": mismatch.item_id,
+        "itemId": mismatch.item_id,
+        "expected_count": mismatch.expected_count,
+        "expectedCount": mismatch.expected_count,
+        "actual_count": mismatch.actual_count,
+        "actualCount": mismatch.actual_count,
+    }
+
+
+def _format_rewards(rewards: list[RewardItem]) -> str:
+    if not rewards:
+        return "无"
+    return ", ".join(f"{reward.item_id}x{reward.count}" for reward in rewards)
 
 
 def _normalize_task_group_id_filters(value: Any) -> list[str] | None:
@@ -487,74 +512,11 @@ def _normalize_text(value: Any) -> str | None:
     return text or None
 
 
-def _normalize_desc(value: Any) -> str:
-    return re.sub(r"\s+", "", str(value or "").strip())
-
-
-def _normalize_loot(value: Any) -> str:
-    return "" if value is None else str(value).strip()
-
-
-def _extract_task_group_id_from_key(value: Any) -> str | None:
-    text = _normalize_text(value)
-    if not text or "_" not in text:
-        return None
-    return _normalize_id_text(text.split("_", 1)[0])
-
-
-def _merge_task_group_order(left_order: list[str], right_order: list[str]) -> list[str]:
-    result: list[str] = []
-    seen: set[str] = set()
-    for task_group_id in [*left_order, *right_order]:
-        if task_group_id in seen:
-            continue
-        result.append(task_group_id)
-        seen.add(task_group_id)
-    return result
-
-
-def _task_identity(row: _TaskRow) -> tuple[int, str, str]:
-    return (row.row_index, row.task_group_id, _normalize_desc(row.task_desc))
-
-
-def _display_value(value: Any) -> str:
-    normalized = _normalize_text(value)
-    return normalized if normalized is not None else "<空>"
-
-
-def _append_event_task_result(
-    abnormal_results: list[dict[str, Any]],
-    *,
-    row_index: int,
-    raw_value: Any,
-    rule_name: str,
-    location: str,
-    message: str,
-    task_group_id: str | None,
-    task_id: str | None,
-    error_type: str,
-    left_value: Any,
-    right_value: Any,
-    display_value: Any = None,
-) -> None:
-    result = build_fixed_result(
-        row_index=row_index,
-        raw_value=raw_value,
-        display_value=display_value,
-        rule_name=rule_name,
-        location=location,
-        message=message,
-    )
-    result.update(
-        {
-            "task_group_id": task_group_id,
-            "task_id": task_id,
-            "error_type": error_type,
-            "left_value": left_value,
-            "right_value": right_value,
-        }
-    )
-    abnormal_results.append(result)
+def _normalize_row_index(value: Any) -> int:
+    normalized = _normalize_id_text(value)
+    if normalized and re.fullmatch(r"[+-]?\d+", normalized):
+        return int(normalized)
+    return 0
 
 
 def _ensure_composite_fields(

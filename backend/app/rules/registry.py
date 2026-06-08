@@ -20,6 +20,7 @@ RuleCategory = Literal[
     "pipeline",
     "mapping",
     "package_items",
+    "event_task",
 ]
 
 
@@ -63,6 +64,16 @@ RULE_METADATA: dict[str, RuleMetadata] = {
         "package_items_compare",
         "IAP礼包校验",
         "package_items",
+    ),
+    "event_task_reward": RuleMetadata(
+        "event_task_reward",
+        "节日任务奖励校验",
+        "event_task",
+    ),
+    "event_task_validation": RuleMetadata(
+        "event_task_validation",
+        "节日任务奖励校验（兼容）",
+        "event_task",
     ),
 }
 

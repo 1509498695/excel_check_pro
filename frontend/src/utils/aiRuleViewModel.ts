@@ -82,6 +82,8 @@ const ruleTypeLabelMap: Record<FixedRuleType, string> = {
   multi_composite_pipeline_check: '多组串行',
   multi_composite_mapping_check: '多组映射',
   package_items_compare: 'IAP礼包校验',
+  event_task_reward: '节日任务奖励校验',
+  event_task_validation: '节日任务奖励校验（兼容）',
 }
 
 export function getAiRuleTypeLabel(ruleType?: FixedRuleType | null): string {

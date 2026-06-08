@@ -15,6 +15,7 @@ def variable_same_definition(left: VariableTag, right: VariableTag) -> bool:
         and (left.column or "") == (right.column or "")
         and (left.columns or []) == (right.columns or [])
         and (left.key_column or "") == (right.key_column or "")
+        and (left.filters or []) == (right.filters or [])
         and bool(left.append_index_to_key) == bool(right.append_index_to_key)
     )
 
@@ -29,6 +30,7 @@ def remap_variable_source(variable: VariableTag, next_source_id: str) -> Variabl
         column=variable.column,
         columns=variable.columns,
         key_column=variable.key_column,
+        filters=variable.filters,
         append_index_to_key=variable.append_index_to_key,
         expected_type=variable.expected_type,
     )

@@ -25,6 +25,10 @@ from backend.app.fixed_rules.config_common import (
     _normalize_sequence_numeric,
 )
 from backend.app.fixed_rules.dual_composite_normalizer import _normalize_dual_composite_rule
+from backend.app.fixed_rules.event_task_normalizer import (
+    SUPPORTED_EVENT_TASK_RULE_TYPES,
+    _normalize_event_task_reward_rule,
+)
 from backend.app.fixed_rules.mapping_rule_normalizer import _normalize_multi_composite_mapping_config
 from backend.app.fixed_rules.package_items_normalizer import _normalize_package_items_compare_rule
 from backend.app.fixed_rules.pipeline_rule_normalizer import _normalize_multi_composite_pipeline_config
@@ -77,8 +81,12 @@ def _normalize_rules(
         is_runtime_package_rule = (
             rule_type == "package_items_compare" and rule.package_parse_config is not None
         )
+        is_runtime_event_task_rule = (
+            rule_type in SUPPORTED_EVENT_TASK_RULE_TYPES
+            and rule.event_task_parse_config is not None
+        )
         target_variable = variable_map.get(target_variable_tag)
-        if not is_node_driven_rule and not is_runtime_package_rule:
+        if not is_node_driven_rule and not is_runtime_package_rule and not is_runtime_event_task_rule:
             if not target_variable_tag:
                 raise ValueError(f"???? '{rule_id}' ?? target_variable_tag?")
             if target_variable is None:
@@ -105,12 +113,24 @@ def _normalize_rules(
         normalized_mapping_config: MultiCompositeMappingConfig | None = None
         normalized_display_field: str | None = None
         normalized_package_parse_config = rule.package_parse_config
+        normalized_event_task_parse_config = rule.event_task_parse_config
         normalized_left_package_field: str | None = None
         normalized_left_item_field: str | None = None
         normalized_left_count_field: str | None = None
         normalized_right_package_field: str | None = None
         normalized_right_items_field: str | None = None
         normalized_package_id_filter: str | None = None
+        normalized_left_task_group_field: str | None = None
+        normalized_left_task_id_field: str | None = None
+        normalized_left_task_desc_field: str | None = None
+        normalized_left_task_loot_field: str | None = None
+        normalized_right_task_group_field: str | None = None
+        normalized_right_task_id_field: str | None = None
+        normalized_right_task_desc_field: str | None = None
+        normalized_right_task_loot_field: str | None = None
+        normalized_task_group_id_filter: str | None = None
+        normalized_event_task_match_strategy: str | None = None
+        normalized_ai_assist_mode: str | None = None
 
         if not is_node_driven_rule and target_variable is not None:
             if variable_kind == "single" and rule_type == "composite_condition_check":
@@ -120,6 +140,7 @@ def _normalize_rules(
             if variable_kind == "single" and rule_type in {
                 "dual_composite_compare",
                 "package_items_compare",
+                *SUPPORTED_EVENT_TASK_RULE_TYPES,
             }:
                 raise ValueError(
                     f"规则 '{rule_id}' 引用了单变量 '{target_variable_tag}'，不能保存双组合变量比对。"
@@ -128,6 +149,7 @@ def _normalize_rules(
                 "composite_condition_check",
                 "dual_composite_compare",
                 "package_items_compare",
+                *SUPPORTED_EVENT_TASK_RULE_TYPES,
             }:
                 raise ValueError(
                     f"规则 '{rule_id}' 引用了组合变量 '{target_variable_tag}'，不能保存单变量规则。"
@@ -269,6 +291,38 @@ def _normalize_rules(
                 variable_map=variable_map,
                 allow_runtime_left_variable=is_runtime_package_rule,
             )
+        elif rule_type in SUPPORTED_EVENT_TASK_RULE_TYPES:
+            (
+                normalized_reference_variable_tag,
+                normalized_left_task_group_field,
+                normalized_left_task_id_field,
+                normalized_left_task_desc_field,
+                normalized_left_task_loot_field,
+                normalized_right_task_group_field,
+                normalized_right_task_id_field,
+                normalized_right_task_desc_field,
+                normalized_right_task_loot_field,
+                normalized_task_group_id_filter,
+                normalized_event_task_match_strategy,
+                normalized_ai_assist_mode,
+            ) = _normalize_event_task_reward_rule(
+                rule_id=rule_id,
+                left_variable=target_variable,
+                right_variable_tag=reference_variable_tag,
+                left_task_group_field=rule.left_task_group_field,
+                left_task_id_field=rule.left_task_id_field,
+                left_task_desc_field=rule.left_task_desc_field,
+                left_task_loot_field=rule.left_task_loot_field,
+                right_task_group_field=rule.right_task_group_field,
+                right_task_id_field=rule.right_task_id_field,
+                right_task_desc_field=rule.right_task_desc_field,
+                right_task_loot_field=rule.right_task_loot_field,
+                task_group_id_filter=rule.task_group_id_filter,
+                event_task_match_strategy=rule.event_task_match_strategy,
+                ai_assist_mode=rule.ai_assist_mode,
+                variable_map=variable_map,
+                allow_runtime_left_variable=is_runtime_event_task_rule,
+            )
         elif rule_type == "multi_composite_pipeline_check":
             normalized_pipeline_config = _normalize_multi_composite_pipeline_config(
                 rule_id=rule_id,
@@ -301,6 +355,8 @@ def _normalize_rules(
                 rule_id=rule_id,
                 group_id=group_id,
                 rule_name=rule_name,
+                enabled=rule.enabled,
+                description=rule.description,
                 target_variable_tag=target_variable_tag,
                 display_field=normalized_display_field,
                 rule_type=rule_type,
@@ -322,12 +378,24 @@ def _normalize_rules(
                 pipeline_config=normalized_pipeline_config,
                 mapping_config=normalized_mapping_config,
                 package_parse_config=normalized_package_parse_config,
+                event_task_parse_config=normalized_event_task_parse_config,
                 left_package_field=normalized_left_package_field,
                 left_item_field=normalized_left_item_field,
                 left_count_field=normalized_left_count_field,
                 right_package_field=normalized_right_package_field,
                 right_items_field=normalized_right_items_field,
                 package_id_filter=normalized_package_id_filter,
+                left_task_group_field=normalized_left_task_group_field,
+                left_task_id_field=normalized_left_task_id_field,
+                left_task_desc_field=normalized_left_task_desc_field,
+                left_task_loot_field=normalized_left_task_loot_field,
+                right_task_group_field=normalized_right_task_group_field,
+                right_task_id_field=normalized_right_task_id_field,
+                right_task_desc_field=normalized_right_task_desc_field,
+                right_task_loot_field=normalized_right_task_loot_field,
+                event_task_match_strategy=normalized_event_task_match_strategy,
+                ai_assist_mode=normalized_ai_assist_mode,
+                task_group_id_filter=normalized_task_group_id_filter,
             )
         )
         seen_rule_ids.add(rule_id)

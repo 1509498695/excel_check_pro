@@ -21,6 +21,8 @@ FixedRuleType = Literal[
     "multi_composite_pipeline_check",
     "multi_composite_mapping_check",
     "package_items_compare",
+    "event_task_reward",
+    "event_task_validation",
 ]
 FixedRuleOperator = Literal["eq", "ne", "gt", "lt"]
 ExpectedValueMode = Literal["single", "set"]
@@ -58,6 +60,22 @@ PackagePreviewStrategyUsed = Literal["manual", "ai"]
 PackageItemsParseStrategy = PackageParseStrategy
 PackageItemsAiParseMode = PackageAiParseMode
 PackageItemsValidationScope = PackageValidationScope
+EventTaskParseStrategy = Literal["group_desc"]
+EventTaskAiParseMode = Literal["auto", "enabled", "disabled"]
+EventTaskValidationScope = Literal["all", "specified"]
+EventTaskParseStatus = Literal["success", "failed"]
+EventTaskParseMode = Literal["rule"]
+EventTaskAiSuggestionType = Literal[
+    "field_mapping_suggestion",
+    "match_suggestion",
+    "error_explanation",
+]
+EventTaskRewardMatchStrategy = Literal[
+    "groupId_desc",
+    "groupId_taskId",
+    "groupId_desc_then_taskId",
+]
+EventTaskAiAssistMode = Literal["auto", "on", "off"]
 
 
 UNGROUPED_GROUP_ID = "ungrouped"
@@ -230,6 +248,23 @@ def _normalize_package_ai_parse_mode(value: object) -> object:
     return value
 
 
+def _normalize_event_task_ai_parse_mode(value: object) -> object:
+    """预览解析沿用 enabled/disabled，同时兼容外部 on/off。"""
+    return _normalize_package_ai_parse_mode(value)
+
+
+def _normalize_event_task_ai_assist_mode(value: object) -> object:
+    """规则保存字段使用 on/off，同时兼容旧 UI 的 enabled/disabled。"""
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized == "enabled":
+            return "on"
+        if normalized == "disabled":
+            return "off"
+        return normalized
+    return value
+
+
 def _strip_optional_string(value: object) -> object:
     if isinstance(value, str):
         stripped = value.strip()
@@ -271,6 +306,333 @@ class PackageItemsParseConfig(BaseModel):
     @classmethod
     def _normalize_ai_parse_mode(cls, value: object) -> object:
         return _normalize_package_ai_parse_mode(value)
+
+
+class EventTaskLootFieldMapping(BaseModel):
+    """描述节日任务宽表中一组奖励字段的人工确认映射。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    item_id: str
+    count: str
+    name: str | None = None
+    value_type: str | None = None
+
+    @field_validator("item_id", "count", "name", "value_type", mode="before")
+    @classmethod
+    def _strip_text(cls, value: object) -> object:
+        return _strip_optional_string(value)
+
+
+class EventTaskFieldMapping(BaseModel):
+    """用户确认后的节日任务飞书表字段映射。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    header_row_index: int | None = Field(default=None, ge=1)
+    task_group_id: str | None = None
+    task_id: str | None = None
+    day: str | None = None
+    task_desc: str | None = None
+    loot: str | None = None
+    loot_groups: list[EventTaskLootFieldMapping] = Field(default_factory=list)
+
+    @field_validator(
+        "task_group_id",
+        "task_id",
+        "day",
+        "task_desc",
+        "loot",
+        mode="before",
+    )
+    @classmethod
+    def _strip_optional_mapping_text(cls, value: object) -> object:
+        return _strip_optional_string(value)
+
+
+class EventTaskAiSuggestion(BaseModel):
+    """AI 对节日任务解析/匹配/错误解释的辅助建议。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: EventTaskAiSuggestionType
+    confidence: float = Field(ge=0, le=1)
+    suggestions: list[dict[str, Any]] = Field(default_factory=list)
+    reason: str = ""
+    requiresUserConfirm: bool = True
+    requires_user_confirm: bool = True
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def _strip_reason(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class EventTaskParseConfig(BaseModel):
+    """描述节日任务飞书表预解析配置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feishu_source_id: str
+    feishu_sheet_id: str
+    feishu_sheet_name: str | None = None
+    config_variable_tag: str | None = None
+    parse_strategy: EventTaskParseStrategy = "group_desc"
+    ai_parse_mode: EventTaskAiParseMode = "auto"
+    validation_scope: EventTaskValidationScope = "all"
+    task_group_id_filter: str | None = None
+    key_delimiter: str = "_"
+    fallback_match_field: str = "INT_TaskID"
+    event_task_field_mapping: EventTaskFieldMapping | None = None
+
+    @field_validator("feishu_source_id", "feishu_sheet_id", mode="before")
+    @classmethod
+    def _strip_required_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator(
+        "feishu_sheet_name",
+        "config_variable_tag",
+        "task_group_id_filter",
+        "key_delimiter",
+        "fallback_match_field",
+        mode="before",
+    )
+    @classmethod
+    def _strip_optional_text(cls, value: object) -> object:
+        return _strip_optional_string(value)
+
+    @field_validator("ai_parse_mode", mode="before")
+    @classmethod
+    def _normalize_ai_parse_mode(cls, value: object) -> object:
+        return _normalize_event_task_ai_parse_mode(value)
+
+
+class EventTaskPreviewRewardItem(BaseModel):
+    """描述节日任务解析预览中的单个奖励。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = "item"
+    item_id: int
+    itemId: int
+    count: int
+    name: str | None = None
+
+
+class EventTaskPlanRow(BaseModel):
+    """描述从节日任务飞书表中抽取出的单条任务明细。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    row_index: int
+    task_group_id: str
+    task_id: str | None = None
+    day: int | None = None
+    task_desc: str
+    loot: str | None = None
+    rewards: list[EventTaskPreviewRewardItem] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    raw_row: list[Any] = Field(default_factory=list)
+
+
+class EventTaskPreviewDetailRow(BaseModel):
+    """描述节日任务解析预览中的单条明细。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    row_index: int
+    task_group_id: str
+    task_id: str | None = None
+    day: int | None = None
+    task_desc: str
+    loot: str | None = None
+    rewards: list[EventTaskPreviewRewardItem] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    config_key: str | None = None
+    config_task_desc: str | None = None
+    config_task_id: str | None = None
+    config_loot: str | None = None
+    match_type: str | None = None
+    match_status: str | None = None
+
+
+class EventTaskPreviewSampleRow(BaseModel):
+    """面向前端解析预览摘要的节日任务示例行。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rowIndex: int
+    taskGroupId: str
+    taskId: str | None = None
+    day: int | None = None
+    desc: str
+    rewards: list[EventTaskPreviewRewardItem] = Field(default_factory=list)
+    rawLoot: str | None = None
+    warnings: list[str] = Field(default_factory=list)
+
+
+class EventTaskPreviewResult(BaseModel):
+    """节日任务飞书表解析结果。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    parse_status: EventTaskParseStatus = "failed"
+    parse_mode: EventTaskParseMode = "rule"
+    ai_used: bool = False
+    task_group_ids: list[str] = Field(default_factory=list)
+    total_rows: int = 0
+    parsed_rows: int = 0
+    detail_row_count: int = 0
+    reward_group_count: int = 0
+    rows: list[EventTaskPlanRow] = Field(default_factory=list)
+    detail_rows: list[EventTaskPreviewDetailRow] = Field(default_factory=list)
+    raw_sheet_name: str | None = None
+    raw_values: list[list[Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+
+
+class EventTaskPreviewRequest(BaseModel):
+    """面向个人节日任务弹窗的预览请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feishu_source_id: str
+    sheet_id: str = Field(validation_alias=AliasChoices("sheet_id", "feishu_sheet_id"))
+    feishu_sheet_name: str | None = None
+    config_variable_tag: str | None = None
+    parse_strategy: EventTaskParseStrategy = "group_desc"
+    ai_parse_mode: EventTaskAiParseMode = "auto"
+    ai_assist_mode: EventTaskAiAssistMode = "auto"
+    validation_scope: EventTaskValidationScope = "all"
+    task_group_id_filter: str | None = None
+    key_delimiter: str = "_"
+    fallback_match_field: str = "INT_TaskID"
+    event_task_field_mapping: EventTaskFieldMapping | None = None
+
+    @field_validator("feishu_source_id", "sheet_id", mode="before")
+    @classmethod
+    def _strip_required_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator(
+        "feishu_sheet_name",
+        "config_variable_tag",
+        "task_group_id_filter",
+        "key_delimiter",
+        "fallback_match_field",
+        mode="before",
+    )
+    @classmethod
+    def _strip_optional_text(cls, value: object) -> object:
+        return _strip_optional_string(value)
+
+    @field_validator("ai_parse_mode", mode="before")
+    @classmethod
+    def _normalize_ai_parse_mode(cls, value: object) -> object:
+        return _normalize_event_task_ai_parse_mode(value)
+
+    @field_validator("ai_assist_mode", mode="before")
+    @classmethod
+    def _normalize_ai_assist_mode(cls, value: object) -> object:
+        return _normalize_event_task_ai_assist_mode(value)
+
+
+class EventTaskPreviewResponse(BaseModel):
+    """面向个人节日任务弹窗的预览响应。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    success: bool
+    message: str = ""
+    warnings: list[str] = Field(default_factory=list)
+    errors: list[str] = Field(default_factory=list)
+    taskGroupIds: list[str] = Field(default_factory=list)
+    task_group_ids: list[str] = Field(default_factory=list)
+    totalRows: int = 0
+    total_rows: int = 0
+    parsedRows: int = 0
+    parsed_rows: int = 0
+    detail_row_count: int = 0
+    rewardGroupCount: int = 0
+    reward_group_count: int = 0
+    sampleRows: list[EventTaskPreviewSampleRow] = Field(default_factory=list)
+    preview_rows: list[EventTaskPreviewDetailRow] = Field(default_factory=list)
+    rawSheetName: str | None = None
+    raw_sheet_name: str | None = None
+    parse_strategy_used: str | None = None
+    ai_used: bool = False
+    aiSuggestions: list[EventTaskAiSuggestion] = Field(default_factory=list)
+    ai_suggestions: list[EventTaskAiSuggestion] = Field(default_factory=list)
+    aiSuggestionWarnings: list[str] = Field(default_factory=list)
+    ai_suggestion_warnings: list[str] = Field(default_factory=list)
+    aiSuggestionUsed: bool = False
+    ai_suggestion_used: bool = False
+
+
+class EventTaskRewardValidationRequest(BaseModel):
+    """个人校验节日任务奖励即时校验请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    feishu_source_id: str
+    sheet_id: str = Field(validation_alias=AliasChoices("sheet_id", "feishu_sheet_id"))
+    feishu_sheet_name: str | None = None
+    config_variable_tag: str = Field(
+        validation_alias=AliasChoices("config_variable_tag", "variableName", "variable_name")
+    )
+    match_strategy: EventTaskRewardMatchStrategy = "groupId_desc_then_taskId"
+    ai_assist_mode: EventTaskAiAssistMode = "auto"
+    validation_scope: EventTaskValidationScope = "all"
+    task_group_id_filter: str | None = None
+    parse_strategy: EventTaskParseStrategy = "group_desc"
+    ai_parse_mode: EventTaskAiParseMode = "auto"
+    key_delimiter: str = "_"
+    fallback_match_field: str = "INT_TaskID"
+    event_task_field_mapping: EventTaskFieldMapping | None = None
+
+    @field_validator("feishu_source_id", "sheet_id", "config_variable_tag", mode="before")
+    @classmethod
+    def _strip_required_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator(
+        "feishu_sheet_name",
+        "task_group_id_filter",
+        "key_delimiter",
+        "fallback_match_field",
+        mode="before",
+    )
+    @classmethod
+    def _strip_optional_text(cls, value: object) -> object:
+        return _strip_optional_string(value)
+
+    @field_validator("ai_assist_mode", mode="before")
+    @classmethod
+    def _normalize_ai_assist_mode(cls, value: object) -> object:
+        return _normalize_event_task_ai_assist_mode(value)
+
+    @field_validator("ai_parse_mode", mode="before")
+    @classmethod
+    def _normalize_ai_parse_mode(cls, value: object) -> object:
+        return _normalize_event_task_ai_parse_mode(value)
+
+
+class EventTaskAiSuggestionRequest(EventTaskRewardValidationRequest):
+    """主动请求节日任务 AI 辅助建议。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    analysis_context: Literal["preview", "validation"] = "validation"
 
 
 class PackageFieldMapping(BaseModel):
@@ -452,6 +814,8 @@ class FixedRuleDefinition(BaseModel):
     rule_id: str
     group_id: str
     rule_name: str
+    enabled: bool = True
+    description: str | None = None
     target_variable_tag: str | None = None
     display_field: str | None = None
     binding: FixedRuleBinding | None = None
@@ -474,25 +838,52 @@ class FixedRuleDefinition(BaseModel):
     pipeline_config: MultiCompositePipelineConfig | None = None
     mapping_config: MultiCompositeMappingConfig | None = None
     package_parse_config: PackageItemsParseConfig | None = None
+    event_task_parse_config: EventTaskParseConfig | None = None
     left_package_field: str | None = None
     left_item_field: str | None = None
     left_count_field: str | None = None
     right_package_field: str | None = None
     right_items_field: str | None = None
     package_id_filter: str | None = None
+    left_task_group_field: str | None = None
+    left_task_id_field: str | None = None
+    left_task_desc_field: str | None = None
+    left_task_loot_field: str | None = None
+    right_task_group_field: str | None = None
+    right_task_id_field: str | None = None
+    right_task_desc_field: str | None = None
+    right_task_loot_field: str | None = None
+    event_task_match_strategy: EventTaskRewardMatchStrategy | None = None
+    ai_assist_mode: EventTaskAiAssistMode | None = None
+    task_group_id_filter: str | None = None
 
     @field_validator(
+        "description",
         "left_package_field",
         "left_item_field",
         "left_count_field",
         "right_package_field",
         "right_items_field",
         "package_id_filter",
+        "left_task_group_field",
+        "left_task_id_field",
+        "left_task_desc_field",
+        "left_task_loot_field",
+        "right_task_group_field",
+        "right_task_id_field",
+        "right_task_desc_field",
+        "right_task_loot_field",
+        "task_group_id_filter",
         mode="before",
     )
     @classmethod
-    def _strip_optional_package_string(cls, value: object) -> object:
+    def _strip_optional_rule_string(cls, value: object) -> object:
         return _strip_optional_string(value)
+
+    @field_validator("ai_assist_mode", mode="before")
+    @classmethod
+    def _normalize_ai_assist_mode(cls, value: object) -> object:
+        return _normalize_event_task_ai_assist_mode(value)
 
 
 class FixedRulesConfigIssue(BaseModel):

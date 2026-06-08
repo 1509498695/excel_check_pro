@@ -4,6 +4,42 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+CompositeFilterOperator = Literal[
+    "eq",
+    "ne",
+    "gt",
+    "lt",
+    "not_null",
+    "contains",
+    "not_contains",
+]
+CompositeAssertionOperator = Literal[
+    "eq",
+    "ne",
+    "gt",
+    "lt",
+    "not_null",
+    "regex",
+    "unique",
+    "duplicate_required",
+]
+CompositeValueSource = Literal["literal", "field"]
+ExpectedValueMode = Literal["single", "set"]
+
+
+class CompositeCondition(BaseModel):
+    """描述组合变量筛选或断言中的单条条件。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    condition_id: str
+    field: str
+    operator: CompositeFilterOperator | CompositeAssertionOperator
+    value_source: CompositeValueSource | None = None
+    expected_value: str | None = None
+    expected_value_mode: ExpectedValueMode | None = None
+    expected_field: str | None = None
+
 
 class DataSource(BaseModel):
     """描述单个数据源的基础配置。"""
@@ -30,6 +66,7 @@ class VariableTag(BaseModel):
     column: str | None = None
     columns: list[str] | None = None
     key_column: str | None = None
+    filters: list[CompositeCondition] = Field(default_factory=list)
     append_index_to_key: bool = False
     expected_type: Literal["int", "str", "json"] | None = None
 

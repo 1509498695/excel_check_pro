@@ -657,6 +657,8 @@ export const useWorkbenchStore = defineStore('workbench', {
         rule_id: rule.rule_id ?? createEntityId('wb-rule'),
         group_id: rule.group_id,
         rule_name: rule.rule_name.trim(),
+        enabled: rule.enabled ?? true,
+        description: rule.description?.trim() || undefined,
         target_variable_tag: normalizedTargetTag.trim(),
         display_field: rule.display_field?.trim() || undefined,
         rule_type: rule.rule_type,
@@ -672,7 +674,9 @@ export const useWorkbenchStore = defineStore('workbench', {
         reference_variable_tag:
           rule.rule_type === 'cross_table_mapping' ||
           rule.rule_type === 'dual_composite_compare' ||
-          rule.rule_type === 'package_items_compare'
+          rule.rule_type === 'package_items_compare' ||
+          rule.rule_type === 'event_task_reward' ||
+          rule.rule_type === 'event_task_validation'
             ? rule.reference_variable_tag?.trim() || undefined
             : undefined,
         sequence_direction:
@@ -763,6 +767,80 @@ export const useWorkbenchStore = defineStore('workbench', {
           rule.package_parse_config?.validation_scope === 'specified'
             ? rule.package_id_filter?.trim() ||
               rule.package_parse_config?.package_id_filter?.trim() ||
+              undefined
+            : undefined,
+        event_task_parse_config:
+          rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation'
+            ? {
+                feishu_source_id: rule.event_task_parse_config?.feishu_source_id?.trim() ?? '',
+                feishu_sheet_id: rule.event_task_parse_config?.feishu_sheet_id?.trim() ?? '',
+                feishu_sheet_name:
+                  rule.event_task_parse_config?.feishu_sheet_name?.trim() || undefined,
+                config_variable_tag:
+                  rule.event_task_parse_config?.config_variable_tag?.trim() ||
+                  rule.reference_variable_tag?.trim() ||
+                  undefined,
+                parse_strategy: rule.event_task_parse_config?.parse_strategy ?? 'group_desc',
+                ai_parse_mode: rule.event_task_parse_config?.ai_parse_mode ?? 'auto',
+                validation_scope: rule.event_task_parse_config?.validation_scope ?? 'all',
+                task_group_id_filter:
+                  rule.event_task_parse_config?.validation_scope === 'specified'
+                    ? rule.event_task_parse_config?.task_group_id_filter?.trim() ||
+                      rule.task_group_id_filter?.trim() ||
+                      undefined
+                    : undefined,
+                key_delimiter: rule.event_task_parse_config?.key_delimiter?.trim() || '_',
+                fallback_match_field:
+                  rule.event_task_parse_config?.fallback_match_field?.trim() || 'INT_TaskID',
+                event_task_field_mapping:
+                  rule.event_task_parse_config?.event_task_field_mapping ?? undefined,
+              }
+            : undefined,
+        left_task_group_field:
+          rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation'
+            ? rule.left_task_group_field?.trim() || '任务组ID'
+            : undefined,
+        left_task_id_field:
+          rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation'
+            ? rule.left_task_id_field?.trim() || 'INT_TaskID'
+            : undefined,
+        left_task_desc_field:
+          rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation'
+            ? rule.left_task_desc_field?.trim() || '任务描述'
+            : undefined,
+        left_task_loot_field:
+          rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation'
+            ? rule.left_task_loot_field?.trim() || 'STR_Loot'
+            : undefined,
+        right_task_group_field:
+          rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation'
+            ? rule.right_task_group_field?.trim() || 'INT_ID'
+            : undefined,
+        right_task_id_field:
+          rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation'
+            ? rule.right_task_id_field?.trim() || 'INT_TaskID'
+            : undefined,
+        right_task_desc_field:
+          rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation'
+            ? rule.right_task_desc_field?.trim() || 'STR_Desc'
+            : undefined,
+        right_task_loot_field:
+          rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation'
+            ? rule.right_task_loot_field?.trim() || 'STR_Loot'
+            : undefined,
+        event_task_match_strategy:
+          rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation'
+            ? rule.event_task_match_strategy ?? 'groupId_desc_then_taskId'
+            : undefined,
+        ai_assist_mode:
+          rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation'
+            ? rule.ai_assist_mode ?? 'auto'
+            : undefined,
+        task_group_id_filter:
+          (rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation') &&
+          rule.event_task_parse_config?.validation_scope === 'specified'
+            ? rule.task_group_id_filter?.trim() ||
+              rule.event_task_parse_config?.task_group_id_filter?.trim() ||
               undefined
             : undefined,
       }

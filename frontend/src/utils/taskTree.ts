@@ -415,6 +415,170 @@ function normalizeKnownRule(rule: ValidationRule, availableTags: Set<string>): V
     }
   }
 
+  if (rule.rule_type === 'event_task_reward' || rule.rule_type === 'event_task_validation') {
+    const referenceTag =
+      typeof rule.params.reference_variable_tag === 'string'
+        ? rule.params.reference_variable_tag.trim()
+        : typeof rule.params.right_tag === 'string'
+          ? rule.params.right_tag.trim()
+          : ''
+    const ruleName = typeof rule.params.rule_name === 'string' ? rule.params.rule_name.trim() : ''
+    const rightTaskGroupField =
+      typeof rule.params.right_task_group_field === 'string'
+        ? rule.params.right_task_group_field.trim()
+        : 'INT_ID'
+    const rightTaskIdField =
+      typeof rule.params.right_task_id_field === 'string'
+        ? rule.params.right_task_id_field.trim()
+        : 'INT_TaskID'
+    const rightTaskDescField =
+      typeof rule.params.right_task_desc_field === 'string'
+        ? rule.params.right_task_desc_field.trim()
+        : 'STR_Desc'
+    const rightTaskLootField =
+      typeof rule.params.right_task_loot_field === 'string'
+        ? rule.params.right_task_loot_field.trim()
+        : 'STR_Loot'
+    const leftTaskGroupField =
+      typeof rule.params.left_task_group_field === 'string'
+        ? rule.params.left_task_group_field.trim()
+        : '任务组ID'
+    const leftTaskIdField =
+      typeof rule.params.left_task_id_field === 'string'
+        ? rule.params.left_task_id_field.trim()
+        : 'INT_TaskID'
+    const leftTaskDescField =
+      typeof rule.params.left_task_desc_field === 'string'
+        ? rule.params.left_task_desc_field.trim()
+        : '任务描述'
+    const leftTaskLootField =
+      typeof rule.params.left_task_loot_field === 'string'
+        ? rule.params.left_task_loot_field.trim()
+        : 'STR_Loot'
+    const matchStrategy =
+      typeof rule.params.event_task_match_strategy === 'string'
+        ? rule.params.event_task_match_strategy.trim()
+        : typeof rule.params.match_strategy === 'string'
+          ? rule.params.match_strategy.trim()
+          : 'groupId_desc_then_taskId'
+    const aiAssistMode =
+      typeof rule.params.ai_assist_mode === 'string' ? rule.params.ai_assist_mode.trim() : 'auto'
+    const taskGroupIdFilter =
+      typeof rule.params.task_group_id_filter === 'string'
+        ? rule.params.task_group_id_filter.trim()
+        : ''
+    const parseConfig =
+      rule.params.event_task_parse_config != null && typeof rule.params.event_task_parse_config === 'object'
+        ? (rule.params.event_task_parse_config as Record<string, unknown>)
+        : null
+    const feishuSourceId =
+      typeof parseConfig?.feishu_source_id === 'string' ? parseConfig.feishu_source_id.trim() : ''
+    const feishuSheetId =
+      typeof parseConfig?.feishu_sheet_id === 'string' ? parseConfig.feishu_sheet_id.trim() : ''
+    const feishuSheetName =
+      typeof parseConfig?.feishu_sheet_name === 'string' ? parseConfig.feishu_sheet_name.trim() : ''
+    const parseStrategy =
+      typeof parseConfig?.parse_strategy === 'string' ? parseConfig.parse_strategy.trim() : 'group_desc'
+    const aiParseMode =
+      typeof parseConfig?.ai_parse_mode === 'string' ? parseConfig.ai_parse_mode.trim() : 'auto'
+    const validationScope =
+      typeof parseConfig?.validation_scope === 'string' ? parseConfig.validation_scope.trim() : 'all'
+    const parseConfigTaskGroupFilter =
+      typeof parseConfig?.task_group_id_filter === 'string'
+        ? parseConfig.task_group_id_filter.trim()
+        : ''
+    const keyDelimiter =
+      typeof parseConfig?.key_delimiter === 'string' ? parseConfig.key_delimiter.trim() : '_'
+    const fallbackMatchField =
+      typeof parseConfig?.fallback_match_field === 'string'
+        ? parseConfig.fallback_match_field.trim()
+        : 'INT_TaskID'
+    const eventTaskFieldMapping =
+      parseConfig?.event_task_field_mapping != null &&
+      typeof parseConfig.event_task_field_mapping === 'object'
+        ? JSON.parse(JSON.stringify(parseConfig.event_task_field_mapping))
+        : undefined
+
+    if (!referenceTag) {
+      throw new Error(`规则 "${rule.rule_type}" 缺少 EventTask 配置组合变量。`)
+    }
+    if (!availableTags.has(referenceTag)) {
+      throw new Error(`规则 "${rule.rule_type}" 引用了不存在的变量 "${referenceTag}"。`)
+    }
+    if (!rightTaskGroupField || !rightTaskIdField || !rightTaskDescField || !rightTaskLootField) {
+      throw new Error(`规则 "${rule.rule_type}" 缺少右侧 EventTask 字段配置。`)
+    }
+    if (!leftTaskGroupField || !leftTaskIdField || !leftTaskDescField || !leftTaskLootField) {
+      throw new Error(`规则 "${rule.rule_type}" 缺少左侧节日任务字段配置。`)
+    }
+    if (!ruleName) {
+      throw new Error(`规则 "${rule.rule_type}" 缺少 rule_name。`)
+    }
+    if (!feishuSourceId || !feishuSheetId) {
+      throw new Error(`规则 "${rule.rule_type}" 缺少飞书节日任务解析配置。`)
+    }
+    if (!['group_desc'].includes(parseStrategy)) {
+      throw new Error(`规则 "${rule.rule_type}" 的 parse_strategy 无效。`)
+    }
+    if (!['auto', 'enabled', 'disabled'].includes(aiParseMode)) {
+      throw new Error(`规则 "${rule.rule_type}" 的 ai_parse_mode 无效。`)
+    }
+    if (!['auto', 'on', 'off'].includes(aiAssistMode)) {
+      throw new Error(`规则 "${rule.rule_type}" 的 ai_assist_mode 无效。`)
+    }
+    if (
+      !['groupId_desc', 'groupId_taskId', 'groupId_desc_then_taskId'].includes(matchStrategy)
+    ) {
+      throw new Error(`规则 "${rule.rule_type}" 的 match_strategy 无效。`)
+    }
+    if (!['all', 'specified'].includes(validationScope)) {
+      throw new Error(`规则 "${rule.rule_type}" 的 validation_scope 无效。`)
+    }
+    if (validationScope === 'specified' && !parseConfigTaskGroupFilter && !taskGroupIdFilter) {
+      throw new Error(`规则 "${rule.rule_type}" 缺少指定任务组 ID。`)
+    }
+
+    const effectiveTaskGroupFilter =
+      validationScope === 'specified' ? taskGroupIdFilter || parseConfigTaskGroupFilter : ''
+
+    return {
+      rule_id: rule.rule_id,
+      rule_type: rule.rule_type,
+      params: createCleanObject({
+        reference_variable_tag: referenceTag,
+        right_task_group_field: rightTaskGroupField,
+        right_task_id_field: rightTaskIdField,
+        right_task_desc_field: rightTaskDescField,
+        right_task_loot_field: rightTaskLootField,
+        left_task_group_field: leftTaskGroupField,
+        left_task_id_field: leftTaskIdField,
+        left_task_desc_field: leftTaskDescField,
+        left_task_loot_field: leftTaskLootField,
+        event_task_match_strategy: matchStrategy,
+        match_strategy: matchStrategy,
+        ai_assist_mode: aiAssistMode,
+        task_group_id_filter: effectiveTaskGroupFilter || undefined,
+        rule_name: ruleName,
+        display_field:
+          typeof rule.params.display_field === 'string' && rule.params.display_field.trim()
+            ? rule.params.display_field.trim()
+            : undefined,
+        event_task_parse_config: createCleanObject({
+          feishu_source_id: feishuSourceId,
+          feishu_sheet_id: feishuSheetId,
+          feishu_sheet_name: feishuSheetName || undefined,
+          parse_strategy: parseStrategy,
+          ai_parse_mode: aiParseMode,
+          validation_scope: validationScope,
+          task_group_id_filter: effectiveTaskGroupFilter || undefined,
+          key_delimiter: keyDelimiter || '_',
+          fallback_match_field: fallbackMatchField || 'INT_TaskID',
+          event_task_field_mapping: eventTaskFieldMapping,
+        }),
+      }),
+    }
+  }
+
   if (rule.rule_type === 'multi_composite_pipeline_check') {
     const targetTag = typeof rule.params.target_tag === 'string' ? rule.params.target_tag.trim() : ''
     const ruleName = typeof rule.params.rule_name === 'string' ? rule.params.rule_name.trim() : ''

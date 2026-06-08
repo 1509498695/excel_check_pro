@@ -33,6 +33,7 @@ RUNTIME_COLUMNS = [
     RUNTIME_TASK_DESC_FIELD,
     RUNTIME_TASK_LOOT_FIELD,
 ]
+EVENT_TASK_RULE_TYPES = {"event_task_reward", "event_task_validation"}
 
 
 @dataclass(frozen=True)
@@ -96,6 +97,7 @@ async def prepare_event_task_runtime_config(
             fallback_match_field=parse_config.fallback_match_field or "INT_TaskID",
             db=db,
             project_id=project_id,
+            event_task_field_mapping=parse_config.event_task_field_mapping,
         )
         if preview.parse_status != "success":
             messages = [*preview.errors, *preview.warnings]
@@ -208,6 +210,7 @@ async def prepare_event_task_runtime_task_tree(
                 fallback_match_field=parse_config.fallback_match_field or "INT_TaskID",
                 db=db,
                 project_id=project_id,
+                event_task_field_mapping=parse_config.event_task_field_mapping,
             )
         except FeishuClientError as exc:
             abnormal_results.append(
@@ -327,7 +330,7 @@ def _should_prepare_runtime_rule(
         return False
     if selected_rule_ids is not None and rule.rule_id.strip() not in selected_rule_ids:
         return False
-    return rule.rule_type == "event_task_validation" and rule.event_task_parse_config is not None
+    return rule.rule_type in EVENT_TASK_RULE_TYPES and rule.event_task_parse_config is not None
 
 
 def _should_prepare_task_tree_runtime_rule(
@@ -339,7 +342,7 @@ def _should_prepare_task_tree_runtime_rule(
         if not rule_id or rule_id not in selected_rule_ids:
             return False
     return (
-        rule.rule_type == "event_task_validation"
+        rule.rule_type in EVENT_TASK_RULE_TYPES
         and isinstance(rule.params.get("event_task_parse_config"), dict)
     )
 
@@ -465,6 +468,9 @@ def _build_runtime_rule(
             "left_task_desc_field": RUNTIME_TASK_DESC_FIELD,
             "left_task_loot_field": RUNTIME_TASK_LOOT_FIELD,
             "display_field": rule.display_field or RUNTIME_TASK_GROUP_FIELD,
+            "event_task_match_strategy": rule.event_task_match_strategy
+            or "groupId_desc_then_taskId",
+            "ai_assist_mode": rule.ai_assist_mode or "auto",
             "task_group_id_filter": task_group_id_filter,
             "event_task_parse_config": None,
         }
@@ -502,6 +508,15 @@ def _build_task_tree_runtime_rule(
                 or "STR_Desc",
                 "right_task_loot_field": _optional_string(params.get("right_task_loot_field"))
                 or "STR_Loot",
+                "event_task_match_strategy": _optional_string(
+                    params.get("event_task_match_strategy")
+                )
+                or _optional_string(params.get("match_strategy"))
+                or "groupId_desc_then_taskId",
+                "match_strategy": _optional_string(params.get("match_strategy"))
+                or _optional_string(params.get("event_task_match_strategy"))
+                or "groupId_desc_then_taskId",
+                "ai_assist_mode": _optional_string(params.get("ai_assist_mode")) or "auto",
                 "task_group_id_filter": task_group_id_filter,
                 "display_field": _optional_string(params.get("display_field"))
                 or RUNTIME_TASK_GROUP_FIELD,

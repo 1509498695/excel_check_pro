@@ -33,6 +33,8 @@ SUPPORTED_RULE_TYPES: tuple[FixedRuleType, ...] = (
     "multi_composite_pipeline_check",
     "multi_composite_mapping_check",
     "package_items_compare",
+    "event_task_reward",
+    "event_task_validation",
 )
 
 UNSUPPORTED_KEYWORDS = ("公式", "聚合", "平均", "求和", "脚本", "计算后", "跨行统计")
@@ -146,6 +148,16 @@ RULE_TYPE_SPECS: tuple[RuleTypeSpec, ...] = (
         "package_items_compare",
         ("IAP礼包", "IAP 礼包", "礼包校验", "礼包道具", "STR_Items", "package_items_compare"),
         ("package_items",),
+    ),
+    RuleTypeSpec(
+        "event_task_reward",
+        ("节日任务", "EventTask", "STR_Loot", "event_task_reward"),
+        ("event_task",),
+    ),
+    RuleTypeSpec(
+        "event_task_validation",
+        ("event_task_validation",),
+        ("event_task",),
     ),
 )
 

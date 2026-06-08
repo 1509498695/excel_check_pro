@@ -24,7 +24,16 @@ export type PackageAiParseMode = 'auto' | 'enabled' | 'disabled'
 export type PackageItemsValidationScope = 'all' | 'specified'
 export type EventTaskParseStrategy = 'group_desc'
 export type EventTaskAiParseMode = 'auto' | 'enabled' | 'disabled'
+export type EventTaskAiAssistMode = 'auto' | 'on' | 'off'
 export type EventTaskValidationScope = 'all' | 'specified'
+export type EventTaskRewardMatchStrategy =
+  | 'groupId_desc'
+  | 'groupId_taskId'
+  | 'groupId_desc_then_taskId'
+export type EventTaskAiSuggestionType =
+  | 'field_mapping_suggestion'
+  | 'match_suggestion'
+  | 'error_explanation'
 export type FixedRuleType =
   | 'fixed_value_compare'
   | 'regex_check'
@@ -37,6 +46,8 @@ export type FixedRuleType =
   | 'multi_composite_pipeline_check'
   | 'multi_composite_mapping_check'
   | 'package_items_compare'
+  | 'event_task_reward'
+  | 'event_task_validation'
 export type FixedRuleSelection =
   | FixedRuleOperator
   | 'regex_check'
@@ -165,12 +176,140 @@ export interface EventTaskPreviewRow {
   task_group_id: string
   task_desc: string
   task_id?: string
+  day?: number | null
   loot?: string
+  rewards?: EventTaskPreviewReward[]
+  warnings?: string[]
   config_key?: string
   config_task_desc?: string
   config_task_id?: string
   config_loot?: string
+  match_type?: string | null
   match_status?: 'matched' | 'missing_config' | 'missing_task' | 'mismatch'
+}
+
+export interface EventTaskPreviewReward {
+  type: string
+  item_id: number
+  itemId: number
+  count: number
+  name?: string | null
+}
+
+export interface EventTaskPreviewSampleRow {
+  rowIndex: number
+  taskGroupId: string
+  taskId?: string | null
+  day?: number | null
+  desc: string
+  rewards: EventTaskPreviewReward[]
+  rawLoot?: string | null
+  warnings: string[]
+}
+
+export interface EventTaskLootFieldMapping {
+  item_id: string
+  count: string
+  name?: string | null
+  value_type?: string | null
+}
+
+export interface EventTaskFieldMapping {
+  header_row_index?: number | null
+  task_group_id?: string | null
+  task_id?: string | null
+  day?: string | null
+  task_desc?: string | null
+  loot?: string | null
+  loot_groups?: EventTaskLootFieldMapping[]
+}
+
+export interface EventTaskAiSuggestion {
+  type: EventTaskAiSuggestionType
+  confidence: number
+  suggestions: Array<Record<string, unknown>>
+  reason: string
+  requiresUserConfirm: boolean
+  requires_user_confirm: boolean
+}
+
+export interface EventTaskParseConfig {
+  feishu_source_id?: string
+  feishu_sheet_id?: string
+  feishu_sheet_name?: string
+  config_variable_tag?: string
+  parse_strategy?: EventTaskParseStrategy
+  ai_parse_mode?: EventTaskAiParseMode
+  validation_scope?: EventTaskValidationScope
+  task_group_id_filter?: string
+  key_delimiter?: string
+  fallback_match_field?: string
+  event_task_field_mapping?: EventTaskFieldMapping | null
+}
+
+export interface RewardValidationItem {
+  type?: string | null
+  item_id: number
+  itemId: number
+  count: number
+  name?: string | null
+  source?: string | null
+}
+
+export interface RewardCountMismatchData {
+  item_id: number
+  itemId: number
+  expected_count: number
+  expectedCount: number
+  actual_count: number
+  actualCount: number
+}
+
+export interface EventTaskRewardValidationResult {
+  taskGroupId: string
+  task_group_id: string
+  taskDesc: string
+  task_desc: string
+  feishuRowIndex?: number | null
+  feishu_row_index?: number | null
+  variableKey?: string | null
+  variable_key?: string | null
+  variableTaskId?: string | null
+  variable_task_id?: string | null
+  matchStrategy: EventTaskRewardMatchStrategy | string
+  match_strategy: EventTaskRewardMatchStrategy | string
+  status: 'pass' | 'fail'
+  expectedRewards: RewardValidationItem[]
+  expected_rewards: RewardValidationItem[]
+  actualRewards: RewardValidationItem[]
+  actual_rewards: RewardValidationItem[]
+  missingRewards: RewardValidationItem[]
+  missing_rewards: RewardValidationItem[]
+  extraRewards: RewardValidationItem[]
+  extra_rewards: RewardValidationItem[]
+  countMismatches: RewardCountMismatchData[]
+  count_mismatches: RewardCountMismatchData[]
+  duplicateWarnings: string[]
+  duplicate_warnings: string[]
+  parseWarnings: string[]
+  parse_warnings: string[]
+  errorMessage?: string | null
+  error_message?: string | null
+}
+
+export interface EventTaskExtraVariableTask {
+  taskGroupId: string
+  task_group_id: string
+  taskDesc: string
+  task_desc: string
+  variableKey: string
+  variable_key: string
+  variableTaskId?: string | null
+  variable_task_id?: string | null
+  actualRewards: RewardValidationItem[]
+  actual_rewards: RewardValidationItem[]
+  parseWarnings: string[]
+  parse_warnings: string[]
 }
 
 export interface WorkbenchPackageItemsPreviewRequest {
@@ -200,6 +339,117 @@ export interface WorkbenchPackageItemsPreviewData {
 export type WorkbenchPackageItemsPreviewResponse =
   ApiResponse<WorkbenchPackageItemsPreviewData>
 
+export interface WorkbenchEventTaskPreviewRequest {
+  feishu_source_id: string
+  feishu_sheet_id: string
+  feishu_sheet_name?: string | null
+  config_variable_tag?: string | null
+  parse_strategy: EventTaskParseStrategy
+  ai_parse_mode: EventTaskAiParseMode
+  ai_assist_mode?: EventTaskAiAssistMode
+  validation_scope: EventTaskValidationScope
+  task_group_id_filter?: string | null
+  key_delimiter?: string | null
+  fallback_match_field?: string | null
+  event_task_field_mapping?: EventTaskFieldMapping | null
+}
+
+export interface WorkbenchEventTaskPreviewData {
+  success: boolean
+  message: string
+  warnings: string[]
+  errors: string[]
+  taskGroupIds: string[]
+  task_group_ids: string[]
+  totalRows: number
+  total_rows: number
+  parsedRows: number
+  parsed_rows: number
+  detail_row_count: number
+  rewardGroupCount: number
+  reward_group_count: number
+  sampleRows: EventTaskPreviewSampleRow[]
+  preview_rows: EventTaskPreviewRow[]
+  rawSheetName?: string | null
+  raw_sheet_name?: string | null
+  parse_strategy_used?: 'manual' | null
+  ai_used: boolean
+  aiSuggestions?: EventTaskAiSuggestion[]
+  ai_suggestions?: EventTaskAiSuggestion[]
+  aiSuggestionWarnings?: string[]
+  ai_suggestion_warnings?: string[]
+  aiSuggestionUsed?: boolean
+  ai_suggestion_used?: boolean
+}
+
+export type WorkbenchEventTaskPreviewResponse =
+  ApiResponse<WorkbenchEventTaskPreviewData>
+
+export interface WorkbenchEventTaskValidationRequest {
+  feishu_source_id: string
+  feishu_sheet_id: string
+  feishu_sheet_name?: string | null
+  config_variable_tag: string
+  match_strategy: EventTaskRewardMatchStrategy
+  ai_assist_mode: EventTaskAiAssistMode
+  validation_scope: EventTaskValidationScope
+  task_group_id_filter?: string | null
+  parse_strategy?: EventTaskParseStrategy
+  ai_parse_mode?: EventTaskAiParseMode
+  key_delimiter?: string | null
+  fallback_match_field?: string | null
+  event_task_field_mapping?: EventTaskFieldMapping | null
+}
+
+export interface WorkbenchEventTaskValidationData {
+  success: boolean
+  message: string
+  warnings: string[]
+  errors: string[]
+  total: number
+  passCount: number
+  pass_count: number
+  failCount: number
+  fail_count: number
+  unmatchedCount: number
+  unmatched_count: number
+  warningCount: number
+  warning_count: number
+  results: EventTaskRewardValidationResult[]
+  extraVariableTasks: EventTaskExtraVariableTask[]
+  extra_variable_tasks: EventTaskExtraVariableTask[]
+  rawSheetName?: string | null
+  raw_sheet_name?: string | null
+  aiSuggestions?: EventTaskAiSuggestion[]
+  ai_suggestions?: EventTaskAiSuggestion[]
+  aiSuggestionWarnings?: string[]
+  ai_suggestion_warnings?: string[]
+  aiSuggestionUsed?: boolean
+  ai_suggestion_used?: boolean
+}
+
+export type WorkbenchEventTaskValidationResponse =
+  ApiResponse<WorkbenchEventTaskValidationData>
+
+export interface WorkbenchEventTaskAiSuggestionRequest
+  extends WorkbenchEventTaskValidationRequest {
+  analysis_context?: 'preview' | 'validation'
+}
+
+export interface WorkbenchEventTaskAiSuggestionData {
+  success: boolean
+  message: string
+  aiSuggestions: EventTaskAiSuggestion[]
+  ai_suggestions: EventTaskAiSuggestion[]
+  aiSuggestionWarnings: string[]
+  ai_suggestion_warnings: string[]
+  aiSuggestionUsed: boolean
+  ai_suggestion_used: boolean
+}
+
+export type WorkbenchEventTaskAiSuggestionResponse =
+  ApiResponse<WorkbenchEventTaskAiSuggestionData>
+
 export interface FixedRuleGroup {
   group_id: string
   group_name: string
@@ -210,6 +460,8 @@ export interface FixedRuleDefinition {
   rule_id: string
   group_id: string
   rule_name: string
+  enabled?: boolean
+  description?: string
   target_variable_tag: string
   display_field?: string
   rule_type: FixedRuleType
@@ -231,12 +483,24 @@ export interface FixedRuleDefinition {
   pipeline_config?: MultiCompositePipelineConfig
   mapping_config?: MultiCompositeMappingConfig
   package_parse_config?: PackageItemsParseConfig
+  event_task_parse_config?: EventTaskParseConfig
   left_package_field?: string
   left_item_field?: string
   left_count_field?: string
   right_package_field?: string
   right_items_field?: string
   package_id_filter?: string
+  left_task_group_field?: string
+  left_task_id_field?: string
+  left_task_desc_field?: string
+  left_task_loot_field?: string
+  right_task_group_field?: string
+  right_task_id_field?: string
+  right_task_desc_field?: string
+  right_task_loot_field?: string
+  event_task_match_strategy?: EventTaskRewardMatchStrategy
+  ai_assist_mode?: EventTaskAiAssistMode
+  task_group_id_filter?: string
 }
 
 export interface FixedRulesConfig {

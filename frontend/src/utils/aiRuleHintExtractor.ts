@@ -13,6 +13,8 @@ const SUPPORTED_RULE_TYPES = [
   'multi_composite_pipeline_check',
   'multi_composite_mapping_check',
   'package_items_compare',
+  'event_task_reward',
+  'event_task_validation',
 ]
 
 const RULE_TYPE_ALIASES: Record<string, string> = {
@@ -57,6 +59,10 @@ const RULE_TYPE_ALIASES: Record<string, string> = {
   'IAP 礼包校验': 'package_items_compare',
   礼包校验: 'package_items_compare',
   礼包道具校验: 'package_items_compare',
+  节日任务校验: 'event_task_reward',
+  节日任务奖励校验: 'event_task_reward',
+  EventTask校验: 'event_task_reward',
+  EventTask奖励校验: 'event_task_reward',
 }
 
 const TEMPLATE_LABELS = [
