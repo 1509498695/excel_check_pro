@@ -31,6 +31,18 @@ export const router = createRouter({
       meta: { auth: true },
     },
     {
+      path: '/rule-configs',
+      name: 'rule-configs',
+      component: routeComponents.ruleConfigs,
+      meta: { auth: true },
+    },
+    {
+      path: '/rule-configs/config_lookup',
+      name: 'rule-config-lookup',
+      component: routeComponents.ruleConfigLookup,
+      meta: { auth: true, activeNav: 'rule-configs' },
+    },
+    {
       path: '/admin',
       name: 'admin',
       component: routeComponents.admin,

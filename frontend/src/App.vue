@@ -47,6 +47,13 @@ const navItems = computed(() => {
       icon: 'M5 5h14v14H5z M9 11h6 M9 15h6',
     },
     {
+      to: '/rule-configs',
+      label: '规则配置',
+      routeName: 'rule-configs',
+      show: true,
+      icon: 'M4 6h16 M4 12h16 M4 18h16 M8 6v12',
+    },
+    {
       to: '/admin',
       label: '管理后台',
       routeName: 'admin',

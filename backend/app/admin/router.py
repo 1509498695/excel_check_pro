@@ -36,6 +36,8 @@ from backend.app.models import (
     FeishuBotConfigRecord,
     FixedRulesConfigRecord,
     Project,
+    RuleConfigRecord,
+    RuleConfigVersionRecord,
     User,
     UserProjectRole,
     WorkbenchConfigRecord,
@@ -314,6 +316,16 @@ async def delete_project(
     await db.execute(
         delete(WorkbenchConfigRecord).where(
             WorkbenchConfigRecord.project_id == project_id
+        )
+    )
+    await db.execute(
+        delete(RuleConfigVersionRecord).where(
+            RuleConfigVersionRecord.project_id == project_id
+        )
+    )
+    await db.execute(
+        delete(RuleConfigRecord).where(
+            RuleConfigRecord.project_id == project_id
         )
     )
     await db.delete(project)

@@ -84,6 +84,97 @@ class FixedRulesConfigRecord(Base):
     )
 
 
+class RuleConfigRecord(Base):
+    """通用规则配置当前文档（按 project_id + rule_family 隔离）。"""
+
+    __tablename__ = "rule_configs"
+    __table_args__ = (
+        Index(
+            "uq_rule_configs_project_family",
+            "project_id",
+            "rule_family",
+            unique=True,
+        ),
+        Index("ix_rule_configs_project_id", "project_id"),
+        Index("ix_rule_configs_rule_family", "rule_family"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    rule_family: Mapped[str] = mapped_column(String(64), nullable=False)
+    content_md: Mapped[str] = mapped_column(Text, default="")
+    parsed_config_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
+    draft_version: Mapped[int] = mapped_column(default=0)
+    published_version: Mapped[int | None] = mapped_column(nullable=True)
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    updated_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    published_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    published_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    optimistic_lock_version: Mapped[int] = mapped_column(default=0)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class RuleConfigVersionRecord(Base):
+    """通用规则配置版本历史。"""
+
+    __tablename__ = "rule_config_versions"
+    __table_args__ = (
+        Index(
+            "uq_rule_config_versions_project_family_version",
+            "project_id",
+            "rule_family",
+            "version",
+            unique=True,
+        ),
+        Index(
+            "ix_rule_config_versions_project_family",
+            "project_id",
+            "rule_family",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    rule_family: Mapped[str] = mapped_column(String(64), nullable=False)
+    version: Mapped[int] = mapped_column(nullable=False)
+    content_md: Mapped[str] = mapped_column(Text, default="")
+    parsed_config_json: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    action: Mapped[str] = mapped_column(String(32), nullable=False)
+    operator: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    description: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), index=True
+    )
+
+
 class WorkbenchConfigRecord(Base):
     """工作台配置持久化记录（按 project_id + user_id 隔离）。"""
 

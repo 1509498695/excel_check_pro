@@ -3,6 +3,8 @@ const viewLoaders = {
   register: () => import('../views/RegisterView.vue'),
   mainBoard: () => import('../views/MainBoard.vue'),
   fixedRules: () => import('../views/FixedRulesBoard.vue'),
+  ruleConfigs: () => import('../views/RuleConfigsView.vue'),
+  ruleConfigLookup: () => import('../views/RuleConfigLookupView.vue'),
   admin: () => import('../views/AdminView.vue'),
   profile: () => import('../views/ProfileView.vue'),
   userGuide: () => import('../views/UserGuideView.vue'),
@@ -13,6 +15,8 @@ export const routeComponents = {
   register: viewLoaders.register,
   mainBoard: viewLoaders.mainBoard,
   fixedRules: viewLoaders.fixedRules,
+  ruleConfigs: viewLoaders.ruleConfigs,
+  ruleConfigLookup: viewLoaders.ruleConfigLookup,
   admin: viewLoaders.admin,
   profile: viewLoaders.profile,
   userGuide: viewLoaders.userGuide,
@@ -23,6 +27,16 @@ export function preloadRouteComponent(path: string): void {
 
   if (normalizedPath === '/fixed-rules') {
     void viewLoaders.fixedRules()
+    return
+  }
+
+  if (normalizedPath === '/rule-configs') {
+    void viewLoaders.ruleConfigs()
+    return
+  }
+
+  if (normalizedPath === '/rule-configs/config_lookup') {
+    void viewLoaders.ruleConfigLookup()
     return
   }
 

@@ -78,7 +78,38 @@ def test_migrate_empty_sqlite_database_creates_current_schema(tmp_path: Path) ->
     }.issubset(execution_run_columns)
     assert "ix_execution_runs_execution_mode" in _index_names(inspector, "execution_runs")
     assert "ix_execution_runs_status" in _index_names(inspector, "execution_runs")
-    assert _alembic_version(db_path) == "0002_execution_run_tasks"
+    assert {
+        "project_id",
+        "rule_family",
+        "content_md",
+        "parsed_config_json",
+        "status",
+        "draft_version",
+        "published_version",
+        "created_by",
+        "updated_by",
+        "published_by",
+        "published_at",
+        "optimistic_lock_version",
+    }.issubset(_column_names(inspector, "rule_configs"))
+    assert {
+        "project_id",
+        "rule_family",
+        "version",
+        "content_md",
+        "parsed_config_json",
+        "status",
+        "action",
+        "operator",
+        "description",
+        "created_at",
+    }.issubset(_column_names(inspector, "rule_config_versions"))
+    assert "uq_rule_configs_project_family" in _index_names(inspector, "rule_configs")
+    assert "uq_rule_config_versions_project_family_version" in _index_names(
+        inspector,
+        "rule_config_versions",
+    )
+    assert _alembic_version(db_path) == "0003_rule_configs"
 
 
 def test_migrate_legacy_sqlite_database_adds_missing_columns_and_indexes(
@@ -221,4 +252,4 @@ def test_migration_can_run_twice_without_duplicate_columns(tmp_path: Path) -> No
     inspector = _inspect_database(db_path)
     assert "extra_json" in _column_names(inspector, "execution_result_items")
     assert "status" in _column_names(inspector, "execution_runs")
-    assert _alembic_version(db_path) == "0002_execution_run_tasks"
+    assert _alembic_version(db_path) == "0003_rule_configs"
