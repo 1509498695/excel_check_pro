@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
@@ -12,6 +12,14 @@ import SecondaryButton from '../components/shell/SecondaryButton.vue'
 import StatusBadge from '../components/shell/StatusBadge.vue'
 import { useAuthStore } from '../store/auth'
 import type { StatusBadgeType } from '../components/shell/types'
+import {
+  CONFIG_LOOKUP_SAMPLE_MARKDOWN,
+  buildCredentialRows,
+  createConfigLookupRuleState,
+  createEmptyCredentialsStatus,
+  formatDateTime,
+  type VersionRow,
+} from '../features/rule-configs/useConfigLookupRule'
 
 interface RuleOverviewItem {
   label: string
@@ -19,39 +27,9 @@ interface RuleOverviewItem {
   badge?: { label: string; type: StatusBadgeType }
 }
 
-interface MarkdownLine {
-  no: number
-  text: string
-  key?: string
-}
-
 interface ValidationItem {
   label: string
   type: 'success' | 'warning'
-}
-
-interface VersionRow {
-  version: string
-  statusLabel: string
-  badgeType: StatusBadgeType
-  operator: string
-  updatedAt: string
-  description: string
-  actions: string[]
-}
-
-interface CredentialRow {
-  label: string
-  statusLabel: string
-  accountLabel: string
-  secretLabel: string
-  updatedAt: string
-}
-
-interface TrialResultRow {
-  id: string
-  name: string
-  price: string
 }
 
 const router = useRouter()
@@ -59,148 +37,139 @@ const auth = useAuthStore()
 const projectId = ref('default')
 const keyword = ref('')
 const useDraftTrial = ref(true)
-const trialStatus = ref<'success' | 'failed'>('success')
+const trialForm = ref({
+  queryType: '礼包',
+  versionFolder: '/datas_qa88',
+  queryText: '1001',
+})
+const ruleState = createConfigLookupRuleState()
+const {
+  record,
+  contentMd,
+  validation,
+  credentials,
+  loading,
+  saving,
+  validating,
+  publishing,
+  rollingBack,
+  trialLoading,
+  trialResult,
+  trialErrorMessage,
+  trialErrorLines,
+  fallbackActive,
+  errorMessage,
+  conflictMessage,
+  validationErrors,
+  versionRows,
+  load,
+  validate: validateRuleConfig,
+  saveDraft,
+  publish,
+  rollback,
+  runTrial,
+} = ruleState
 
-const ruleOverview: RuleOverviewItem[] = [
+const ruleOverview = computed<RuleOverviewItem[]>(() => [
   {
     label: '规则分组',
     value: '配置表查询（config_lookup）',
-    badge: { label: '已发布', type: 'success' },
+    badge: { label: getRecordStatusLabel(), type: getRecordBadgeType() },
   },
   {
     label: '当前版本',
-    value: 'v1.3',
+    value: record.value.draft_version > 0 ? `v${record.value.draft_version}` : '-',
   },
   {
     label: '已发布版本',
-    value: 'v1.3',
+    value: record.value.published_version ? `v${record.value.published_version}` : '-',
   },
   {
     label: '最后更新人',
-    value: 'admin',
+    value: record.value.updated_by === null ? '-' : `用户 #${record.value.updated_by}`,
   },
   {
     label: '发布时间',
-    value: '2024/05/27 02:32:18',
+    value: formatDateTime(record.value.published_at),
   },
-]
+])
 
-const markdownLines: MarkdownLine[] = [
-  { no: 1, text: '查询类型: 礼包', key: '查询类型' },
-  { no: 2, text: '数据根: game_datas', key: '数据根' },
-  { no: 3, text: '配置文件: IAPConfig.xls', key: '配置文件' },
-  { no: 4, text: '' },
-  { no: 5, text: '分页:', key: '分页' },
-  { no: 6, text: '  - 名称: AbsolutePack', key: '名称' },
-  { no: 7, text: '    ID字段: INT_PackageId', key: 'ID字段' },
-  { no: 8, text: '    名称字段: DESC', key: '名称字段' },
-  { no: 9, text: '    输出字段:', key: '输出字段' },
-  { no: 10, text: '      - INT_PackageId' },
-  { no: 11, text: '      - DESC' },
-  { no: 12, text: '      - STR_ServerCond_US' },
-  { no: 13, text: '' },
-  { no: 14, text: '  - 名称: Template', key: '名称' },
-  { no: 15, text: '    ID字段: INT_PackageId', key: 'ID字段' },
-  { no: 16, text: '    名称字段: DESC', key: '名称字段' },
-  { no: 17, text: '    输出字段:', key: '输出字段' },
-  { no: 18, text: '      - INT_PackageId' },
-  { no: 19, text: '      - 字段: DESC', key: '字段' },
-  { no: 20, text: '        显示名: 礼包名称', key: '显示名' },
-  { no: 21, text: '      - INT_PriceId' },
-  { no: 22, text: '' },
-  { no: 23, text: '引用:', key: '引用' },
-  { no: 24, text: '  - 名称: price', key: '名称' },
-  { no: 25, text: '    配置文件: Price.xls', key: '配置文件' },
-  { no: 26, text: '    分页: Price', key: '分页' },
-  { no: 27, text: '    关联: INT_PriceId=INT_PriceId', key: '关联' },
-  { no: 28, text: '    输出字段:', key: '输出字段' },
-  { no: 29, text: '      - 字段: INT_Point', key: '字段' },
-  { no: 30, text: '        显示名: 价格点数', key: '显示名' },
-]
+const hasDraftUpdate = computed(() => {
+  return record.value.status !== 'empty' && record.value.draft_version > (record.value.published_version ?? 0)
+})
 
-const validationItems: ValidationItem[] = [
-  { label: '中文配置项合法', type: 'success' },
-  { label: '必填字段完整', type: 'success' },
-  { label: 'query_root 引用有效', type: 'success' },
-  { label: '路径字段安全', type: 'success' },
-]
+const validationItems = computed<ValidationItem[]>(() => {
+  if (validationErrors.value.length > 0) {
+    return validationErrors.value.map((label) => ({ label, type: 'warning' }))
+  }
+  if (validation.value?.ok) {
+    return [
+      { label: '中文配置项合法', type: 'success' },
+      { label: '必填字段完整', type: 'success' },
+      { label: 'query_root 引用有效', type: 'success' },
+      { label: '路径字段安全', type: 'success' },
+    ]
+  }
+  return [{ label: '尚未执行结构校验', type: 'warning' }]
+})
 
-const parseSummaryItems = [
-  { label: '查询类型', value: '礼包' },
-  { label: '数据根', value: 'game_datas' },
-  { label: '主配置文件', value: 'IAPConfig.xls' },
-  { label: '分页设置', value: 'AbsolutePack、Template' },
-  { label: '引用配置', value: 'price -> Price.xls / Price' },
-]
+const parseSummaryItems = computed(() => {
+  if (validation.value?.summary) {
+    const summary = validation.value.summary
+    return [
+      { label: '查询类型', value: summary.query_types.join('、') || '-' },
+      { label: '数据根', value: summary.query_roots.join('、') || '-' },
+      { label: '主配置文件', value: summary.primary_files.join('、') || '-' },
+      {
+        label: '分页设置',
+        value: summary.pages.flatMap((page) => page.names).join('、') || '-',
+      },
+      {
+        label: '引用配置',
+        value: summary.references
+          .map((reference) => `${reference.name} -> ${reference.file} / ${reference.page}`)
+          .join('、') || '-',
+      },
+    ]
+  }
+  const summary = buildSummaryFromParsedConfig()
+  return [
+    { label: '查询类型', value: summary.queryTypes || '-' },
+    { label: '数据根', value: summary.queryRoots || '-' },
+    { label: '主配置文件', value: summary.primaryFiles || '-' },
+    { label: '分页设置', value: summary.pages || '-' },
+    { label: '引用配置', value: summary.references || '-' },
+  ]
+})
 
-const versionRows: VersionRow[] = [
-  {
-    version: 'v1.3',
-    statusLabel: '已发布',
-    badgeType: 'success',
-    operator: 'admin',
-    updatedAt: '2024/05/27 02:32:18',
-    description: '优化输出字段，补充 price 字段',
-    actions: ['查看', '对比'],
-  },
-  {
-    version: 'v1.2',
-    statusLabel: '草稿',
-    badgeType: 'warning',
-    operator: 'admin',
-    updatedAt: '2024/05/26 18:15:42',
-    description: '调整分页默认条数为 50',
-    actions: ['查看', '发布', '对比'],
-  },
-  {
-    version: 'v1.1',
-    statusLabel: '已发布',
-    badgeType: 'success',
-    operator: 'admin',
-    updatedAt: '2024/05/24 10:09:31',
-    description: '初始版本发布',
-    actions: ['查看', '对比'],
-  },
-  {
-    version: 'v1.0',
-    statusLabel: '已归档',
-    badgeType: 'neutral',
-    operator: 'admin',
-    updatedAt: '2024/05/23 09:41:07',
-    description: '初始草稿',
-    actions: ['查看', '回滚', '对比'],
-  },
-]
+const credentialRows = computed(() => {
+  return buildCredentialRows(credentials.value ?? createEmptyCredentialsStatus(), auth.isProjectAdmin)
+})
 
-const credentialRows: CredentialRow[] = [
-  {
-    label: 'SVN 凭据',
-    statusLabel: '已连接',
-    accountLabel: '账号：s******n',
-    secretLabel: '密码：********',
-    updatedAt: '2024/05/27 01:20:11',
-  },
-  {
-    label: 'AI 凭据',
-    statusLabel: '已连接',
-    accountLabel: '模型：gpt-compatible',
-    secretLabel: '密钥：************',
-    updatedAt: '2024/05/27 01:20:11',
-  },
-]
-
-const trialForm = {
-  queryType: '礼包',
-  versionFolder: '/datas_qa88',
-  queryText: '26051802',
-  successText: '命中 2 条',
-  failedText: '未找到匹配配置',
-}
-
-const trialResultRows: TrialResultRow[] = [
-  { id: '26051802', name: '26年7月扭蛋机礼包-99.99', price: '9999' },
-  { id: '26051802', name: '26年7月扭蛋机礼包-99.99（模板）', price: '9999' },
-]
+const trialBadge = computed(() => {
+  if (trialErrorMessage.value) {
+    return { type: 'danger' as StatusBadgeType, label: '试查失败' }
+  }
+  if (!trialResult.value) {
+    return { type: 'neutral' as StatusBadgeType, label: '未试查' }
+  }
+  if (trialResult.value.status === 'hit') {
+    return {
+      type: 'success' as StatusBadgeType,
+      label: `命中 ${trialResult.value.results.length} 条`,
+    }
+  }
+  if (trialResult.value.status === 'candidates') {
+    return {
+      type: 'warning' as StatusBadgeType,
+      label: `候选 ${trialResult.value.candidates.length} 条`,
+    }
+  }
+  if (trialResult.value.status === 'ai_unavailable') {
+    return { type: 'warning' as StatusBadgeType, label: 'AI 不可用' }
+  }
+  return { type: 'neutral' as StatusBadgeType, label: '未命中' }
+})
 
 function backToRuleConfigs(): void {
   router.push({ name: 'rule-configs' })
@@ -214,20 +183,145 @@ function showOnlyConfigLookupNotice(): void {
   ElMessage.info('当前仅支持配置表查询规则')
 }
 
-function getLineParts(line: MarkdownLine): { prefix: string; key: string; suffix: string } {
-  if (!line.key) {
-    return { prefix: line.text, key: '', suffix: '' }
+async function handleTrial(): Promise<void> {
+  const queryType = trialForm.value.queryType.trim()
+  const versionedConfigFolder = trialForm.value.versionFolder.trim()
+  const lookupInput = trialForm.value.queryText.trim()
+  if (!queryType || !versionedConfigFolder || !lookupInput) {
+    ElMessage.warning('请填写查询类型、版本目录和查询内容')
+    return
   }
-  const keyIndex = line.text.indexOf(line.key)
-  if (keyIndex < 0) {
-    return { prefix: '', key: line.key, suffix: line.text }
-  }
-  return {
-    prefix: line.text.slice(0, keyIndex),
-    key: line.key,
-    suffix: line.text.slice(keyIndex + line.key.length),
+  const result = await runTrial({
+    queryType,
+    versionedConfigFolder,
+    lookupInput,
+    useCurrentDraft: useDraftTrial.value,
+  })
+  if (result.ok) {
+    ElMessage.success(result.message)
+  } else if (result.message) {
+    ElMessage.warning(result.message)
   }
 }
+
+function insertSampleTemplate(): void {
+  contentMd.value = CONFIG_LOOKUP_SAMPLE_MARKDOWN
+  ElMessage.success('已插入示例模板')
+}
+
+async function handleValidate(): Promise<void> {
+  const result = await validateRuleConfig()
+  if (result.ok) {
+    ElMessage.success(result.message)
+  } else {
+    ElMessage.warning(result.message)
+  }
+}
+
+async function handleSaveDraft(): Promise<void> {
+  const result = await saveDraft()
+  if (result.ok) {
+    ElMessage.success(result.message)
+  } else if (result.message) {
+    ElMessage.warning(result.message)
+  }
+}
+
+async function handlePublish(): Promise<void> {
+  const result = await publish()
+  if (result.ok) {
+    ElMessage.success(result.message)
+  } else if (result.message) {
+    ElMessage.warning(result.message)
+  }
+}
+
+async function handleRollback(version: number): Promise<void> {
+  const result = await rollback(version)
+  if (result.ok) {
+    ElMessage.success(result.message)
+  } else if (result.message) {
+    ElMessage.warning(result.message)
+  }
+}
+
+function handleVersionAction(action: string, row: VersionRow): void {
+  if (action === '发布') {
+    void handlePublish()
+    return
+  }
+  if (action === '回滚') {
+    void handleRollback(row.versionNumber)
+    return
+  }
+  showStaticNotice(action)
+}
+
+function getRecordStatusLabel(): string {
+  if (record.value.status === 'published') return '已发布'
+  if (record.value.status === 'draft') return '草稿'
+  return '未发布'
+}
+
+function getRecordBadgeType(): StatusBadgeType {
+  if (record.value.status === 'published') return 'success'
+  if (record.value.status === 'draft') return 'warning'
+  return 'neutral'
+}
+
+function buildSummaryFromParsedConfig(): {
+  queryTypes: string
+  queryRoots: string
+  primaryFiles: string
+  pages: string
+  references: string
+} {
+  const queries = record.value.parsed_config_json.queries
+  if (!Array.isArray(queries)) {
+    return { queryTypes: '', queryRoots: '', primaryFiles: '', pages: '', references: '' }
+  }
+  const queryTypes: string[] = []
+  const queryRoots: string[] = []
+  const primaryFiles: string[] = []
+  const pages: string[] = []
+  const references: string[] = []
+  for (const query of queries) {
+    if (!query || typeof query !== 'object') continue
+    const payload = query as Record<string, unknown>
+    queryTypes.push(String(payload.query_type ?? ''))
+    queryRoots.push(String(payload.query_root ?? ''))
+    primaryFiles.push(String(payload.file ?? ''))
+    if (Array.isArray(payload.pages)) {
+      pages.push(
+        ...payload.pages
+          .filter((page): page is Record<string, unknown> => !!page && typeof page === 'object')
+          .map((page) => String(page.name ?? '')),
+      )
+    }
+    if (Array.isArray(payload.references)) {
+      references.push(
+        ...payload.references
+          .filter((reference): reference is Record<string, unknown> => {
+            return !!reference && typeof reference === 'object'
+          })
+          .map((reference) => {
+            return `${String(reference.name ?? '')} -> ${String(reference.file ?? '')} / ${String(reference.page ?? '')}`
+          }),
+      )
+    }
+  }
+  return {
+    queryTypes: queryTypes.filter(Boolean).join('、'),
+    queryRoots: queryRoots.filter(Boolean).join('、'),
+    primaryFiles: primaryFiles.filter(Boolean).join('、'),
+    pages: pages.filter(Boolean).join('、'),
+    references: references.filter(Boolean).join('、'),
+  }
+}
+
+onMounted(() => {
+  void load()
+})
 </script>
 
 <template>
@@ -255,7 +349,40 @@ function getLineParts(line: MarkdownLine): { prefix: string; key: string; suffix
       </template>
     </PageHeader>
 
-    <div class="admin-dashboard-content rule-lookup-content flex flex-1 flex-col overflow-y-auto px-8 py-8">
+    <div
+      v-loading="loading"
+      class="admin-dashboard-content rule-lookup-content flex flex-1 flex-col overflow-y-auto px-8 py-8"
+    >
+      <el-alert
+        v-if="fallbackActive"
+        title="当前使用开发 fallback，后端规则配置接口不可用。"
+        type="warning"
+        show-icon
+        :closable="false"
+      />
+      <el-alert
+        v-if="conflictMessage"
+        :title="conflictMessage"
+        type="warning"
+        show-icon
+        :closable="false"
+      >
+        <template #default>
+          <SecondaryButton size="sm" @click="load">刷新规则配置</SecondaryButton>
+        </template>
+      </el-alert>
+      <AppCard
+        v-if="errorMessage"
+        as="section"
+        padding="none"
+        class="admin-dashboard-card rule-lookup-alert-card"
+      >
+        <div class="rule-lookup-alert-card__body">
+          <span>{{ errorMessage }}</span>
+          <SecondaryButton size="sm" @click="load">重新加载</SecondaryButton>
+        </div>
+      </AppCard>
+
       <AppCard as="section" padding="none" class="admin-dashboard-card rule-lookup-overview-card">
         <div class="rule-lookup-overview">
           <div class="rule-lookup-overview__main">
@@ -263,10 +390,10 @@ function getLineParts(line: MarkdownLine): { prefix: string; key: string; suffix
             <div class="min-w-0">
               <div class="rule-lookup-overview__title-row">
                 <h2>规则概览</h2>
-                <StatusBadge type="success" label="已发布" />
-                <StatusBadge type="warning" label="草稿有更新" />
+                <StatusBadge :type="getRecordBadgeType()" :label="getRecordStatusLabel()" />
+                <StatusBadge v-if="hasDraftUpdate" type="warning" label="草稿有更新" />
               </div>
-              <p>配置表查询规则当前处于发布状态，草稿变更可保存后继续发布。</p>
+              <p>配置表查询规则发布后立即生效，草稿变更可保存后继续发布。</p>
             </div>
           </div>
 
@@ -296,31 +423,30 @@ function getLineParts(line: MarkdownLine): { prefix: string; key: string; suffix
               <h2>Markdown 规则编辑</h2>
             </div>
             <div class="rule-lookup-card-actions">
-              <SecondaryButton size="sm" @click="showStaticNotice('插入示例模板')">
+              <SecondaryButton size="sm" @click="insertSampleTemplate">
                 插入示例模板
               </SecondaryButton>
-              <SecondaryButton size="sm" @click="showStaticNotice('结构校验')">
+              <SecondaryButton size="sm" :loading="validating" @click="handleValidate">
                 结构校验
               </SecondaryButton>
-              <SecondaryButton size="sm" @click="showStaticNotice('保存草稿')">
+              <SecondaryButton size="sm" :loading="saving" @click="handleSaveDraft">
                 保存草稿
               </SecondaryButton>
-              <PrimaryButton size="sm" @click="showStaticNotice('发布')">
+              <PrimaryButton size="sm" :loading="publishing" @click="handlePublish">
                 发布
               </PrimaryButton>
             </div>
           </div>
 
-          <div class="rule-lookup-code-editor" aria-label="Markdown 规则示例">
-            <div v-for="line in markdownLines" :key="line.no" class="rule-lookup-code-line">
-              <span class="rule-lookup-code-line__no">{{ line.no }}</span>
-              <code>
-                <template v-if="line.key">
-                  <span>{{ getLineParts(line).prefix }}</span><span class="rule-lookup-code-key">{{ getLineParts(line).key }}</span><span>{{ getLineParts(line).suffix }}</span>
-                </template>
-                <template v-else>{{ line.text }}</template>
-              </code>
-            </div>
+          <div class="rule-lookup-code-editor" aria-label="Markdown 规则编辑">
+            <el-input
+              v-model="contentMd"
+              type="textarea"
+              resize="none"
+              :autosize="{ minRows: 18, maxRows: 34 }"
+              class="rule-lookup-markdown-input"
+              spellcheck="false"
+            />
           </div>
         </AppCard>
 
@@ -396,7 +522,8 @@ function getLineParts(line: MarkdownLine): { prefix: string; key: string; suffix
                     :key="`${row.version}-${action}`"
                     type="button"
                     class="ec-action-link"
-                    @click="showStaticNotice(action)"
+                    :disabled="rollingBack && action === '回滚'"
+                    @click="handleVersionAction(action, row)"
                   >
                     {{ action }}
                   </button>
@@ -434,7 +561,7 @@ function getLineParts(line: MarkdownLine): { prefix: string; key: string; suffix
                 <p>{{ row.secretLabel }}</p>
                 <p>最后更新：{{ row.updatedAt }}</p>
               </div>
-              <div v-if="auth.isProjectAdmin" class="rule-lookup-credential-actions">
+              <div v-if="row.canManage" class="rule-lookup-credential-actions">
                 <SecondaryButton size="sm" @click="showStaticNotice(`${row.label}更新凭据`)">
                   更新凭据
                 </SecondaryButton>
@@ -452,7 +579,7 @@ function getLineParts(line: MarkdownLine): { prefix: string; key: string; suffix
               <span class="rule-lookup-step">06</span>
               <h2>试查</h2>
             </div>
-            <PrimaryButton size="sm" @click="showStaticNotice('开始试查')">
+            <PrimaryButton size="sm" :loading="trialLoading" @click="handleTrial">
               开始试查
             </PrimaryButton>
           </div>
@@ -460,15 +587,15 @@ function getLineParts(line: MarkdownLine): { prefix: string; key: string; suffix
           <div class="rule-lookup-trial-form">
             <label>
               <span>查询类型</span>
-              <el-input :model-value="trialForm.queryType" readonly />
+              <el-input v-model="trialForm.queryType" placeholder="例如：礼包" />
             </label>
             <label>
               <span>版本目录</span>
-              <el-input :model-value="trialForm.versionFolder" readonly />
+              <el-input v-model="trialForm.versionFolder" placeholder="/datas_qa88" />
             </label>
             <label>
               <span>查询内容</span>
-              <el-input :model-value="trialForm.queryText" readonly />
+              <el-input v-model="trialForm.queryText" placeholder="输入 ID 或名称" />
             </label>
             <el-checkbox v-model="useDraftTrial">
               使用当前草稿试查
@@ -478,28 +605,104 @@ function getLineParts(line: MarkdownLine): { prefix: string; key: string; suffix
           <div class="rule-lookup-trial-result">
             <div class="rule-lookup-trial-result__head">
               <span>试查结果</span>
-              <StatusBadge
-                :type="trialStatus === 'success' ? 'success' : 'danger'"
-                :label="trialStatus === 'success' ? trialForm.successText : trialForm.failedText"
-              />
+              <StatusBadge :type="trialBadge.type" :label="trialBadge.label" />
             </div>
 
-            <DataTable aria-label="试查结果">
+            <el-alert
+              v-if="trialErrorMessage"
+              :title="trialErrorMessage"
+              type="warning"
+              show-icon
+              :closable="false"
+              class="rule-lookup-trial-alert"
+            >
+              <template v-if="trialErrorLines.length > 0" #default>
+                <ul class="rule-lookup-trial-errors">
+                  <li v-for="line in trialErrorLines" :key="line">{{ line }}</li>
+                </ul>
+              </template>
+            </el-alert>
+
+            <div v-else-if="trialResult?.status === 'hit'" class="rule-lookup-trial-hits">
+              <div
+                v-for="item in trialResult.results"
+                :key="`${item.page}-${item.id_value}-${item.name_value}`"
+                class="rule-lookup-trial-hit"
+              >
+                <div class="rule-lookup-trial-hit__head">
+                  <div>
+                    <strong>{{ item.name_value || '-' }}</strong>
+                    <span>{{ item.page }} / ID：{{ item.id_value || '-' }}</span>
+                  </div>
+                  <StatusBadge type="success" :label="item.query_type" />
+                </div>
+                <el-alert
+                  v-if="item.warnings.length > 0"
+                  type="warning"
+                  show-icon
+                  :closable="false"
+                  class="rule-lookup-trial-alert"
+                >
+                  <template #default>
+                    {{ item.warnings.join('；') }}
+                  </template>
+                </el-alert>
+                <DataTable aria-label="试查命中字段">
+                  <template #head>
+                    <tr>
+                      <th class="w-[160px]">字段</th>
+                      <th class="w-[160px]">显示名</th>
+                      <th>值</th>
+                    </tr>
+                  </template>
+                  <template #body>
+                    <tr
+                      v-for="field in item.fields"
+                      :key="`${item.page}-${item.id_value}-${field.field}-${field.label}`"
+                      class="bg-white transition hover:bg-gray-50"
+                    >
+                      <td class="font-mono text-ink-900">{{ field.field }}</td>
+                      <td>{{ field.label }}</td>
+                      <td>{{ field.value || '-' }}</td>
+                    </tr>
+                  </template>
+                </DataTable>
+              </div>
+            </div>
+
+            <DataTable v-else-if="trialResult?.status === 'candidates'" aria-label="AI 候选列表">
               <template #head>
                 <tr>
-                  <th>id</th>
-                  <th>name</th>
-                  <th>price</th>
+                  <th>分页</th>
+                  <th>ID</th>
+                  <th>名称</th>
+                  <th class="w-[120px]">置信度</th>
                 </tr>
               </template>
               <template #body>
-                <tr v-for="row in trialResultRows" :key="`${row.id}-${row.name}`" class="bg-white transition hover:bg-gray-50">
-                  <td class="font-mono text-ink-900">{{ row.id }}</td>
-                  <td>{{ row.name }}</td>
-                  <td>{{ row.price }}</td>
+                <tr
+                  v-for="candidate in trialResult.candidates"
+                  :key="candidate.key"
+                  class="bg-white transition hover:bg-gray-50"
+                >
+                  <td>{{ candidate.page }}</td>
+                  <td class="font-mono text-ink-900">{{ candidate.id_value }}</td>
+                  <td>{{ candidate.name_value }}</td>
+                  <td>{{ Math.round(candidate.score * 100) }}%</td>
                 </tr>
               </template>
             </DataTable>
+
+            <el-alert
+              v-else-if="trialResult"
+              :title="trialResult.message"
+              :type="trialResult.status === 'ai_unavailable' ? 'warning' : 'info'"
+              show-icon
+              :closable="false"
+              class="rule-lookup-trial-alert"
+            />
+
+            <el-empty v-else description="输入条件后开始试查" :image-size="72" />
           </div>
         </AppCard>
       </div>
@@ -523,6 +726,20 @@ function getLineParts(line: MarkdownLine): { prefix: string; key: string; suffix
 .rule-lookup-project-select {
   width: 132px;
   flex: 0 0 auto;
+}
+
+.rule-lookup-alert-card {
+  padding: 14px 18px;
+}
+
+.rule-lookup-alert-card__body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--color-danger);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .rule-lookup-overview {
@@ -659,6 +876,26 @@ function getLineParts(line: MarkdownLine): { prefix: string; key: string; suffix
   background: #fbfdff;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
   padding: 8px 0;
+}
+
+.rule-lookup-markdown-input {
+  display: block;
+}
+
+.rule-lookup-markdown-input :deep(.el-textarea__inner) {
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
+  color: #334155;
+  font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.6;
+  padding: 10px 16px;
+}
+
+.rule-lookup-markdown-input :deep(.el-textarea__inner:focus) {
+  box-shadow: none;
 }
 
 .rule-lookup-code-line {
@@ -846,6 +1083,68 @@ function getLineParts(line: MarkdownLine): { prefix: string; key: string; suffix
   color: var(--color-text-main);
   font-size: 14px;
   font-weight: 800;
+}
+
+.rule-lookup-trial-alert {
+  margin-bottom: 12px;
+}
+
+.rule-lookup-trial-errors {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  color: #92400e;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.rule-lookup-trial-hits {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.rule-lookup-trial-hit {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: #ffffff;
+}
+
+.rule-lookup-trial-hit__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid var(--color-border-light);
+  padding: 12px 14px;
+}
+
+.rule-lookup-trial-hit__head strong,
+.rule-lookup-trial-hit__head span {
+  display: block;
+}
+
+.rule-lookup-trial-hit__head strong {
+  color: var(--color-text-main);
+  font-size: 14px;
+  font-weight: 850;
+}
+
+.rule-lookup-trial-hit__head span {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.rule-lookup-trial-hit .rule-lookup-trial-alert {
+  margin: 12px 14px;
+}
+
+.rule-lookup-trial-hit .ui-data-table {
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 0;
 }
 
 @media (max-width: 1366px) {

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from sqlalchemy import delete, func, select, update
@@ -17,6 +19,7 @@ from backend.app.admin.schemas import (
     FeishuBotConfigUpdateRequest,
     FeishuBotTestSendRequest,
     MoveMemberProjectRequest,
+    ProjectAiConfigRequest,
     ProjectCreateRequest,
     ProjectUpdateRequest,
     ResetUserPasswordRequest,
@@ -24,6 +27,13 @@ from backend.app.admin.schemas import (
 )
 from backend.app.auth.dependencies import CurrentUserContext, get_current_user
 from backend.app.auth.service import hash_password
+from backend.app.ai.credentials import sanitize_ai_error
+from backend.app.ai.providers import (
+    ProviderConnectionError,
+    mask_api_key,
+    resolve_provider_defaults,
+    test_provider_connection,
+)
 from backend.app.database import get_db
 from backend.app.integrations.feishu_bot import (
     FeishuApiError,
@@ -32,17 +42,23 @@ from backend.app.integrations.feishu_bot import (
     send_text_to_chat,
 )
 from backend.app.integrations.feishu_long_conn import long_conn_supervisor
+from backend.app.loaders.svn_credentials import SvnCredential
+from backend.app.loaders.svn_manager import SvnRemoteError, list_svn_directory
 from backend.app.models import (
+    FeishuBotBoundChatRecord,
     FeishuBotConfigRecord,
     FixedRulesConfigRecord,
     Project,
+    ProjectAiCredentialRecord,
+    ProjectQueryRootRecord,
+    ProjectSvnCredentialRecord,
     RuleConfigRecord,
     RuleConfigVersionRecord,
     User,
     UserProjectRole,
     WorkbenchConfigRecord,
 )
-from backend.app.security.crypto import encrypt_secret
+from backend.app.security.crypto import decrypt_secret, encrypt_secret
 
 
 logger = logging.getLogger(__name__)
@@ -326,6 +342,26 @@ async def delete_project(
     await db.execute(
         delete(RuleConfigRecord).where(
             RuleConfigRecord.project_id == project_id
+        )
+    )
+    await db.execute(
+        delete(ProjectQueryRootRecord).where(
+            ProjectQueryRootRecord.project_id == project_id
+        )
+    )
+    await db.execute(
+        delete(FeishuBotBoundChatRecord).where(
+            FeishuBotBoundChatRecord.project_id == project_id
+        )
+    )
+    await db.execute(
+        delete(ProjectSvnCredentialRecord).where(
+            ProjectSvnCredentialRecord.project_id == project_id
+        )
+    )
+    await db.execute(
+        delete(ProjectAiCredentialRecord).where(
+            ProjectAiCredentialRecord.project_id == project_id
         )
     )
     await db.delete(project)
@@ -630,7 +666,7 @@ async def get_feishu_bot_config(
         )
     )
     record = result.scalar_one_or_none()
-    data = _serialize_feishu_bot_config(record)
+    data = await _serialize_feishu_bot_config(db, record, project_id=project_id)
     # connection_state 由长连接 supervisor 实时维护（inactive/active/error/...）；
     # _serialize_feishu_bot_config 写死的 "inactive" 仅作未配置时的兜底，这里覆写为真实值。
     data["connection_state"] = long_conn_supervisor.get_state(project_id)
@@ -646,25 +682,13 @@ async def upsert_feishu_bot_config(
 ) -> dict[str, Any]:
     """创建或更新项目级飞书机器人配置；密钥落库前用 Fernet 加密。"""
     _require_project_management_access(ctx, project_id)
-    await _get_project_or_404(db, project_id)
+    project = await _get_project_or_404(db, project_id)
 
     normalized_app_id = payload.app_id.strip()
     if not normalized_app_id:
         raise HTTPException(status_code=400, detail="app_id 不能为空")
     if len(normalized_app_id) > 64:
         raise HTTPException(status_code=400, detail="app_id 长度超过限制")
-
-    # 路由层先做一次跨项目唯一性查询，命中则直接 400，避免下沉到 DB 层抛 IntegrityError。
-    conflict_result = await db.execute(
-        select(FeishuBotConfigRecord.id).where(
-            FeishuBotConfigRecord.app_id == normalized_app_id,
-            FeishuBotConfigRecord.project_id != project_id,
-        )
-    )
-    if conflict_result.scalar_one_or_none() is not None:
-        raise HTTPException(
-            status_code=400, detail="该 app_id 已被其它项目占用"
-        )
 
     record_result = await db.execute(
         select(FeishuBotConfigRecord).where(
@@ -680,13 +704,21 @@ async def upsert_feishu_bot_config(
                 status_code=400, detail="首次配置时必须提供 app_secret"
             )
         new_app_secret_cipher = record.app_secret_cipher  # type: ignore[union-attr]
+        new_app_secret_plain = _decrypt_app_secret_or_400(new_app_secret_cipher)
     else:
         if payload.app_secret == "":
             raise HTTPException(
                 status_code=400,
                 detail="app_secret 不允许传空串清空，请走 DELETE 整体清除",
             )
+        new_app_secret_plain = payload.app_secret
         new_app_secret_cipher = encrypt_secret(payload.app_secret)
+    await _ensure_shared_app_secret_consistency(
+        db,
+        project_id=project_id,
+        app_id=normalized_app_id,
+        app_secret_plain=new_app_secret_plain,
+    )
 
     if payload.default_chat_id is None:
         new_default_chat_id = "" if is_create else record.default_chat_id  # type: ignore[union-attr]
@@ -728,6 +760,23 @@ async def upsert_feishu_bot_config(
             ensure_ascii=False,
         )
 
+    existing_bound_chat_ids = (
+        [] if is_create else await _list_bound_chat_ids(db, project_id)
+    )
+    new_bound_chat_ids, should_replace_bound_chats = _resolve_bound_chat_ids(
+        payload=payload,
+        is_create=is_create,
+        default_chat_id=new_default_chat_id,
+        existing_bound_chat_ids=existing_bound_chat_ids,
+    )
+    if should_replace_bound_chats:
+        await _ensure_bound_chats_available(
+            db,
+            project_id=project_id,
+            project_name=project.name,
+            chat_ids=new_bound_chat_ids,
+        )
+
     if record is None:
         record = FeishuBotConfigRecord(
             project_id=project_id,
@@ -738,6 +787,24 @@ async def upsert_feishu_bot_config(
             local_download_roots=new_local_download_roots,
             svn_download_roots=new_svn_download_roots,
             allowed_download_suffixes=new_allowed_download_suffixes,
+            auto_match_threshold=_resolve_ai_match_float(
+                payload.ai_match_params.auto_match_threshold
+                if payload.ai_match_params
+                else None,
+                default=0.9,
+            ),
+            candidate_threshold=_resolve_ai_match_float(
+                payload.ai_match_params.candidate_threshold
+                if payload.ai_match_params
+                else None,
+                default=0.6,
+            ),
+            max_candidates=_resolve_ai_match_int(
+                payload.ai_match_params.max_candidates
+                if payload.ai_match_params
+                else None,
+                default=10,
+            ),
         )
         db.add(record)
     else:
@@ -748,15 +815,32 @@ async def upsert_feishu_bot_config(
         record.local_download_roots = new_local_download_roots
         record.svn_download_roots = new_svn_download_roots
         record.allowed_download_suffixes = new_allowed_download_suffixes
+        _apply_ai_match_params(record, payload)
         db.add(record)
+
+    if should_replace_bound_chats:
+        await _replace_bound_chats(db, project_id, new_bound_chat_ids)
+    if "query_roots" in payload.model_fields_set:
+        await _replace_query_roots(db, project_id, payload.query_roots or [])
+    if payload.svn_credential is not None:
+        await _upsert_project_svn_credential(db, project_id, payload.svn_credential)
+    if payload.ai_credential is not None:
+        await _upsert_project_ai_credential(db, project_id, payload.ai_credential)
+    if payload.ai_credential is not None or payload.ai_match_params is not None:
+        ai_record = await _get_project_ai_credential(db, project_id)
+        if ai_record is not None:
+            ai_record.auto_match_threshold = record.auto_match_threshold
+            ai_record.candidate_threshold = record.candidate_threshold
+            ai_record.max_candidates = record.max_candidates
+            ai_record.updated_by = ctx.user_id
+            db.add(ai_record)
 
     try:
         await db.commit()
     except IntegrityError as exc:
-        # partial unique index 兜底，处理与上面查询之间的并发竞争。
         await db.rollback()
         raise HTTPException(
-            status_code=400, detail="该 app_id 已被其它项目占用"
+            status_code=400, detail="配置保存冲突，请重试"
         ) from exc
     await db.refresh(record)
 
@@ -776,7 +860,7 @@ async def upsert_feishu_bot_config(
     return {
         "code": 200,
         "msg": "保存成功",
-        "data": _serialize_feishu_bot_config(record),
+        "data": await _serialize_feishu_bot_config(db, record, project_id=project_id),
     }
 
 
@@ -798,6 +882,21 @@ async def delete_feishu_bot_config(
     record = result.scalar_one_or_none()
     if record is not None:
         await db.delete(record)
+        await db.execute(
+            delete(FeishuBotBoundChatRecord).where(
+                FeishuBotBoundChatRecord.project_id == project_id
+            )
+        )
+        await db.execute(
+            delete(ProjectQueryRootRecord).where(
+                ProjectQueryRootRecord.project_id == project_id
+            )
+        )
+        await db.execute(
+            delete(ProjectSvnCredentialRecord).where(
+                ProjectSvnCredentialRecord.project_id == project_id
+            )
+        )
         await db.commit()
     invalidate_token_cache(project_id)
 
@@ -852,20 +951,204 @@ async def test_send_feishu_bot(
     }
 
 
-def _serialize_feishu_bot_config(
+@router.post("/projects/{project_id}/svn-credential/test")
+async def test_project_svn_credential(
+    project_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """使用已保存的项目级 SVN 凭据测试启用的远端 query_roots。"""
+    _require_project_management_access(ctx, project_id)
+    await _get_project_or_404(db, project_id)
+
+    credential_record = await _get_project_svn_credential(db, project_id)
+    if credential_record is None or not credential_record.password_cipher:
+        raise HTTPException(
+            status_code=400,
+            detail="请先保存项目级 SVN 凭据后再测试连接",
+        )
+
+    remote_roots = await _list_enabled_remote_query_roots(db, project_id)
+    if not remote_roots:
+        raise HTTPException(
+            status_code=400,
+            detail="请先配置并启用至少一个 SVN 数据根后再测试连接",
+        )
+
+    try:
+        password = decrypt_secret(credential_record.password_cipher)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="项目级 SVN 凭据无法解密，请重新保存后再测试",
+        ) from exc
+    if not credential_record.username.strip() or not password:
+        raise HTTPException(
+            status_code=400,
+            detail="请先保存项目级 SVN 凭据后再测试连接",
+        )
+
+    credentials = SvnCredential(
+        host="",
+        username=credential_record.username,
+        password=password,
+        updated_at=credential_record.updated_at.isoformat()
+        if credential_record.updated_at
+        else None,
+    )
+    items = [
+        _test_project_svn_query_root(row, credentials=credentials, password=password)
+        for row in remote_roots
+    ]
+    overall_status = (
+        "success"
+        if items and all(item["status"] == "success" for item in items)
+        else "failed"
+    )
+    return {
+        "code": 200,
+        "msg": "ok",
+        "data": {
+            "status": overall_status,
+            "items": items,
+        },
+    }
+
+
+@router.get("/projects/{project_id}/ai-config")
+async def get_project_ai_config(
+    project_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """读取项目级 AI 配置；仅管理后台使用，不返回明文 API Key。"""
+    _require_project_management_access(ctx, project_id)
+    await _get_project_or_404(db, project_id)
+    record = await _get_project_ai_credential(db, project_id)
+    return {"code": 200, "msg": "ok", "data": _serialize_project_ai_config(record)}
+
+
+@router.put("/projects/{project_id}/ai-config")
+async def save_project_ai_config(
+    project_id: int,
+    payload: ProjectAiConfigRequest,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """保存项目级 AI 凭据与名称匹配参数。"""
+    _require_project_management_access(ctx, project_id)
+    await _get_project_or_404(db, project_id)
+    record = await _save_project_ai_config(
+        db,
+        project_id=project_id,
+        payload=payload,
+        updated_by=ctx.user_id,
+    )
+    await db.commit()
+    await db.refresh(record)
+    return {"code": 200, "msg": "保存成功", "data": _serialize_project_ai_config(record)}
+
+
+@router.delete("/projects/{project_id}/ai-config", status_code=204)
+async def delete_project_ai_config(
+    project_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """清除项目级 AI 配置。"""
+    _require_project_management_access(ctx, project_id)
+    await _get_project_or_404(db, project_id)
+    record = await _get_project_ai_credential(db, project_id)
+    if record is not None:
+        await db.delete(record)
+        await db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/projects/{project_id}/ai-config/test")
+async def test_project_ai_config(
+    project_id: int,
+    response: Response,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """使用已保存的项目级 AI 凭据做轻量连通性测试。"""
+    _require_project_management_access(ctx, project_id)
+    await _get_project_or_404(db, project_id)
+    record = await _get_project_ai_credential(db, project_id)
+    if record is None or not record.encrypted_api_key:
+        raise HTTPException(status_code=400, detail="请先保存项目级 AI 凭据。")
+
+    try:
+        api_key = decrypt_secret(record.encrypted_api_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="项目级 AI API Key 无法解密，请重新保存。") from exc
+    if not api_key:
+        raise HTTPException(status_code=400, detail="请先保存项目级 AI API Key。")
+    if not record.enabled:
+        raise HTTPException(status_code=400, detail="项目级 AI 当前未启用。")
+
+    try:
+        await test_provider_connection(
+            provider_preset=record.provider_preset,  # type: ignore[arg-type]
+            base_url=record.base_url,
+            model=record.model,
+            api_key=api_key,
+            extra_headers=_parse_json_object(record.extra_headers_json),
+        )
+    except ProviderConnectionError as exc:
+        record.last_test_status = "failed"
+        record.last_test_at = datetime.now(timezone.utc)
+        record.last_test_error_summary = _sanitize_project_ai_error(exc.message, api_key)
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+        response.status_code = exc.status_code
+        return {
+            "code": exc.status_code,
+            "msg": "连接测试失败",
+            "data": _serialize_project_ai_config(record),
+        }
+
+    record.last_test_status = "success"
+    record.last_test_at = datetime.now(timezone.utc)
+    record.last_test_error_summary = ""
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    return {"code": 200, "msg": "连接测试成功", "data": _serialize_project_ai_config(record)}
+
+
+async def _serialize_feishu_bot_config(
+    db: AsyncSession,
     record: FeishuBotConfigRecord | None,
+    *,
+    project_id: int,
 ) -> dict[str, Any]:
     """把 ORM 转成 GET / PUT 返回的脱敏 data 结构；密文不外露。"""
+    bound_chat_ids = await _list_bound_chat_ids(db, project_id)
+    query_roots = await _list_query_roots(db, project_id)
+    svn_credential = await _get_project_svn_credential(db, project_id)
+    ai_credential = await _get_project_ai_credential(db, project_id)
     if record is None:
         return {
             "configured": False,
             "app_id": "",
             "has_app_secret": False,
             "default_chat_id": "",
+            "bound_chat_ids": bound_chat_ids,
             "allowed_open_ids": [],
             "local_download_roots": [],
             "svn_download_roots": [],
             "allowed_download_suffixes": DEFAULT_FEISHU_DOWNLOAD_SUFFIXES,
+            "query_roots": [_serialize_query_root(row) for row in query_roots],
+            "svn_credential": _serialize_svn_credential(svn_credential),
+            "ai_credential": _serialize_ai_credential(ai_credential),
+            "ai_match_params": {
+                "auto_match_threshold": 0.9,
+                "candidate_threshold": 0.6,
+                "max_candidates": 10,
+            },
             "connection_state": "inactive",
             "updated_at": None,
         }
@@ -875,6 +1158,7 @@ def _serialize_feishu_bot_config(
         "app_id": record.app_id or "",
         "has_app_secret": bool(record.app_secret_cipher),
         "default_chat_id": record.default_chat_id or "",
+        "bound_chat_ids": bound_chat_ids,
         "allowed_open_ids": _parse_allowed_open_ids(record.allowed_open_ids or ""),
         "local_download_roots": _parse_json_string_list(record.local_download_roots),
         "svn_download_roots": _parse_json_string_list(record.svn_download_roots),
@@ -882,11 +1166,588 @@ def _serialize_feishu_bot_config(
             record.allowed_download_suffixes,
             default=DEFAULT_FEISHU_DOWNLOAD_SUFFIXES,
         ),
+        "query_roots": [_serialize_query_root(row) for row in query_roots],
+        "svn_credential": _serialize_svn_credential(svn_credential),
+        "ai_credential": _serialize_ai_credential(ai_credential),
+        "ai_match_params": {
+            "auto_match_threshold": record.auto_match_threshold,
+            "candidate_threshold": record.candidate_threshold,
+            "max_candidates": record.max_candidates,
+        },
         # Step 1 阶段尚未引入 supervisor，状态先固定 inactive，
         # 后续 step 接入长连接后再回填真实状态。
         "connection_state": "inactive",
         "updated_at": record.updated_at.isoformat() if record.updated_at else None,
     }
+
+
+async def _list_bound_chat_ids(db: AsyncSession, project_id: int) -> list[str]:
+    result = await db.execute(
+        select(FeishuBotBoundChatRecord.chat_id)
+        .where(FeishuBotBoundChatRecord.project_id == project_id)
+        .order_by(FeishuBotBoundChatRecord.id)
+    )
+    return list(result.scalars().all())
+
+
+async def _list_query_roots(
+    db: AsyncSession,
+    project_id: int,
+) -> list[ProjectQueryRootRecord]:
+    result = await db.execute(
+        select(ProjectQueryRootRecord)
+        .where(ProjectQueryRootRecord.project_id == project_id)
+        .order_by(ProjectQueryRootRecord.id)
+    )
+    return list(result.scalars().all())
+
+
+async def _list_enabled_remote_query_roots(
+    db: AsyncSession,
+    project_id: int,
+) -> list[ProjectQueryRootRecord]:
+    result = await db.execute(
+        select(ProjectQueryRootRecord)
+        .where(
+            ProjectQueryRootRecord.project_id == project_id,
+            ProjectQueryRootRecord.status == "enabled",
+        )
+        .order_by(ProjectQueryRootRecord.id)
+    )
+    return [
+        row
+        for row in result.scalars().all()
+        if _is_remote_svn_url(row.svn_root_url)
+    ]
+
+
+def _is_remote_svn_url(raw_url: str | None) -> bool:
+    if not raw_url:
+        return False
+    parsed = urlparse(raw_url.strip())
+    return parsed.scheme.lower() in {"http", "https"} and bool(parsed.netloc)
+
+
+def _sanitize_svn_url(raw_url: str) -> str:
+    parsed = urlparse(raw_url.strip())
+    if not parsed.username and not parsed.password:
+        return raw_url
+    hostname = parsed.hostname or ""
+    netloc = hostname
+    if parsed.port is not None:
+        netloc = f"{hostname}:{parsed.port}"
+    return parsed._replace(netloc=netloc).geturl()
+
+
+def _sanitize_svn_test_message(message: str, password: str) -> str:
+    safe_message = message.strip() or "SVN 连接测试失败"
+    if password:
+        safe_message = safe_message.replace(password, "******")
+    return safe_message
+
+
+def _test_project_svn_query_root(
+    row: ProjectQueryRootRecord,
+    *,
+    credentials: SvnCredential,
+    password: str,
+) -> dict[str, Any]:
+    try:
+        result = list_svn_directory(row.svn_root_url, credentials=credentials)
+    except SvnRemoteError as exc:
+        return _build_svn_test_item(
+            row,
+            status="failed",
+            message=_sanitize_svn_test_message(exc.message, password),
+        )
+    except NotImplementedError as exc:
+        return _build_svn_test_item(
+            row,
+            status="failed",
+            message=_sanitize_svn_test_message(str(exc), password),
+        )
+    except Exception as exc:  # noqa: BLE001 - 连接测试失败需要回传单项摘要
+        return _build_svn_test_item(
+            row,
+            status="failed",
+            message=_sanitize_svn_test_message(str(exc), password),
+        )
+
+    entries = result.get("entries", [])
+    return _build_svn_test_item(
+        row,
+        status="success",
+        message="连接成功",
+        entry_count=len(entries) if isinstance(entries, list) else 0,
+    )
+
+
+def _build_svn_test_item(
+    row: ProjectQueryRootRecord,
+    *,
+    status: str,
+    message: str,
+    entry_count: int = 0,
+) -> dict[str, Any]:
+    return {
+        "alias": row.alias,
+        "display_name": row.display_name,
+        "svn_url": _sanitize_svn_url(row.svn_root_url),
+        "status": status,
+        "message": message,
+        "entry_count": entry_count,
+    }
+
+
+async def _get_project_svn_credential(
+    db: AsyncSession,
+    project_id: int,
+) -> ProjectSvnCredentialRecord | None:
+    result = await db.execute(
+        select(ProjectSvnCredentialRecord).where(
+            ProjectSvnCredentialRecord.project_id == project_id
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _get_project_ai_credential(
+    db: AsyncSession,
+    project_id: int,
+) -> ProjectAiCredentialRecord | None:
+    result = await db.execute(
+        select(ProjectAiCredentialRecord).where(
+            ProjectAiCredentialRecord.project_id == project_id
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+def _serialize_query_root(row: ProjectQueryRootRecord) -> dict[str, Any]:
+    return {
+        "alias": row.alias,
+        "display_name": row.display_name,
+        "svn_url": row.svn_root_url,
+        "enabled": row.status == "enabled",
+    }
+
+
+def _serialize_svn_credential(
+    record: ProjectSvnCredentialRecord | None,
+) -> dict[str, Any]:
+    if record is None or not record.password_cipher:
+        return {
+            "configured": False,
+            "username_masked": "",
+            "updated_at": None,
+        }
+    return {
+        "configured": True,
+        "username_masked": record.username or "",
+        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+    }
+
+
+def _serialize_ai_credential(
+    record: ProjectAiCredentialRecord | None,
+) -> dict[str, Any]:
+    if record is None or not record.encrypted_api_key:
+        return {
+            "configured": False,
+            "provider_preset": "",
+            "provider": "",
+            "base_url": "",
+            "model": "",
+            "api_key_masked": "",
+            "masked_api_key": "",
+            "has_extra_headers": False,
+            "enabled": False,
+            "last_test_status": "",
+            "last_test_at": None,
+            "last_test_error_summary": "",
+            "updated_at": None,
+        }
+    try:
+        api_key = decrypt_secret(record.encrypted_api_key)
+    except ValueError:
+        api_key = ""
+    return {
+        "configured": bool(api_key),
+        "provider_preset": record.provider_preset,
+        "provider": record.provider_preset,
+        "base_url": record.base_url,
+        "model": record.model,
+        "api_key_masked": mask_api_key(api_key),
+        "masked_api_key": mask_api_key(api_key),
+        "has_extra_headers": bool(_parse_json_object(record.extra_headers_json)),
+        "enabled": bool(record.enabled),
+        "last_test_status": record.last_test_status or "",
+        "last_test_at": record.last_test_at.isoformat() if record.last_test_at else None,
+        "last_test_error_summary": record.last_test_error_summary or "",
+        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+    }
+
+
+def _serialize_project_ai_config(
+    record: ProjectAiCredentialRecord | None,
+) -> dict[str, Any]:
+    if record is None or not record.encrypted_api_key:
+        return {
+            "configured": False,
+            "enabled": False,
+            "provider": "",
+            "model": "",
+            "base_url": "",
+            "masked_api_key": "",
+            "has_extra_headers": False,
+            "auto_match_threshold": 0.9,
+            "candidate_threshold": 0.6,
+            "max_candidates": 10,
+            "last_test_status": "",
+            "last_test_at": None,
+            "last_test_error_summary": "",
+            "updated_by": None,
+            "updated_at": None,
+        }
+    try:
+        api_key = decrypt_secret(record.encrypted_api_key)
+    except ValueError:
+        api_key = ""
+    return {
+        "configured": bool(api_key),
+        "enabled": bool(record.enabled),
+        "provider": record.provider_preset,
+        "model": record.model,
+        "base_url": record.base_url,
+        "masked_api_key": mask_api_key(api_key),
+        "has_extra_headers": bool(_parse_json_object(record.extra_headers_json)),
+        "auto_match_threshold": record.auto_match_threshold,
+        "candidate_threshold": record.candidate_threshold,
+        "max_candidates": record.max_candidates,
+        "last_test_status": record.last_test_status or "",
+        "last_test_at": record.last_test_at.isoformat() if record.last_test_at else None,
+        "last_test_error_summary": record.last_test_error_summary or "",
+        "updated_by": record.updated_by,
+        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+    }
+
+
+async def _save_project_ai_config(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    payload: ProjectAiConfigRequest,
+    updated_by: int | None,
+) -> ProjectAiCredentialRecord:
+    _validate_project_ai_config_payload(payload)
+    base_url, model = resolve_provider_defaults(
+        payload.provider,
+        payload.base_url,
+        payload.model,
+    )
+    if not base_url or not model:
+        raise HTTPException(status_code=400, detail="请填写 Base URL 和模型名称。")
+
+    record = await _get_project_ai_credential(db, project_id)
+    encrypted_key = record.encrypted_api_key if record else ""
+    if payload.api_key:
+        encrypted_key = encrypt_secret(payload.api_key)
+    if payload.enabled and not encrypted_key:
+        raise HTTPException(status_code=400, detail="启用项目级 AI 前必须填写 API Key。")
+    if record is None and not encrypted_key:
+        raise HTTPException(status_code=400, detail="首次保存项目级 AI 配置时必须填写 API Key。")
+
+    extra_headers_json = json.dumps(payload.extra_headers, ensure_ascii=False)
+    if record is None:
+        record = ProjectAiCredentialRecord(
+            project_id=project_id,
+            provider_preset=payload.provider,
+            base_url=base_url,
+            model=model,
+            encrypted_api_key=encrypted_key,
+            extra_headers_json=extra_headers_json,
+        )
+    else:
+        record.provider_preset = payload.provider
+        record.base_url = base_url
+        record.model = model
+        record.encrypted_api_key = encrypted_key
+        record.extra_headers_json = extra_headers_json
+    record.enabled = payload.enabled
+    record.auto_match_threshold = float(payload.auto_match_threshold)
+    record.candidate_threshold = float(payload.candidate_threshold)
+    record.max_candidates = int(payload.max_candidates)
+    record.updated_by = updated_by
+    db.add(record)
+    await _mirror_project_ai_match_params_to_feishu_config(db, project_id, record)
+    return record
+
+
+def _validate_project_ai_config_payload(payload: ProjectAiConfigRequest) -> None:
+    if payload.auto_match_threshold < payload.candidate_threshold:
+        raise HTTPException(
+            status_code=400,
+            detail="高置信自动返回阈值必须大于或等于候选列表阈值",
+        )
+
+
+async def _mirror_project_ai_match_params_to_feishu_config(
+    db: AsyncSession,
+    project_id: int,
+    record: ProjectAiCredentialRecord,
+) -> None:
+    result = await db.execute(
+        select(FeishuBotConfigRecord).where(
+            FeishuBotConfigRecord.project_id == project_id
+        )
+    )
+    feishu_config = result.scalar_one_or_none()
+    if feishu_config is None:
+        return
+    feishu_config.auto_match_threshold = record.auto_match_threshold
+    feishu_config.candidate_threshold = record.candidate_threshold
+    feishu_config.max_candidates = record.max_candidates
+    db.add(feishu_config)
+
+
+def _sanitize_project_ai_error(message: str, api_key: str) -> str:
+    return sanitize_ai_error(message or "连接测试失败，请检查项目级 AI 配置。", api_key)
+
+
+def _decrypt_app_secret_or_400(cipher: str) -> str:
+    try:
+        return decrypt_secret(cipher)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="app_secret 密文无法解密，请重新配置") from exc
+
+
+async def _ensure_shared_app_secret_consistency(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    app_id: str,
+    app_secret_plain: str,
+) -> None:
+    result = await db.execute(
+        select(FeishuBotConfigRecord).where(
+            FeishuBotConfigRecord.app_id == app_id,
+            FeishuBotConfigRecord.project_id != project_id,
+        )
+    )
+    for existing in result.scalars().all():
+        existing_secret = _decrypt_app_secret_or_400(existing.app_secret_cipher)
+        if existing_secret != app_secret_plain:
+            raise HTTPException(
+                status_code=400,
+                detail="该 App ID 已在其他项目配置，请使用相同 App Secret 或联系管理员确认",
+            )
+
+
+def _resolve_bound_chat_ids(
+    *,
+    payload: FeishuBotConfigUpdateRequest,
+    is_create: bool,
+    default_chat_id: str,
+    existing_bound_chat_ids: list[str],
+) -> tuple[list[str], bool]:
+    if payload.bound_chat_ids is not None:
+        bound_chat_ids = payload.bound_chat_ids
+        if default_chat_id and default_chat_id not in bound_chat_ids:
+            raise HTTPException(
+                status_code=400,
+                detail="default_chat_id 必须包含在绑定群列表中",
+            )
+        return bound_chat_ids, True
+    if payload.default_chat_id is not None and default_chat_id:
+        return [default_chat_id], True
+    if is_create:
+        return [], True
+    return existing_bound_chat_ids, False
+
+
+async def _ensure_bound_chats_available(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    project_name: str,
+    chat_ids: list[str],
+) -> None:
+    if not chat_ids:
+        return
+    result = await db.execute(
+        select(FeishuBotBoundChatRecord, Project)
+        .join(Project, Project.id == FeishuBotBoundChatRecord.project_id)
+        .where(
+            FeishuBotBoundChatRecord.chat_id.in_(chat_ids),
+            FeishuBotBoundChatRecord.project_id != project_id,
+        )
+        .order_by(FeishuBotBoundChatRecord.id)
+    )
+    conflict = result.first()
+    if conflict is None:
+        return
+    _, owner_project = conflict
+    raise HTTPException(
+        status_code=400,
+        detail=f"该飞书群已绑定项目「{owner_project.name}」，不能重复绑定到「{project_name}」",
+    )
+
+
+async def _replace_bound_chats(
+    db: AsyncSession,
+    project_id: int,
+    chat_ids: list[str],
+) -> None:
+    await db.execute(
+        delete(FeishuBotBoundChatRecord).where(
+            FeishuBotBoundChatRecord.project_id == project_id
+        )
+    )
+    for chat_id in chat_ids:
+        db.add(FeishuBotBoundChatRecord(project_id=project_id, chat_id=chat_id))
+
+
+async def _replace_query_roots(
+    db: AsyncSession,
+    project_id: int,
+    query_roots: list[Any],
+) -> None:
+    normalized_rows: list[dict[str, Any]] = []
+    seen_aliases: set[str] = set()
+    for item in query_roots:
+        alias = item.alias.strip()
+        if alias in seen_aliases:
+            raise HTTPException(
+                status_code=400,
+                detail=f"query_roots alias 重复：{alias}",
+            )
+        seen_aliases.add(alias)
+        svn_url = item.svn_url.strip()
+        if not svn_url:
+            raise HTTPException(
+                status_code=400,
+                detail=f"query_roots.svn_url 不能为空：{alias}",
+            )
+        normalized_rows.append(
+            {
+                "alias": alias,
+                "display_name": item.display_name.strip(),
+                "svn_url": svn_url,
+                "enabled": item.enabled,
+            }
+        )
+
+    await db.execute(
+        delete(ProjectQueryRootRecord).where(
+            ProjectQueryRootRecord.project_id == project_id
+        )
+    )
+    for item in normalized_rows:
+        db.add(
+            ProjectQueryRootRecord(
+                project_id=project_id,
+                alias=item["alias"],
+                display_name=item["display_name"],
+                svn_root_url=item["svn_url"],
+                status="enabled" if item["enabled"] else "disabled",
+            )
+        )
+
+
+async def _upsert_project_svn_credential(
+    db: AsyncSession,
+    project_id: int,
+    payload: Any,
+) -> None:
+    record = await _get_project_svn_credential(db, project_id)
+    username = payload.username if payload.username is not None else (record.username if record else "")
+    password_cipher = record.password_cipher if record else ""
+    if payload.password is not None:
+        if payload.password == "":
+            raise HTTPException(status_code=400, detail="SVN 密码不能为空")
+        password_cipher = encrypt_secret(payload.password)
+    if record is None:
+        if not password_cipher:
+            raise HTTPException(status_code=400, detail="首次保存 SVN 凭据时必须填写密码")
+        record = ProjectSvnCredentialRecord(
+            project_id=project_id,
+            username=username,
+            password_cipher=password_cipher,
+        )
+    else:
+        record.username = username
+        record.password_cipher = password_cipher
+    db.add(record)
+
+
+async def _upsert_project_ai_credential(
+    db: AsyncSession,
+    project_id: int,
+    payload: Any,
+) -> None:
+    base_url, model = resolve_provider_defaults(
+        payload.provider_preset,
+        payload.base_url,
+        payload.model,
+    )
+    if not base_url or not model:
+        raise HTTPException(status_code=400, detail="请填写 Base URL 和模型名称。")
+    record = await _get_project_ai_credential(db, project_id)
+    encrypted_key = record.encrypted_api_key if record else ""
+    if payload.api_key:
+        encrypted_key = encrypt_secret(payload.api_key)
+    if record is None and not encrypted_key:
+        raise HTTPException(status_code=400, detail="首次保存 AI 配置时必须填写 API Key。")
+    extra_headers_json = json.dumps(payload.extra_headers, ensure_ascii=False)
+    if record is None:
+        record = ProjectAiCredentialRecord(
+            project_id=project_id,
+            provider_preset=payload.provider_preset,
+            base_url=base_url,
+            model=model,
+            encrypted_api_key=encrypted_key,
+            extra_headers_json=extra_headers_json,
+        )
+    else:
+        record.provider_preset = payload.provider_preset
+        record.base_url = base_url
+        record.model = model
+        record.encrypted_api_key = encrypted_key
+        record.extra_headers_json = extra_headers_json
+    db.add(record)
+
+
+def _apply_ai_match_params(
+    record: FeishuBotConfigRecord,
+    payload: FeishuBotConfigUpdateRequest,
+) -> None:
+    if payload.ai_match_params is None:
+        return
+    record.auto_match_threshold = _resolve_ai_match_float(
+        payload.ai_match_params.auto_match_threshold,
+        default=record.auto_match_threshold,
+    )
+    record.candidate_threshold = _resolve_ai_match_float(
+        payload.ai_match_params.candidate_threshold,
+        default=record.candidate_threshold,
+    )
+    record.max_candidates = _resolve_ai_match_int(
+        payload.ai_match_params.max_candidates,
+        default=record.max_candidates,
+    )
+    if record.auto_match_threshold < record.candidate_threshold:
+        raise HTTPException(
+            status_code=400,
+            detail="高置信自动返回阈值必须大于或等于候选列表阈值",
+        )
+
+
+def _resolve_ai_match_float(value: float | None, *, default: float) -> float:
+    return default if value is None else float(value)
+
+
+def _resolve_ai_match_int(value: int | None, *, default: int) -> int:
+    return default if value is None else int(value)
 
 
 def _normalize_allowed_open_ids_input(raw: str) -> str:
@@ -982,6 +1843,18 @@ def _parse_json_string_list(
     if not isinstance(payload, list):
         return fallback
     return [str(item).strip() for item in payload if str(item).strip()]
+
+
+def _parse_json_object(raw: str | None) -> dict[str, Any]:
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+    return {str(key): str(value) for key, value in parsed.items()}
 
 
 def _build_test_card(text_content: str) -> dict[str, Any]:

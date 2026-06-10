@@ -9,7 +9,7 @@
 | `/` | `frontend/src/views/MainBoard.vue` | 个人校验四步工作流。 |
 | `/fixed-rules` | `frontend/src/views/FixedRulesBoard.vue` | 项目校验配置、执行、导入和结果。 |
 | `/admin` | `frontend/src/views/AdminView.vue` | 项目、成员、角色和密码管理。 |
-| `/profile` | `frontend/src/views/ProfileView.vue` | 账号、密码、项目切换和 AI 配置。 |
+| `/profile` | `frontend/src/views/ProfileView.vue` | 账号、密码和项目切换。 |
 | `/user-guide` | `frontend/src/views/UserGuideView.vue` | 登录后使用说明。 |
 | `/login` `/register` | `LoginView.vue` `RegisterView.vue` | 登录与注册。 |
 
@@ -44,7 +44,7 @@
 | `backend/app/services/` | 跨模块业务服务，例如飞书表格授权记录。 |
 | `backend/app/rules/` | 规则引擎、领域工具、handler 注册与执行。 |
 | `backend/app/fixed_rules/` | 项目校验配置、迁移、导入、执行整合。 |
-| `backend/app/ai/` | AI 规则助手、凭据、上下文、编译和草稿历史。 |
+| `backend/app/ai/` | 项目级 AI 凭据读取、供应商协议、错误脱敏和基础调用能力。 |
 | `backend/tests/` | 后端接口、引擎、AI 和导入回归测试。 |
 
 ## 4. 重点业务切片
@@ -54,7 +54,8 @@
 | 个人校验 | `views/MainBoard.vue`、`store/workbench*`、`components/workbench/` | `api/workbench_api.py`、`api/execute_api.py`、`rules/` |
 | 项目校验 | `views/FixedRulesBoard.vue`、`store/fixedRules.ts` | `api/fixed_rules_api.py`、`fixed_rules/` |
 | 个人规则导入项目 | `features/fixed-rules-import/` | `fixed_rules/importer/` |
-| AI 规则助手 | `components/workbench/ai/`、`api/ai.ts`、`store/ai.ts` | `api/ai_api.py`、`ai/` |
+| 项目级 AI 配置 | `features/ai/providerPresets.ts`、`features/admin/projectAiConfigForm.ts`、`api/projectAiConfig.ts`、`types/projectAiConfig.ts` | `admin/router.py`、`admin/schemas.py`、`ai/credentials.py`、`ai/providers.py` |
+| AI 辅助能力 | `components/fixed-rules/PackageItemsRuleDialog.vue`、活动任务相关规则表单 | `services/package_items_ai_parser.py`、`services/event_task_ai_advisor.py`、`config_lookup/ai_matcher.py` |
 | 数据源 | `api/workbench.ts`、数据源面板组件 | `api/source_api.py`、`loaders/` |
 | 飞书接入 | `components/admin/FeishuBotConfigCard.vue`、`components/workbench/DataSourcePanel.vue`、`api/admin.ts`、`api/workbench.ts` | `admin/router.py`、`api/feishu_api.py`、`integrations/feishu_*`、`loaders/feishu_reader.py`、`services/feishu_sheet_authorization_service.py` |
 | IAP 礼包校验 | `components/fixed-rules/PackageItemsRuleDialog.vue`、`components/workbench/WorkbenchRuleOrchestrationPanel.vue`、`api/workbench.ts`、`utils/taskTree.ts` | `api/workbench_api.py`、`api/execute_api.py`、`services/package_items_parser.py`、`fixed_rules/package_items_runtime.py`、`rules/handlers/fixed/package_items.py` |
@@ -67,6 +68,7 @@
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 稳定架构、核心契约、API 边界。 |
 | [MODULES.md](MODULES.md) | 本文档：路由和代码位置。 |
 | [STANDARDS.md](STANDARDS.md) | 开发与文档维护规范。 |
+| [adr/](adr/) | 当前架构决策记录。 |
 | [../frontend/README.md](../frontend/README.md) | 前端子项目说明。 |
 | [../CHANGELOG.md](../CHANGELOG.md) | 版本级变化。 |
 | [../PROJECT_RECORD.md](../PROJECT_RECORD.md) | 当前执行进度记录。 |

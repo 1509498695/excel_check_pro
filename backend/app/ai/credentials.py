@@ -1,44 +1,71 @@
-"""AI provider credential loading helpers."""
+"""Project-level AI provider credential loading helpers."""
 
 from __future__ import annotations
 
 import json
+import re
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models import AiProviderCredentialRecord
+from backend.app.ai.providers import mask_api_key
+from backend.app.models import ProjectAiCredentialRecord
 from backend.app.security.crypto import decrypt_secret
 
 
+PROJECT_AI_UNAVAILABLE_MESSAGE = "当前项目尚未配置或启用项目级 AI 凭据，请联系项目管理员在管理后台配置"
+_SK_STYLE_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b")
+_BEARER_TOKEN_RE = re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._\-]{12,}")
+
+
 class AiProviderNotConfigured(ValueError):
-    """当前用户尚未配置 AI 供应商。"""
+    """项目级 AI 供应商尚未配置或未启用。"""
 
 
 class AiProviderInvalid(ValueError):
-    """当前用户的 AI 凭据无法解密。"""
+    """项目级 AI 凭据无法解密。"""
 
 
-async def load_user_credential(
+async def load_project_credential(
     db: AsyncSession,
-    user_id: int,
-) -> AiProviderCredentialRecord:
-    """Load the current user's AI credential record."""
+    project_id: int,
+) -> ProjectAiCredentialRecord:
+    """Load the current project's AI credential record."""
     result = await db.execute(
-        select(AiProviderCredentialRecord).where(AiProviderCredentialRecord.user_id == user_id)
+        select(ProjectAiCredentialRecord).where(
+            ProjectAiCredentialRecord.project_id == project_id
+        )
     )
     credential = result.scalar_one_or_none()
-    if credential is None:
-        raise AiProviderNotConfigured("请先在个人设置中配置 AI 模型。")
+    if credential is None or not credential.encrypted_api_key:
+        raise AiProviderNotConfigured(PROJECT_AI_UNAVAILABLE_MESSAGE)
+    if not credential.enabled:
+        raise AiProviderNotConfigured(PROJECT_AI_UNAVAILABLE_MESSAGE)
     return credential
 
 
-def decrypt_credential_key(credential: AiProviderCredentialRecord) -> str:
+def decrypt_credential_key(credential: ProjectAiCredentialRecord) -> str:
     """Decrypt a provider API key and normalize the domain error."""
     try:
-        return decrypt_secret(credential.encrypted_api_key)
+        api_key = decrypt_secret(credential.encrypted_api_key)
     except ValueError as exc:
-        raise AiProviderInvalid("AI 凭据已损坏，请重新填写 API Key。") from exc
+        raise AiProviderInvalid(PROJECT_AI_UNAVAILABLE_MESSAGE) from exc
+    if not api_key:
+        raise AiProviderNotConfigured(PROJECT_AI_UNAVAILABLE_MESSAGE)
+    return api_key
+
+
+def sanitize_ai_error(message: str, api_key: str = "", *, max_length: int = 500) -> str:
+    """Return a user-facing AI error string without full API keys."""
+    sanitized = message or "AI 调用失败，请检查项目级 AI 配置。"
+    if api_key:
+        sanitized = sanitized.replace(api_key, mask_api_key(api_key) or "[已脱敏]")
+    sanitized = _SK_STYLE_KEY_RE.sub(
+        lambda match: mask_api_key(match.group(0)) or "[已脱敏]",
+        sanitized,
+    )
+    sanitized = _BEARER_TOKEN_RE.sub(r"\1[已脱敏]", sanitized)
+    return sanitized[:max_length]
 
 
 def parse_extra_headers(raw_json: str) -> dict[str, str]:

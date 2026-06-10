@@ -10,7 +10,16 @@ from sqlalchemy import select
 
 from backend.app.auth.service import create_access_token, hash_password
 from backend.app.database import async_session_factory
-from backend.app.models import Project, RuleConfigRecord, User, UserProjectRole
+from backend.app.models import (
+    ProjectAiCredentialRecord,
+    Project,
+    ProjectQueryRootRecord,
+    ProjectSvnCredentialRecord,
+    RuleConfigRecord,
+    User,
+    UserProjectRole,
+)
+from backend.app.security.crypto import encrypt_secret
 from backend.run import app
 
 
@@ -53,6 +62,49 @@ async def _create_project(name: str | None = None) -> int:
         return project.id
 
 
+async def _seed_query_root(
+    project_id: int,
+    *,
+    alias: str = "game_datas",
+    status: str = "enabled",
+) -> None:
+    async with async_session_factory() as session:
+        session.add(
+            ProjectQueryRootRecord(
+                project_id=project_id,
+                alias=alias,
+                display_name="游戏配置主目录",
+                svn_root_url="https://svn.example.com/game_datas",
+                status=status,
+            )
+        )
+        await session.commit()
+
+
+async def _seed_project_credentials(project_id: int) -> None:
+    async with async_session_factory() as session:
+        session.add(
+            ProjectSvnCredentialRecord(
+                project_id=project_id,
+                username="svn_admin",
+                password_cipher=encrypt_secret("svn_password"),
+            )
+        )
+        session.add(
+            ProjectAiCredentialRecord(
+                project_id=project_id,
+                provider_preset="openai",
+                base_url="https://api.openai.com/v1",
+                model="gpt-4o-mini",
+                encrypted_api_key=encrypt_secret("sk-project-secret"),
+                extra_headers_json='{"X-Project":"ExcelCheck"}',
+                enabled=True,
+                last_test_status="success",
+            )
+        )
+        await session.commit()
+
+
 def _client(headers: dict[str, str]) -> AsyncClient:
     return AsyncClient(
         transport=ASGITransport(app=app),
@@ -64,6 +116,7 @@ def _client(headers: dict[str, str]) -> AsyncClient:
 @pytest.mark.anyio
 async def test_project_member_can_save_draft(test_project_id: int) -> None:
     """普通项目成员可以保存 config_lookup 草稿。"""
+    await _seed_query_root(test_project_id)
     headers = await _create_user_headers(test_project_id)
 
     async with _client(headers) as client:
@@ -89,6 +142,7 @@ async def test_project_member_can_save_draft(test_project_id: int) -> None:
 @pytest.mark.anyio
 async def test_project_member_can_publish(test_project_id: int) -> None:
     """普通项目成员可以直接发布结构合法的 Markdown。"""
+    await _seed_query_root(test_project_id)
     headers = await _create_user_headers(test_project_id)
 
     async with _client(headers) as client:
@@ -107,6 +161,70 @@ async def test_project_member_can_publish(test_project_id: int) -> None:
     assert data["draft_version"] == 1
     assert data["published_version"] == 1
     assert data["published_at"] is not None
+
+
+@pytest.mark.anyio
+async def test_validate_endpoint_returns_structured_result(test_project_id: int) -> None:
+    """结构校验接口只校验不保存，并返回前端可用摘要。"""
+    await _seed_query_root(test_project_id)
+    headers = await _create_user_headers(test_project_id)
+
+    async with _client(headers) as client:
+        response = await client.post(
+            "/api/v1/rule-configs/config_lookup/validate",
+            json={"content_md": CONTENT_MD},
+        )
+        current = await client.get("/api/v1/rule-configs/config_lookup")
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["ok"] is True
+    assert data["errors"] == []
+    assert data["parsed_config_json"]["queries"][0]["query_type"] == "礼包"
+    assert data["summary"]["query_types"] == ["礼包"]
+    assert current.json()["data"]["status"] == "empty"
+
+
+@pytest.mark.anyio
+async def test_validation_failure_returns_error_list(test_project_id: int) -> None:
+    """保存草稿时结构校验失败返回明确错误码和中文错误列表。"""
+    await _seed_query_root(test_project_id)
+    headers = await _create_user_headers(test_project_id)
+
+    async with _client(headers) as client:
+        response = await client.put(
+            "/api/v1/rule-configs/config_lookup/draft",
+            json={
+                "content_md": CONTENT_MD.replace("数据根: game_datas\n", ""),
+                "expected_optimistic_lock_version": 0,
+            },
+        )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "RULE_CONFIG_VALIDATION_FAILED"
+    assert "缺少必填字段：数据根" in detail["errors"]
+    assert "summary" in detail
+
+
+@pytest.mark.anyio
+async def test_missing_query_root_alias_blocks_publish(test_project_id: int) -> None:
+    """未配置项目 query_roots alias 时不能保存或发布。"""
+    headers = await _create_user_headers(test_project_id)
+
+    async with _client(headers) as client:
+        response = await client.post(
+            "/api/v1/rule-configs/config_lookup/publish",
+            json={
+                "content_md": CONTENT_MD,
+                "expected_optimistic_lock_version": 0,
+            },
+        )
+
+    assert response.status_code == 400
+    detail = response.json()["detail"]
+    assert detail["code"] == "RULE_CONFIG_VALIDATION_FAILED"
+    assert "数据根 alias 不存在：game_datas" in detail["errors"]
 
 
 @pytest.mark.anyio
@@ -131,6 +249,7 @@ async def test_non_project_member_cannot_access(test_project_id: int) -> None:
 @pytest.mark.anyio
 async def test_version_conflict_returns_409(test_project_id: int) -> None:
     """保存草稿时旧 lock 不允许静默覆盖。"""
+    await _seed_query_root(test_project_id)
     headers = await _create_user_headers(test_project_id)
 
     async with _client(headers) as client:
@@ -140,7 +259,10 @@ async def test_version_conflict_returns_409(test_project_id: int) -> None:
         )
         conflict = await client.put(
             "/api/v1/rule-configs/config_lookup/draft",
-            json={"content_md": CONTENT_MD, "expected_optimistic_lock_version": 0},
+            json={
+                "content_md": CONTENT_MD.replace("数据根: game_datas\n", ""),
+                "expected_optimistic_lock_version": 0,
+            },
         )
 
     assert first.status_code == 200
@@ -155,6 +277,7 @@ async def test_rollback_creates_new_draft_version_without_changing_published_ver
     test_project_id: int,
 ) -> None:
     """回滚产生新版本，但不静默替换已发布版本。"""
+    await _seed_query_root(test_project_id)
     headers = await _create_user_headers(test_project_id)
 
     async with _client(headers) as client:
@@ -190,8 +313,10 @@ async def test_rollback_creates_new_draft_version_without_changing_published_ver
 @pytest.mark.anyio
 async def test_different_projects_have_independent_config_lookup(test_project_id: int) -> None:
     """不同项目可以各自拥有 config_lookup 当前文档。"""
+    await _seed_query_root(test_project_id)
     first_headers = await _create_user_headers(test_project_id)
     other_project_id = await _create_project()
+    await _seed_query_root(other_project_id)
     second_headers = await _create_user_headers(other_project_id)
 
     async with _client(first_headers) as first_client:
@@ -217,6 +342,7 @@ async def test_different_projects_have_independent_config_lookup(test_project_id
 @pytest.mark.anyio
 async def test_same_project_has_single_current_config_lookup_record(test_project_id: int) -> None:
     """同项目同 rule_family 只维护一条当前记录。"""
+    await _seed_query_root(test_project_id)
     headers = await _create_user_headers(test_project_id)
 
     async with _client(headers) as client:
@@ -258,6 +384,7 @@ async def test_only_config_lookup_rule_family_is_allowed(test_project_id: int) -
 @pytest.mark.anyio
 async def test_credential_status_does_not_expose_secrets(test_project_id: int) -> None:
     """凭据状态接口只返回脱敏状态，不暴露密码或 API Key。"""
+    await _seed_project_credentials(test_project_id)
     headers = await _create_user_headers(test_project_id)
 
     async with _client(headers) as client:
@@ -266,7 +393,17 @@ async def test_credential_status_does_not_expose_secrets(test_project_id: int) -
     assert response.status_code == 200
     payload_text = response.text.lower()
     assert "password" not in payload_text
-    assert "api_key" not in payload_text
+    assert "sk-project-secret" not in payload_text
     data = response.json()["data"]
-    assert data["svn"]["configured"] is False
-    assert data["ai"]["configured"] is False
+    assert data["svn"]["configured"] is True
+    assert data["svn"]["account_masked"] == "svn_admin"
+    assert data["svn"]["updated_at"] is not None
+    assert data["ai"]["configured"] is True
+    assert data["ai"]["enabled"] is True
+    assert data["ai"]["provider"] == "openai"
+    assert data["ai"]["model"] == "gpt-4o-mini"
+    assert data["ai"]["base_url"] == "https://api.openai.com/v1"
+    assert data["ai"]["masked_api_key"] == "sk-***cret"
+    assert data["ai"]["last_test_status"] == "success"
+    assert data["ai"]["last_test_at"] is None
+    assert data["ai"]["updated_at"] is not None

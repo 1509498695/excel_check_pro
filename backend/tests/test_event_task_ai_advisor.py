@@ -3,6 +3,13 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+import pytest
+
+from backend.app.ai.credentials import PROJECT_AI_UNAVAILABLE_MESSAGE
+from backend.app.ai.providers import ProviderConnectionError
+from backend.app.database import async_session_factory
+from backend.app.models import ProjectAiCredentialRecord
+from backend.app.security.crypto import encrypt_secret
 from backend.app.api.fixed_rules_schemas import (
     EventTaskPlanRow,
     EventTaskPreviewResult,
@@ -195,3 +202,132 @@ def test_ai_suggestion_does_not_modify_validation_summary() -> None:
     )
     assert client.calls == 1
     assert after == before
+
+
+@pytest.mark.anyio
+async def test_auto_unconfigured_project_ai_returns_warning(
+    test_project_id: int,
+) -> None:
+    async with async_session_factory() as session:
+        result = await advise_event_task_validation(
+            ai_assist_mode="auto",
+            preview=_preview_failed(),
+            sheet_rows=_preview_failed().raw_values,
+            context=EventTaskAiAdvisorContext(db=session, project_id=test_project_id),
+        )
+
+    assert result.used is False
+    assert result.suggestions == []
+    assert result.warnings == [PROJECT_AI_UNAVAILABLE_MESSAGE]
+    assert result.trigger_reasons
+
+
+@pytest.mark.anyio
+async def test_force_unconfigured_project_ai_raises_user_facing_error(
+    test_project_id: int,
+) -> None:
+    async with async_session_factory() as session:
+        with pytest.raises(ValueError, match=PROJECT_AI_UNAVAILABLE_MESSAGE):
+            await advise_event_task_validation(
+                ai_assist_mode="on",
+                preview=_preview_success(),
+                sheet_rows=_preview_success().raw_values,
+                force=True,
+                context=EventTaskAiAdvisorContext(db=session, project_id=test_project_id),
+            )
+
+
+@pytest.mark.anyio
+async def test_default_event_task_ai_client_uses_project_credential(
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_call_provider_json(**kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        captured.update(kwargs)
+        return {
+            "suggestions": [
+                {
+                    "type": "field_mapping_suggestion",
+                    "confidence": 0.75,
+                    "suggestions": [],
+                    "reason": "使用项目级 AI 凭据生成建议。",
+                    "requiresUserConfirm": True,
+                }
+            ],
+            "warnings": [],
+        }, {"latency_ms": 7}
+
+    monkeypatch.setattr(
+        "backend.app.services.event_task_ai_advisor.call_provider_json",
+        fake_call_provider_json,
+    )
+    async with async_session_factory() as session:
+        session.add(
+            ProjectAiCredentialRecord(
+                project_id=test_project_id,
+                provider_preset="openai",
+                base_url="https://api.openai.com/v1",
+                model="gpt-4o-mini",
+                encrypted_api_key=encrypt_secret("sk-project-secret"),
+                extra_headers_json='{"X-Project":"ExcelCheck"}',
+                enabled=True,
+            )
+        )
+        await session.commit()
+
+        result = await advise_event_task_validation(
+            ai_assist_mode="auto",
+            preview=_preview_failed(),
+            sheet_rows=_preview_failed().raw_values,
+            context=EventTaskAiAdvisorContext(db=session, project_id=test_project_id),
+        )
+
+    assert result.used is True
+    assert captured["provider_preset"] == "openai"
+    assert captured["base_url"] == "https://api.openai.com/v1"
+    assert captured["model"] == "gpt-4o-mini"
+    assert captured["api_key"] == "sk-project-secret"
+    assert captured["extra_headers"] == {"X-Project": "ExcelCheck"}
+
+
+@pytest.mark.anyio
+async def test_default_event_task_ai_client_sanitizes_provider_error_api_key(
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_call_provider_json(**_: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        raise ProviderConnectionError(
+            "unknown",
+            "上游拒绝了 API Key sk-project-secret，请检查配置。",
+        )
+
+    monkeypatch.setattr(
+        "backend.app.services.event_task_ai_advisor.call_provider_json",
+        fake_call_provider_json,
+    )
+    async with async_session_factory() as session:
+        session.add(
+            ProjectAiCredentialRecord(
+                project_id=test_project_id,
+                provider_preset="openai",
+                base_url="https://api.openai.com/v1",
+                model="gpt-4o-mini",
+                encrypted_api_key=encrypt_secret("sk-project-secret"),
+                extra_headers_json="{}",
+                enabled=True,
+            )
+        )
+        await session.commit()
+
+        result = await advise_event_task_validation(
+            ai_assist_mode="auto",
+            preview=_preview_failed(),
+            sheet_rows=_preview_failed().raw_values,
+            context=EventTaskAiAdvisorContext(db=session, project_id=test_project_id),
+        )
+
+    assert result.used is False
+    assert "sk-project-secret" not in result.warnings[0]
+    assert "sk-***cret" in result.warnings[0]

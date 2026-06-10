@@ -64,10 +64,10 @@ frontend/src
 
 | 路由 | 说明 |
 |---|---|
-| `/` | 个人校验四步工作流，含数据源、变量、规则、结果和 AI 规则助手。 |
+| `/` | 个人校验四步工作流，含数据源、变量、规则、结果和 IAP 礼包校验。 |
 | `/fixed-rules` | 项目校验配置、导入个人规则、执行、结果分页和导出。 |
 | `/admin` | 项目、成员、角色、密码和项目飞书机器人配置。 |
-| `/profile` | 账号信息、密码、项目切换、AI 配置和使用说明入口。 |
+| `/profile` | 账号信息、密码、项目切换和使用说明入口。 |
 | `/user-guide` | 登录后使用说明。 |
 
 个人校验 03 规则页签额外提供 `IAP礼包校验` 入口。弹窗会选择飞书礼包规划 Sheet 和包含 `INT_PackageId / STR_Items` 的礼包配置组合变量，调用 `/api/v1/workbench/package-items/preview` 生成解析预览，保存后由执行链路重新读取飞书 Sheet 并完成最终比对。
@@ -85,4 +85,4 @@ frontend/src
 
 ## 6. 联调入口
 
-完整联调步骤见 [../README.md](../README.md) 的“最短联调”。规则能力、AI 智能添加规则、SVN、飞书电子表格、IAP 礼包校验和接口契约见 [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)。
+完整联调步骤见 [../README.md](../README.md) 的“最短联调”。规则能力、SVN、飞书电子表格、IAP 礼包校验和接口契约见 [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)。

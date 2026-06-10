@@ -453,7 +453,7 @@ function getMappingFilterRanges(condition: MultiCompositeMappingFilter): string 
       <div class="rule-config-preview__section-head">
         <div>
           <h3>规则摘要</h3>
-          <p>用于快速核对 AI 草稿是否符合预期</p>
+          <p>用于快速核对规则配置是否符合预期</p>
         </div>
       </div>
       <div class="rule-config-preview__summary-text">{{ ruleSummary || '暂无摘要' }}</div>

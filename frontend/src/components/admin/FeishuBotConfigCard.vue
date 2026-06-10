@@ -5,12 +5,39 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   apiDeleteFeishuBotConfig,
   apiGetFeishuBotConfig,
+  apiTestProjectSvnCredential,
   apiUpsertFeishuBotConfig,
 } from '../../api/admin'
+import {
+  apiGetProjectAiConfig,
+  apiSaveProjectAiConfig,
+  apiTestProjectAiConfig,
+} from '../../api/projectAiConfig'
+import {
+  applyFeishuBotConfigToForm,
+  buildFeishuBotConfigPayload,
+  createFeishuBotConfigFormState,
+  extractFeishuBotConfigError,
+  mergeDefaultChatIdIntoBoundChats,
+  parseTextList,
+  validateFeishuBotConfigForm,
+  type FeishuBotConfigFormState,
+} from '../../features/admin/feishuBotConfigForm'
+import {
+  PROJECT_AI_PROVIDER_OPTIONS,
+  applyProjectAiConfigToForm,
+  applyProjectAiProviderDefaults,
+  buildProjectAiConfigPayload,
+  createProjectAiConfigFormState,
+  getModelOptionsForProjectAiProvider,
+  validateProjectAiConfigForm,
+  type ProjectAiConfigFormState,
+} from '../../features/admin/projectAiConfigForm'
 import type {
   FeishuBotConfig,
-  FeishuBotConfigPayload,
+  ProjectSvnCredentialTestResult,
 } from '../../types/admin'
+import type { ProjectAiConfig } from '../../types/projectAiConfig'
 import AppCard from '../shell/AppCard.vue'
 import DataTable from '../shell/DataTable.vue'
 import PrimaryButton from '../shell/PrimaryButton.vue'
@@ -25,104 +52,29 @@ interface Props {
   projectName?: string
 }
 
+type FeishuConfigSaveTarget = 'basic' | 'boundChats' | 'queryRoots' | 'svnCredential' | 'footer'
+
 const props = withDefaults(defineProps<Props>(), {
   projectName: '',
 })
 
-interface BotForm {
-  appId: string
-  appSecret: string
-  defaultChatId: string
-  allowedOpenIds: string
-  localDownloadRoots: string
-  svnDownloadRoots: string
-  allowedDownloadSuffixes: string
-}
-
-interface QueryRootRow {
-  alias: string
-  displayName: string
-  svnRoot: string
-  statusLabel: string
-  badgeType: StatusBadgeType
-}
-
-interface CredentialStatusRow {
-  label: string
-  statusLabel: string
-  badgeType: StatusBadgeType
-  accountLabel: string
-  secretLabel: string
-  updatedAt: string
-}
-
-interface AiMatchParam {
-  label: string
-  value: string
-}
-
 const config = ref<FeishuBotConfig | null>(null)
+const projectAiConfig = ref<ProjectAiConfig | null>(null)
 const isLoading = ref(false)
 const isSaving = ref(false)
+const isSavingProjectAi = ref(false)
 const isClearing = ref(false)
+const isTestingSvnCredential = ref(false)
+const isTestingProjectAi = ref(false)
 const isTestDialogVisible = ref(false)
+const formErrors = ref<string[]>([])
+const formErrorTarget = ref<FeishuConfigSaveTarget | null>(null)
+const projectAiErrors = ref<string[]>([])
+const svnCredentialTestResult = ref<ProjectSvnCredentialTestResult | null>(null)
+const svnCredentialTestError = ref('')
 
-const form = reactive<BotForm>({
-  appId: '',
-  appSecret: '',
-  defaultChatId: '',
-  allowedOpenIds: '',
-  localDownloadRoots: '',
-  svnDownloadRoots: '',
-  allowedDownloadSuffixes: '.xls,.xlsx,.csv,.json,.xml,.txt',
-})
-
-const boundChatIds = [
-  'oc_7c1b9f8e9f1f4c7b9c1827d9f6a2b8c5',
-  'oc_a9d3e6f1b8c24d9e7a3c5f1b2d6e9a7c',
-]
-
-const queryRoots: QueryRootRow[] = [
-  {
-    alias: 'game_datas',
-    displayName: '游戏配置主目录',
-    svnRoot: 'https://samosvn.company.com/svn/GameDatas',
-    statusLabel: '已启用',
-    badgeType: 'success',
-  },
-  {
-    alias: 'activity_datas',
-    displayName: '活动配置目录',
-    svnRoot: 'https://samosvn.company.com/svn/ActivityDatas',
-    statusLabel: '已启用',
-    badgeType: 'success',
-  },
-]
-
-const credentialStatuses: CredentialStatusRow[] = [
-  {
-    label: 'SVN 凭据状态',
-    statusLabel: '已连接',
-    badgeType: 'success',
-    accountLabel: '账号：s******n',
-    secretLabel: '密码：********',
-    updatedAt: '2024/05/27 01:20:11',
-  },
-  {
-    label: 'AI 凭据状态',
-    statusLabel: '已连接',
-    badgeType: 'success',
-    accountLabel: '模型：gpt-compatible',
-    secretLabel: '密钥：************',
-    updatedAt: '2024/05/27 01:20:11',
-  },
-]
-
-const aiMatchParams: AiMatchParam[] = [
-  { label: '高置信自动返回阈值', value: '0.90' },
-  { label: '候选列表阈值', value: '0.60' },
-  { label: '最大候选数量', value: '10' },
-]
+const form = reactive<FeishuBotConfigFormState>(createFeishuBotConfigFormState())
+const projectAiForm = reactive<ProjectAiConfigFormState>(createProjectAiConfigFormState())
 
 const ruleHints = [
   '一个 chat_id 只能绑定一个项目。',
@@ -136,6 +88,7 @@ watch(
     if (next === null) {
       resetForm()
       config.value = null
+      projectAiConfig.value = null
       return
     }
     await loadConfig(next)
@@ -144,37 +97,45 @@ watch(
 )
 
 function resetForm(): void {
-  form.appId = ''
-  form.appSecret = ''
-  form.defaultChatId = ''
-  form.allowedOpenIds = ''
-  form.localDownloadRoots = ''
-  form.svnDownloadRoots = ''
-  form.allowedDownloadSuffixes = '.xls,.xlsx,.csv,.json,.xml,.txt'
+  Object.assign(form, createFeishuBotConfigFormState())
+  Object.assign(projectAiForm, createProjectAiConfigFormState())
+  formErrors.value = []
+  formErrorTarget.value = null
+  projectAiErrors.value = []
+  svnCredentialTestResult.value = null
+  svnCredentialTestError.value = ''
 }
 
 function applyConfigToForm(next: FeishuBotConfig): void {
-  // appSecret 永远不会从后端回传，回填时统一留空：留空 = 保持原值。
-  form.appId = next.app_id
-  form.appSecret = ''
-  form.defaultChatId = next.default_chat_id
-  form.allowedOpenIds = next.allowed_open_ids.join('\n')
-  form.localDownloadRoots = next.local_download_roots.join('\n')
-  form.svnDownloadRoots = next.svn_download_roots.join('\n')
-  form.allowedDownloadSuffixes = next.allowed_download_suffixes.join(',')
+  Object.assign(form, applyFeishuBotConfigToForm(next))
+  formErrors.value = []
+  formErrorTarget.value = null
+  svnCredentialTestResult.value = null
+  svnCredentialTestError.value = ''
+}
+
+function applyProjectAiToForm(next: ProjectAiConfig | null): void {
+  Object.assign(projectAiForm, applyProjectAiConfigToForm(next))
+  projectAiErrors.value = []
 }
 
 async function loadConfig(projectId: number): Promise<void> {
   isLoading.value = true
   try {
-    const response = await apiGetFeishuBotConfig(projectId)
-    config.value = response.data
-    applyConfigToForm(response.data)
+    const [feishuResponse, projectAiResponse] = await Promise.all([
+      apiGetFeishuBotConfig(projectId),
+      apiGetProjectAiConfig(projectId),
+    ])
+    config.value = feishuResponse.data
+    projectAiConfig.value = projectAiResponse.data
+    applyConfigToForm(feishuResponse.data)
+    applyProjectAiToForm(projectAiResponse.data)
   } catch (error) {
     ElMessage.error(
       error instanceof Error ? error.message : '加载飞书机器人配置失败',
     )
     config.value = null
+    projectAiConfig.value = null
     resetForm()
   } finally {
     isLoading.value = false
@@ -200,48 +161,54 @@ const stateBadge = computed<{ type: StatusBadgeType; label: string }>(() => {
 
 const isConfigured = computed(() => config.value?.configured ?? false)
 const hasAppSecret = computed(() => config.value?.has_app_secret ?? false)
+const boundChatIdsPreview = computed(() => parseTextList(form.boundChatIdsText))
+const projectAiModelOptions = computed(() =>
+  getModelOptionsForProjectAiProvider(projectAiForm.provider),
+)
+const isSaveDisabled = computed(() => props.projectId === null || isSaving.value)
 
-const canSave = computed(() => {
-  if (props.projectId === null) return false
-  if (!form.appId.trim()) return false
-  if (!hasAppSecret.value && !form.appSecret.trim()) return false
-  return true
-})
-
-function buildPayload(): FeishuBotConfigPayload {
-  const payload: FeishuBotConfigPayload = { app_id: form.appId.trim() }
-  // appSecret 留空时显式传 null：等价于「保持原值」；后端首次创建会拒绝 null。
-  payload.app_secret = form.appSecret.trim() ? form.appSecret : null
-  // default_chat_id 始终下发（含空串），允许把已有值改成空。
-  payload.default_chat_id = form.defaultChatId.trim()
-  // allowed_open_ids 同样始终下发原文，由后端做去重 / 拼接。
-  payload.allowed_open_ids = form.allowedOpenIds
-  payload.local_download_roots = form.localDownloadRoots
-  payload.svn_download_roots = form.svnDownloadRoots
-  payload.allowed_download_suffixes = form.allowedDownloadSuffixes
-  return payload
+function shouldShowFormErrors(target: FeishuConfigSaveTarget): boolean {
+  return formErrors.value.length > 0 && formErrorTarget.value === target
 }
 
-async function handleSave(): Promise<void> {
+function syncDefaultChatToBoundChats(): void {
+  const nextBoundChatIdsText = mergeDefaultChatIdIntoBoundChats(
+    form.defaultChatId,
+    form.boundChatIdsText,
+  )
+  if (nextBoundChatIdsText !== form.boundChatIdsText) {
+    form.boundChatIdsText = nextBoundChatIdsText
+  }
+}
+
+async function handleSave(target: FeishuConfigSaveTarget = 'footer'): Promise<void> {
   if (props.projectId === null) {
     ElMessage.warning('请先选择项目')
     return
   }
-  if (!canSave.value) {
-    ElMessage.warning(
-      hasAppSecret.value
-        ? '请填写 App ID'
-        : '首次保存请填写 App ID 与 App Secret',
-    )
+  formErrorTarget.value = target
+  syncDefaultChatToBoundChats()
+  const validation = validateFeishuBotConfigForm(form, {
+    hasAppSecret: hasAppSecret.value,
+  })
+  if (!validation.ok) {
+    formErrors.value = validation.errors
+    ElMessage.warning(validation.errors[0])
     return
   }
   isSaving.value = true
   try {
-    await apiUpsertFeishuBotConfig(props.projectId, buildPayload())
+    const response = await apiUpsertFeishuBotConfig(
+      props.projectId,
+      buildFeishuBotConfigPayload(form, { hasAppSecret: hasAppSecret.value }),
+    )
+    config.value = response.data
+    applyConfigToForm(response.data)
     ElMessage.success('飞书机器人配置已保存')
-    await loadConfig(props.projectId)
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '保存配置失败')
+    const message = extractFeishuBotConfigError(error)
+    formErrors.value = [message]
+    ElMessage.error(message)
   } finally {
     isSaving.value = false
   }
@@ -284,14 +251,127 @@ function handleOpenTest(): void {
   isTestDialogVisible.value = true
 }
 
+function addQueryRoot(): void {
+  form.queryRoots.push({
+    alias: '',
+    displayName: '',
+    svnUrl: '',
+    enabled: true,
+  })
+}
+
+function removeQueryRoot(index: number): void {
+  form.queryRoots.splice(index, 1)
+}
+
+function startEditSvnCredential(): void {
+  form.svnCredential.isEditing = true
+}
+
+function cancelEditSvnCredential(): void {
+  form.svnCredential.isEditing = false
+  form.svnCredential.password = ''
+  form.svnCredential.username = config.value?.svn_credential.username_masked ?? ''
+}
+
+async function handleSvnCredentialTest(): Promise<void> {
+  if (props.projectId === null) {
+    ElMessage.warning('请先选择项目')
+    return
+  }
+  isTestingSvnCredential.value = true
+  svnCredentialTestResult.value = null
+  svnCredentialTestError.value = ''
+  try {
+    const response = await apiTestProjectSvnCredential(props.projectId)
+    svnCredentialTestResult.value = response.data
+    if (response.data.status === 'success') {
+      ElMessage.success('项目级 SVN 连接测试成功')
+    } else {
+      ElMessage.warning('项目级 SVN 连接测试存在失败项')
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '项目级 SVN 连接测试失败'
+    svnCredentialTestError.value = message
+    ElMessage.error(message)
+  } finally {
+    isTestingSvnCredential.value = false
+  }
+}
+
+function handleProjectAiProviderChange(): void {
+  applyProjectAiProviderDefaults(projectAiForm, projectAiForm.provider)
+}
+
+async function handleSaveProjectAiConfig(): Promise<void> {
+  if (props.projectId === null) {
+    ElMessage.warning('请先选择项目')
+    return
+  }
+  const validation = validateProjectAiConfigForm(projectAiForm)
+  if (!validation.ok) {
+    projectAiErrors.value = validation.errors
+    ElMessage.warning(validation.errors[0])
+    return
+  }
+  isSavingProjectAi.value = true
+  try {
+    const response = await apiSaveProjectAiConfig(
+      props.projectId,
+      buildProjectAiConfigPayload(projectAiForm),
+    )
+    projectAiConfig.value = response.data
+    applyProjectAiToForm(response.data)
+    ElMessage.success('项目级 AI 配置已保存')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '保存项目级 AI 配置失败'
+    projectAiErrors.value = [message]
+    ElMessage.error(message)
+  } finally {
+    isSavingProjectAi.value = false
+  }
+}
+
+async function handleTestProjectAiConfig(): Promise<void> {
+  if (props.projectId === null) return
+  if (!projectAiForm.configured) {
+    ElMessage.warning('请先保存项目级 AI 配置后再测试连接')
+    return
+  }
+  isTestingProjectAi.value = true
+  try {
+    const response = await apiTestProjectAiConfig(props.projectId)
+    projectAiConfig.value = response.data
+    applyProjectAiToForm(response.data)
+    ElMessage.success('项目级 AI 连接测试成功')
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '项目级 AI 连接测试失败'
+    projectAiErrors.value = [message]
+    if (projectAiConfig.value) {
+      await loadProjectAiConfigOnly(props.projectId)
+      projectAiErrors.value = [message]
+    }
+    ElMessage.error(message)
+  } finally {
+    isTestingProjectAi.value = false
+  }
+}
+
+async function loadProjectAiConfigOnly(projectId: number): Promise<void> {
+  try {
+    const response = await apiGetProjectAiConfig(projectId)
+    projectAiConfig.value = response.data
+    applyProjectAiToForm(response.data)
+  } catch {
+    // 保留测试失败时的错误展示，不用二次加载错误覆盖用户可见信息。
+  }
+}
+
 function formatUpdatedAt(value: string | null): string {
   if (!value) return '尚未保存'
   return new Date(value).toLocaleString('zh-CN')
 }
 
-function showStaticNotice(label: string): void {
-  ElMessage.info(`${label}将在后续阶段接入`)
-}
 </script>
 
 <template>
@@ -321,13 +401,31 @@ function showStaticNotice(label: string): void {
         </div>
 
         <div v-else class="feishu-admin-panel">
-          <section class="feishu-admin-section">
+          <div v-if="shouldShowFormErrors('footer')" class="feishu-form-errors">
+            <strong>配置未保存</strong>
+            <span v-for="error in formErrors" :key="error">{{ error }}</span>
+          </div>
+
+          <section class="feishu-admin-section" data-testid="feishu-basic-section">
             <div class="feishu-admin-section__head">
               <div>
                 <h3>基础连接信息</h3>
                 <p>保留现有保存逻辑，以下字段仍写入当前项目的飞书机器人配置。</p>
               </div>
-              <span class="feishu-admin-project">{{ props.projectName || '当前项目' }}</span>
+              <div class="feishu-section-actions">
+                <span class="feishu-admin-project">{{ props.projectName || '当前项目' }}</span>
+                <PrimaryButton
+                  size="sm"
+                  :disabled="isSaveDisabled"
+                  @click="handleSave('basic')"
+                >
+                  {{ isSaving ? '保存中…' : '保存基础配置' }}
+                </PrimaryButton>
+              </div>
+            </div>
+            <div v-if="shouldShowFormErrors('basic')" class="feishu-form-errors feishu-section-errors">
+              <strong>配置未保存</strong>
+              <span v-for="error in formErrors" :key="error">{{ error }}</span>
             </div>
 
             <div class="feishu-admin-form-grid">
@@ -355,8 +453,10 @@ function showStaticNotice(label: string): void {
                 <label>默认 chat_id（可选，用于测试发送默认回填）</label>
                 <el-input
                   v-model="form.defaultChatId"
+                  data-testid="feishu-default-chat-id-input"
                   placeholder="例如：oc_1234567890abcdef"
                   maxlength="128"
+                  @change="syncDefaultChatToBoundChats"
                 />
               </div>
 
@@ -410,13 +510,27 @@ function showStaticNotice(label: string): void {
                 <h3>已绑定群列表 bound_chat_ids</h3>
                 <p>项目绑定群用于把同一 App ID 的消息路由回正确项目。</p>
               </div>
-              <SecondaryButton size="sm" @click="showStaticNotice('添加绑定群')">
-                添加绑定群
-              </SecondaryButton>
+              <PrimaryButton
+                size="sm"
+                :disabled="isSaveDisabled"
+                @click="handleSave('boundChats')"
+              >
+                {{ isSaving ? '保存中…' : '保存绑定群' }}
+              </PrimaryButton>
             </div>
+            <div v-if="shouldShowFormErrors('boundChats')" class="feishu-form-errors feishu-section-errors">
+              <strong>配置未保存</strong>
+              <span v-for="error in formErrors" :key="error">{{ error }}</span>
+            </div>
+            <el-input
+              v-model="form.boundChatIdsText"
+              type="textarea"
+              :rows="3"
+              placeholder="每行一个 chat_id，例如：&#10;oc_default&#10;oc_backup"
+            />
             <div class="feishu-chat-tags">
               <span
-                v-for="chatId in boundChatIds"
+                v-for="chatId in boundChatIdsPreview"
                 :key="chatId"
                 class="feishu-chat-tag"
               >
@@ -424,19 +538,32 @@ function showStaticNotice(label: string): void {
               </span>
             </div>
             <div class="feishu-inline-tip">
-              default_chat_id 必须包含在绑定群列表中
+              default_chat_id 会自动加入绑定群列表
             </div>
           </section>
 
-          <section class="feishu-admin-section">
+          <section class="feishu-admin-section" data-testid="feishu-query-roots-section">
             <div class="feishu-admin-section__head">
               <div>
                 <h3>配置表查询数据根 query_roots</h3>
                 <p>query_roots 仅用于配置表查询读取 SVN 配置文件，与 SVN 下载根目录分开展示。</p>
               </div>
-              <PrimaryButton size="sm" @click="showStaticNotice('新增数据根')">
-                新增数据根
-              </PrimaryButton>
+              <div class="feishu-section-actions">
+                <SecondaryButton
+                  size="sm"
+                  :disabled="isSaveDisabled"
+                  @click="handleSave('queryRoots')"
+                >
+                  {{ isSaving ? '保存中…' : '保存数据根' }}
+                </SecondaryButton>
+                <PrimaryButton size="sm" @click="addQueryRoot">
+                  新增数据根
+                </PrimaryButton>
+              </div>
+            </div>
+            <div v-if="shouldShowFormErrors('queryRoots')" class="feishu-form-errors feishu-section-errors">
+              <strong>配置未保存</strong>
+              <span v-for="error in formErrors" :key="error">{{ error }}</span>
             </div>
             <DataTable aria-label="配置表查询数据根">
               <template #head>
@@ -450,22 +577,43 @@ function showStaticNotice(label: string): void {
               </template>
               <template #body>
                 <tr
-                  v-for="root in queryRoots"
-                  :key="root.alias"
+                  v-for="(root, index) in form.queryRoots"
+                  :key="`${root.alias}-${index}`"
                   class="bg-white transition hover:bg-gray-50"
                 >
-                  <td class="font-mono font-semibold text-ink-900">{{ root.alias }}</td>
-                  <td>{{ root.displayName }}</td>
-                  <td class="font-mono text-[12px] text-ink-500">{{ root.svnRoot }}</td>
                   <td>
-                    <StatusBadge :type="root.badgeType" :label="root.statusLabel" />
+                    <el-input
+                      v-model="root.alias"
+                      size="small"
+                      placeholder="game_datas"
+                    />
+                  </td>
+                  <td>
+                    <el-input
+                      v-model="root.displayName"
+                      size="small"
+                      placeholder="游戏配置主目录"
+                    />
+                  </td>
+                  <td>
+                    <el-input
+                      v-model="root.svnUrl"
+                      size="small"
+                      placeholder="https://svn.example.com/game"
+                    />
+                  </td>
+                  <td>
+                    <div class="feishu-query-root-status">
+                      <StatusBadge
+                        :type="root.enabled ? 'success' : 'neutral'"
+                        :label="root.enabled ? '已启用' : '已禁用'"
+                      />
+                      <el-switch v-model="root.enabled" size="small" />
+                    </div>
                   </td>
                   <td>
                     <div class="table-actions">
-                      <button type="button" class="ec-action-link" @click="showStaticNotice('编辑数据根')">
-                        编辑
-                      </button>
-                      <button type="button" class="ec-action-link-danger" @click="showStaticNotice('删除数据根')">
+                      <button type="button" class="ec-action-link-danger" @click="removeQueryRoot(index)">
                         删除
                       </button>
                     </div>
@@ -480,51 +628,227 @@ function showStaticNotice(label: string): void {
               <div class="feishu-admin-section__head">
                 <div>
                   <h3>项目级凭据状态</h3>
-                  <p>凭据内容脱敏展示，当前区域为静态状态信息。</p>
+                  <p>凭据内容脱敏展示；更新凭据后随本卡片保存按钮一起提交。</p>
                 </div>
               </div>
+              <div v-if="shouldShowFormErrors('svnCredential')" class="feishu-form-errors feishu-section-errors">
+                <strong>配置未保存</strong>
+                <span v-for="error in formErrors" :key="error">{{ error }}</span>
+              </div>
               <div class="feishu-credential-list">
-                <div
-                  v-for="item in credentialStatuses"
-                  :key="item.label"
-                  class="feishu-credential-item"
-                >
+                <div class="feishu-credential-item">
                   <div class="feishu-credential-item__main">
                     <div class="feishu-credential-item__title">
-                      <strong>{{ item.label }}</strong>
-                      <StatusBadge :type="item.badgeType" :label="item.statusLabel" />
+                      <strong>SVN 凭据状态</strong>
+                      <StatusBadge
+                        :type="form.svnCredential.configured ? 'success' : 'neutral'"
+                        :label="form.svnCredential.configured ? '已配置' : '未配置'"
+                      />
                     </div>
-                    <p>{{ item.accountLabel }}</p>
-                    <p>{{ item.secretLabel }}</p>
-                    <p>最后更新：{{ item.updatedAt }}</p>
+                    <p>账号：{{ form.svnCredential.username || '-' }}</p>
+                    <p>密码：{{ form.svnCredential.configured ? '********' : '-' }}</p>
+                    <p>最后更新：{{ formatUpdatedAt(form.svnCredential.updatedAt) }}</p>
                   </div>
                   <div class="feishu-credential-item__actions">
-                    <SecondaryButton size="sm" @click="showStaticNotice(`${item.label}更新凭据`)">
+                    <SecondaryButton size="sm" @click="startEditSvnCredential">
                       更新凭据
                     </SecondaryButton>
-                    <SecondaryButton size="sm" @click="showStaticNotice(`${item.label}连接测试`)">
-                      连接测试
+                    <SecondaryButton
+                      size="sm"
+                      :disabled="isTestingSvnCredential"
+                      @click="handleSvnCredentialTest"
+                    >
+                      {{ isTestingSvnCredential ? '测试中…' : '连接测试' }}
                     </SecondaryButton>
                   </div>
                 </div>
+                <div v-if="form.svnCredential.isEditing" class="feishu-credential-edit">
+                  <label>
+                    <span>SVN 用户名</span>
+                    <el-input v-model="form.svnCredential.username" placeholder="svn_admin" />
+                  </label>
+                  <label>
+                    <span>SVN 密码（留空表示保持原值）</span>
+                    <el-input
+                      v-model="form.svnCredential.password"
+                      show-password
+                      placeholder="留空保持原值"
+                    />
+                  </label>
+                  <SecondaryButton size="sm" @click="cancelEditSvnCredential">
+                    取消更新
+                  </SecondaryButton>
+                  <PrimaryButton
+                    size="sm"
+                    :disabled="isSaveDisabled"
+                    @click="handleSave('svnCredential')"
+                  >
+                    {{ isSaving ? '保存中…' : '保存 SVN 凭据' }}
+                  </PrimaryButton>
+                </div>
+                <div
+                  v-if="svnCredentialTestError"
+                  class="feishu-svn-test-result feishu-svn-test-result--failed"
+                >
+                  <strong>连接测试失败</strong>
+                  <span>{{ svnCredentialTestError }}</span>
+                </div>
+                <div
+                  v-else-if="svnCredentialTestResult"
+                  class="feishu-svn-test-result"
+                >
+                  <strong>
+                    连接测试{{ svnCredentialTestResult.status === 'success' ? '成功' : '存在失败项' }}
+                  </strong>
+                  <div class="feishu-svn-test-items">
+                    <div
+                      v-for="item in svnCredentialTestResult.items"
+                      :key="`${item.alias}:${item.svn_url}`"
+                      class="feishu-svn-test-item"
+                    >
+                      <StatusBadge
+                        :type="item.status === 'success' ? 'success' : 'danger'"
+                        :label="item.status === 'success' ? '成功' : '失败'"
+                      />
+                      <span class="feishu-svn-test-item__alias">{{ item.alias }}</span>
+                      <span class="feishu-svn-test-item__message">
+                        {{ item.message }}
+                        <template v-if="item.status === 'success'">
+                          · {{ item.entry_count }} 项
+                        </template>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
               </div>
             </section>
 
             <section class="feishu-admin-section">
               <div class="feishu-admin-section__head">
                 <div>
-                  <h3>AI 名称匹配默认参数</h3>
-                  <p>用于配置表查询中的名称匹配候选排序，当前仅静态展示。</p>
+                  <h3>项目级 AI 凭据与名称匹配参数</h3>
+                  <p>用于后续配置表查询名称匹配；不参与 Markdown 解析和规则修改。</p>
                 </div>
+                <StatusBadge
+                  :type="projectAiForm.configured ? 'success' : 'neutral'"
+                  :label="projectAiForm.configured ? '已配置' : '未配置'"
+                />
+              </div>
+              <div v-if="projectAiErrors.length" class="feishu-form-errors feishu-project-ai-errors">
+                <strong>AI 配置未保存</strong>
+                <span v-for="error in projectAiErrors" :key="error">{{ error }}</span>
+              </div>
+              <div class="feishu-project-ai-status">
+                <p>密钥：{{ projectAiForm.maskedApiKey || '-' }}</p>
+                <p>最后测试：{{ projectAiForm.lastTestStatus || '未测试' }}</p>
+                <p>测试时间：{{ formatUpdatedAt(projectAiForm.lastTestAt) }}</p>
+              </div>
+              <div class="feishu-ai-form-grid">
+                <label>
+                  <span>AI 提供商</span>
+                  <el-select
+                    v-model="projectAiForm.provider"
+                    @change="handleProjectAiProviderChange"
+                  >
+                    <el-option
+                      v-for="item in PROJECT_AI_PROVIDER_OPTIONS"
+                      :key="item.value"
+                      :label="item.label"
+                      :value="item.value"
+                    />
+                  </el-select>
+                </label>
+                <label>
+                  <span>启用状态</span>
+                  <el-switch
+                    v-model="projectAiForm.enabled"
+                    active-text="启用"
+                    inactive-text="停用"
+                  />
+                </label>
+                <label>
+                  <span>模型</span>
+                  <el-select
+                    v-if="projectAiModelOptions.length"
+                    v-model="projectAiForm.model"
+                  >
+                    <el-option
+                      v-for="model in projectAiModelOptions"
+                      :key="model"
+                      :label="model"
+                      :value="model"
+                    />
+                  </el-select>
+                  <el-input
+                    v-else
+                    v-model="projectAiForm.model"
+                    placeholder="请输入模型名"
+                  />
+                </label>
+                <label>
+                  <span>Base URL</span>
+                  <el-input
+                    v-model="projectAiForm.baseUrl"
+                    placeholder="https://api.example.com/v1"
+                  />
+                </label>
               </div>
               <div class="feishu-ai-param-list">
-                <label
-                  v-for="param in aiMatchParams"
-                  :key="param.label"
-                >
-                  <span>{{ param.label }}</span>
-                  <el-input :model-value="param.value" readonly />
+                <label>
+                  <span>API Key（留空表示保持原值）</span>
+                  <el-input
+                    v-model="projectAiForm.apiKey"
+                    show-password
+                    placeholder="已保存时留空保持原值"
+                  />
                 </label>
+                <label>
+                  <span>高置信自动返回阈值</span>
+                  <el-input
+                    v-model="projectAiForm.autoMatchThreshold"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                  />
+                </label>
+                <label>
+                  <span>候选列表阈值</span>
+                  <el-input
+                    v-model="projectAiForm.candidateThreshold"
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.01"
+                  />
+                </label>
+                <label>
+                  <span>最大候选数量</span>
+                  <el-input
+                    v-model="projectAiForm.maxCandidates"
+                    type="number"
+                    min="1"
+                    max="20"
+                    step="1"
+                  />
+                </label>
+              </div>
+              <div class="feishu-project-ai-actions">
+                <SecondaryButton
+                  size="sm"
+                  :disabled="isTestingProjectAi || isSavingProjectAi"
+                  @click="handleTestProjectAiConfig"
+                >
+                  {{ isTestingProjectAi ? '测试中…' : '连接测试' }}
+                </SecondaryButton>
+                <PrimaryButton
+                  size="sm"
+                  :disabled="isSavingProjectAi"
+                  @click="handleSaveProjectAiConfig"
+                >
+                  {{ isSavingProjectAi ? '保存中…' : '保存 AI 配置' }}
+                </PrimaryButton>
               </div>
             </section>
           </div>
@@ -567,8 +891,8 @@ function showStaticNotice(label: string): void {
                 测试发送
               </SecondaryButton>
               <PrimaryButton
-                :disabled="!canSave || isSaving"
-                @click="handleSave"
+                :disabled="isSaveDisabled"
+                @click="handleSave('footer')"
               >
                 {{ isSaving ? '保存中…' : '保存配置' }}
               </PrimaryButton>
@@ -598,6 +922,28 @@ function showStaticNotice(label: string): void {
   display: flex;
   flex-direction: column;
   gap: 14px;
+}
+
+.feishu-form-errors {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  color: #991b1b;
+  background: #fef2f2;
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 12px 14px;
+}
+
+.feishu-form-errors strong {
+  color: #7f1d1d;
+  font-weight: 850;
+}
+
+.feishu-section-errors {
+  margin-bottom: 14px;
 }
 
 .feishu-admin-section {
@@ -630,6 +976,15 @@ function showStaticNotice(label: string): void {
   line-height: 1.5;
 }
 
+.feishu-section-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .feishu-admin-project {
   display: inline-flex;
   min-height: 28px;
@@ -650,7 +1005,9 @@ function showStaticNotice(label: string): void {
 }
 
 .feishu-admin-form-grid label,
-.feishu-ai-param-list label {
+.feishu-ai-param-list label,
+.feishu-credential-edit label,
+.feishu-ai-form-grid label {
   display: block;
   margin-bottom: 6px;
   color: #64748b;
@@ -703,9 +1060,17 @@ function showStaticNotice(label: string): void {
   padding: 8px 10px;
 }
 
+.feishu-query-root-status {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .feishu-admin-two-column {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(360px, 0.85fr);
+  grid-template-columns: 1fr;
   gap: 14px;
 }
 
@@ -762,9 +1127,128 @@ function showStaticNotice(label: string): void {
   flex-wrap: wrap;
 }
 
-.feishu-ai-param-list {
+.feishu-svn-test-result {
   display: flex;
   flex-direction: column;
+  gap: 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  color: #1e3a8a;
+  background: #eff6ff;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 12px;
+}
+
+.feishu-svn-test-result strong {
+  color: #1e40af;
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.feishu-svn-test-result--failed {
+  border-color: #fecaca;
+  color: #991b1b;
+  background: #fef2f2;
+}
+
+.feishu-svn-test-result--failed strong {
+  color: #7f1d1d;
+}
+
+.feishu-svn-test-items {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.feishu-svn-test-item {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.feishu-svn-test-item__alias {
+  color: var(--color-text-main);
+  font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  font-weight: 800;
+}
+
+.feishu-svn-test-item__message {
+  min-width: 0;
+  color: #475569;
+  overflow-wrap: anywhere;
+}
+
+.feishu-credential-edit {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 8px;
+  background: #f8fbff;
+  padding: 14px;
+}
+
+.feishu-project-ai-errors {
+  margin-bottom: 12px;
+}
+
+.feishu-project-ai-status {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+  border: 1px solid var(--color-border-light);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+}
+
+.feishu-project-ai-status p {
+  min-width: 0;
+  overflow: hidden;
+  margin: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.feishu-ai-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.feishu-project-ai-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+
+.feishu-credential-edit label {
+  margin-bottom: 0;
+}
+
+.feishu-credential-edit label > span {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.feishu-credential-edit__wide {
+  grid-column: 1 / -1;
+}
+
+.feishu-ai-param-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
 }
 
@@ -845,6 +1329,15 @@ function showStaticNotice(label: string): void {
   }
 
   .feishu-admin-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .feishu-ai-form-grid,
+  .feishu-ai-param-list {
+    grid-template-columns: 1fr;
+  }
+
+  .feishu-credential-edit {
     grid-template-columns: 1fr;
   }
 

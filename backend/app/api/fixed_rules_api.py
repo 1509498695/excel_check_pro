@@ -252,7 +252,6 @@ async def preview_package_items_endpoint(
             ai_parse_mode=payload.ai_parse_mode,
             db=db,
             project_id=project_id,
-            user_id=ctx.user_id,
         )
     except (ValueError, FileNotFoundError, ImportError, FeishuClientError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

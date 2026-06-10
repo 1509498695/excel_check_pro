@@ -88,6 +88,18 @@ PROVIDER_PRESETS: dict[AiProviderPreset, ProviderPreset] = {
         "https://token-plan-cn.xiaomimimo.com/v1",
         "mimo-v2.5-pro",
     ),
+    "siliconflow": ProviderPreset(
+        "SiliconFlow",
+        "openai_compatible",
+        "https://api.siliconflow.cn/v1",
+        "",
+    ),
+    "custom_openai_compatible": ProviderPreset(
+        "自定义 OpenAI Compatible",
+        "openai_compatible",
+        "",
+        "",
+    ),
     "custom_openai": ProviderPreset(
         "自定义 OpenAI 兼容",
         "openai_compatible",

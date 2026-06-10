@@ -582,7 +582,7 @@ async def _build_event_task_ai_advice(
     ai_assist_mode: str,
     preview: EventTaskPreviewResult,
     db: AsyncSession,
-    user_id: int,
+    project_id: int,
     validation_summary: EventTaskRewardValidationSummary | None = None,
     force: bool = False,
 ) -> EventTaskAiAdviceResult:
@@ -593,7 +593,7 @@ async def _build_event_task_ai_advice(
         sheet_name=preview.raw_sheet_name,
         validation_summary=validation_summary,
         force=force,
-        context=EventTaskAiAdvisorContext(db=db, user_id=user_id),
+        context=EventTaskAiAdvisorContext(db=db, project_id=project_id),
     )
 
 
@@ -765,7 +765,6 @@ async def preview_workbench_package_items(
             ai_parse_mode=payload.ai_parse_mode,
             db=db,
             project_id=project_id,
-            user_id=ctx.user_id,
         )
         response = _build_package_items_preview_response(preview, payload)
     except (
@@ -826,7 +825,7 @@ async def preview_workbench_event_tasks(
             ai_assist_mode=payload.ai_assist_mode,
             preview=preview,
             db=db,
-            user_id=ctx.user_id,
+            project_id=project_id,
         )
         response = _build_event_task_preview_response(preview, payload, ai_advice=ai_advice)
     except (
@@ -883,7 +882,7 @@ async def validate_workbench_event_tasks(
                 ai_assist_mode=payload.ai_assist_mode,
                 preview=preview,
                 db=db,
-                user_id=ctx.user_id,
+                project_id=project_id,
             )
             messages = [*preview.errors, *preview.warnings]
             response = _build_event_task_validation_failure(
@@ -895,7 +894,7 @@ async def validate_workbench_event_tasks(
                 ai_assist_mode=payload.ai_assist_mode,
                 preview=preview,
                 db=db,
-                user_id=ctx.user_id,
+                project_id=project_id,
             )
             response = _build_event_task_validation_failure(
                 "Sheet 为空或未识别到节日任务明细。",
@@ -938,7 +937,7 @@ async def validate_workbench_event_tasks(
                         preview=preview,
                         validation_summary=summary,
                         db=db,
-                        user_id=ctx.user_id,
+                        project_id=project_id,
                     )
                     response = _build_event_task_validation_response(
                         summary,
@@ -1030,7 +1029,7 @@ async def suggest_workbench_event_task_ai(
             preview=preview,
             validation_summary=summary,
             db=db,
-            user_id=ctx.user_id,
+            project_id=project_id,
             force=True,
         )
         response = {

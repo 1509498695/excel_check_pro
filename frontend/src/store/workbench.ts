@@ -12,10 +12,8 @@ import {
 } from '../api/workbench'
 import type { SourceMetadataFetchOptions } from '../api/workbench'
 import type { FixedRuleDefinition, FixedRuleGroup } from '../types/fixedRules'
-import type { AiRuleDraftPayload } from '../types/ai'
 import type {
   DataSource,
-  ExecuteResponse,
   SourceMetadata,
   TaskTree,
   ValidationRule,
@@ -88,10 +86,6 @@ import {
   type SourcePathReplacementGroup,
 } from '../utils/sourcePathReplacement'
 import { saveApiFile } from '../utils/download'
-import {
-  buildAiDraftPreviewTaskTreePayload,
-  getAiDraftRulesToApply,
-} from '../utils/aiDraftWorkflow'
 import { SAMPLE_SOURCE_PATH } from '../utils/workbenchMeta'
 
 function canUseCachedSourceMetadata(
@@ -976,42 +970,6 @@ export const useWorkbenchStore = defineStore('workbench', {
       } finally {
         this.isResultExporting = false
       }
-    },
-
-    async applyAiRuleDraft(draft: AiRuleDraftPayload): Promise<string[]> {
-      const rulesToApply = getAiDraftRulesToApply(
-        this.orchestrationRules,
-        draft.rules_to_add,
-      )
-      if (!rulesToApply.length) {
-        throw new Error('规则已存在，无需重复添加。')
-      }
-
-      draft.sources_to_add.forEach((source) => {
-        this.upsertSource(source)
-      })
-      draft.variables_to_add.forEach((variable) => {
-        this.upsertVariable(variable)
-      })
-
-      const appliedRuleIds: string[] = []
-      rulesToApply.forEach((rule) => {
-        this.upsertOrchestrationRule(rule)
-        appliedRuleIds.push(rule.rule_id)
-      })
-
-      await this.saveConfigNow()
-      return appliedRuleIds
-    },
-
-    async previewAiRuleDraft(draft: AiRuleDraftPayload): Promise<ExecuteResponse> {
-      const payload = buildAiDraftPreviewTaskTreePayload(
-        this.sources,
-        this.variables,
-        draft,
-        this.resultPageSize,
-      )
-      return executeTaskTree(payload)
     },
 
     async saveConfigNow(): Promise<void> {

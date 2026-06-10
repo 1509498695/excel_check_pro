@@ -79,7 +79,6 @@ async def prepare_package_items_runtime_config(
             ai_parse_mode=parse_config.ai_parse_mode,
             db=db,
             project_id=project_id,
-            user_id=user_id,
         )
         if preview.parse_status != "success":
             messages = [*preview.errors, *preview.warnings]
@@ -206,7 +205,6 @@ async def prepare_package_items_runtime_task_tree(
                 ai_parse_mode=parse_config.ai_parse_mode,
                 db=db,
                 project_id=project_id,
-                user_id=user_id,
             )
         except FeishuClientError as exc:
             abnormal_results.append(

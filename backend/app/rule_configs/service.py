@@ -11,12 +11,20 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from backend.app.models import RuleConfigRecord, RuleConfigVersionRecord
-from backend.app.rule_configs.parser import parse_config_lookup_markdown
+from backend.app.models import (
+    ProjectQueryRootRecord,
+    RuleConfigRecord,
+    RuleConfigVersionRecord,
+)
+from backend.app.rule_configs.parser import (
+    RuleConfigValidationResult,
+    validate_config_lookup_markdown,
+)
 
 
 SUPPORTED_RULE_FAMILY = "config_lookup"
 RULE_CONFIG_VERSION_CONFLICT = "RULE_CONFIG_VERSION_CONFLICT"
+RULE_CONFIG_VALIDATION_FAILED = "RULE_CONFIG_VALIDATION_FAILED"
 RuleConfigAction = Literal["save_draft", "publish", "rollback"]
 
 
@@ -27,6 +35,22 @@ class RuleConfigMutation:
     content_md: str
     expected_optimistic_lock_version: int
     description: str = ""
+
+
+@dataclass(frozen=True)
+class RuleConfigMutationResult:
+    """规则配置变更结果。"""
+
+    record: RuleConfigRecord
+    validation: RuleConfigValidationResult
+
+
+class RuleConfigValidationError(ValueError):
+    """规则配置结构校验失败。"""
+
+    def __init__(self, validation: RuleConfigValidationResult) -> None:
+        super().__init__("规则结构校验失败")
+        self.validation = validation
 
 
 def ensure_supported_rule_family(rule_family: str) -> str:
@@ -60,20 +84,34 @@ async def save_rule_config_draft(
     user_id: int,
     rule_family: str,
     mutation: RuleConfigMutation,
-) -> RuleConfigRecord:
+) -> RuleConfigMutationResult:
     """保存草稿并写入版本历史。"""
-    parsed_config = parse_config_lookup_markdown(mutation.content_md)
-    return await _mutate_rule_config(
+    await _ensure_expected_lock(
+        db,
+        project_id=project_id,
+        rule_family=rule_family,
+        expected_optimistic_lock_version=mutation.expected_optimistic_lock_version,
+    )
+    validation = await validate_rule_config_content(
+        db,
+        project_id=project_id,
+        rule_family=rule_family,
+        content_md=mutation.content_md,
+    )
+    if not validation.ok:
+        raise RuleConfigValidationError(validation)
+    record = await _mutate_rule_config(
         db,
         project_id=project_id,
         user_id=user_id,
         rule_family=rule_family,
         content_md=mutation.content_md,
-        parsed_config=parsed_config,
+        parsed_config=validation.parsed_config_json,
         expected_optimistic_lock_version=mutation.expected_optimistic_lock_version,
         action="save_draft",
         description=mutation.description,
     )
+    return RuleConfigMutationResult(record=record, validation=validation)
 
 
 async def publish_rule_config(
@@ -83,20 +121,68 @@ async def publish_rule_config(
     user_id: int,
     rule_family: str,
     mutation: RuleConfigMutation,
-) -> RuleConfigRecord:
+) -> RuleConfigMutationResult:
     """发布规则配置并写入版本历史。"""
-    parsed_config = parse_config_lookup_markdown(mutation.content_md)
-    return await _mutate_rule_config(
+    await _ensure_expected_lock(
+        db,
+        project_id=project_id,
+        rule_family=rule_family,
+        expected_optimistic_lock_version=mutation.expected_optimistic_lock_version,
+    )
+    validation = await validate_rule_config_content(
+        db,
+        project_id=project_id,
+        rule_family=rule_family,
+        content_md=mutation.content_md,
+    )
+    if not validation.ok:
+        raise RuleConfigValidationError(validation)
+    record = await _mutate_rule_config(
         db,
         project_id=project_id,
         user_id=user_id,
         rule_family=rule_family,
         content_md=mutation.content_md,
-        parsed_config=parsed_config,
+        parsed_config=validation.parsed_config_json,
         expected_optimistic_lock_version=mutation.expected_optimistic_lock_version,
         action="publish",
         description=mutation.description,
     )
+    return RuleConfigMutationResult(record=record, validation=validation)
+
+
+async def validate_rule_config_content(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    rule_family: str,
+    content_md: str,
+) -> RuleConfigValidationResult:
+    """校验规则配置内容，不产生版本或持久化副作用。"""
+    ensure_supported_rule_family(rule_family)
+    enabled_aliases = await list_enabled_project_query_root_aliases(
+        db,
+        project_id=project_id,
+    )
+    return validate_config_lookup_markdown(
+        content_md,
+        allowed_query_roots=enabled_aliases,
+    )
+
+
+async def list_enabled_project_query_root_aliases(
+    db: AsyncSession,
+    *,
+    project_id: int,
+) -> set[str]:
+    """读取项目已启用 query_roots alias。"""
+    result = await db.execute(
+        select(ProjectQueryRootRecord.alias).where(
+            ProjectQueryRootRecord.project_id == project_id,
+            ProjectQueryRootRecord.status == "enabled",
+        )
+    )
+    return set(result.scalars().all())
 
 
 async def list_rule_config_versions(
@@ -252,6 +338,23 @@ async def _mutate_rule_config(
         _raise_version_conflict(record.optimistic_lock_version if record else 0)
     await db.refresh(record)
     return record
+
+
+async def _ensure_expected_lock(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    rule_family: str,
+    expected_optimistic_lock_version: int,
+) -> None:
+    record = await get_current_rule_config(
+        db,
+        project_id=project_id,
+        rule_family=rule_family,
+    )
+    current_lock = record.optimistic_lock_version if record is not None else 0
+    if current_lock != expected_optimistic_lock_version:
+        _raise_version_conflict(current_lock)
 
 
 async def _next_version(

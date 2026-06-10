@@ -1,8 +1,8 @@
 # Excel Check
 
-文档更新时间：2026-06-03 17:17
+文档更新时间：2026-06-10 12:30
 
-> 当前稳定文档入口保留 8 份：本 README、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/MODULES.md](docs/MODULES.md)、[docs/STANDARDS.md](docs/STANDARDS.md)、[docs/FRONTEND_STYLE_GUIDE.md](docs/FRONTEND_STYLE_GUIDE.md)、[frontend/README.md](frontend/README.md)、[CHANGELOG.md](CHANGELOG.md) 与 [PROJECT_RECORD.md](PROJECT_RECORD.md)。历史需求、旧分钟级进度和一次性重构方案见 [docs/archive/](docs/archive/)。
+> 当前稳定文档入口保留 9 份：本 README、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/MODULES.md](docs/MODULES.md)、[docs/STANDARDS.md](docs/STANDARDS.md)、[docs/FRONTEND_STYLE_GUIDE.md](docs/FRONTEND_STYLE_GUIDE.md)、[docs/adr/](docs/adr/)、[frontend/README.md](frontend/README.md)、[CHANGELOG.md](CHANGELOG.md) 与 [PROJECT_RECORD.md](PROJECT_RECORD.md)。历史需求、旧分钟级进度和一次性重构方案见 [docs/archive/](docs/archive/)。
 
 Excel Check 是面向配置表校验的多用户 Web 应用。系统把数据源、变量、规则和结果统一到 `TaskTree`，支持个人临时校验和项目长期规则复用。
 
@@ -11,14 +11,14 @@ Excel Check 是面向配置表校验的多用户 Web 应用。系统把数据源
 - 认证与权限：JWT 登录、注册、项目切换、三级角色；默认管理员 `admin / 123456`。
 - 个人校验 `/`：数据源、变量池、规则编排、结果四步流程，统一走 `POST /api/v1/engine/execute`。
 - 项目校验 `/fixed-rules`：项目级规则配置、从个人校验导入、执行、分页结果和 Excel 导出。
-- 管理后台 `/admin`：项目、成员、角色、归属和密码管理。
-- 个人设置 `/profile`：账号信息、密码、项目切换、AI 模型配置和使用说明入口。
+- 管理后台 `/admin`：项目、成员、角色、归属、密码、飞书机器人和项目级 AI 凭据管理。
+- 个人设置 `/profile`：账号信息、密码、项目切换和使用说明入口。
 - 使用说明 `/user-guide`：面向业务用户的操作指引页。
 - 数据源：本地 Excel、浏览器上传 Excel、SVN Excel、飞书电子表格；CSV 已下线。
 - 规则能力：11 类规则，覆盖单字段、固定值、正则、顺序、跨表映射、多种组合变量校验和 IAP 礼包校验。
 - IAP 礼包校验：个人校验 03 规则页签可从飞书 Sheet 预览礼包规划明细，保存 `package_items_compare` 规则，并在执行时与结构化配置变量中的 `STR_Items` 做无序道具比对。
-- AI 智能添加规则：在个人校验步骤 03 生成规则草稿，必须经预校验和用户确认后写入配置。
 - 飞书接入：项目管理员配置飞书机器人后，个人校验可检测表格权限、发送群授权卡片、通过 OAuth 回调为机器人追加只读协作者，并读取 Sheet 元数据、列预览和执行数据。
+- AI 辅助能力：项目级 AI 凭据是唯一 AI 配置入口，由项目管理员在管理后台维护；当前仅用于配置表查询 AI 名称匹配、礼包规划表结构识别和活动任务 AI 建议。个人设置只保留账号、密码和项目切换，个人校验只保留手动规则配置与固定规则执行。
 
 ## 2. 技术栈与地址
 
@@ -254,7 +254,7 @@ python scripts/check_release_package.py D:\path\to\extracted-package
 2. 打开 <http://127.0.0.1:5173/login>，使用 `admin / 123456` 登录。
 3. 进入个人校验 `/`，添加 Excel 数据源、变量和规则。
 4. 点击执行校验，确认结果区展示统计、异常明细和导出入口。
-5. 可选：在 `/profile` 配置 AI 模型后，到步骤 03 生成并确认规则草稿。
+5. 可选：在步骤 03 规则页签配置 IAP 礼包校验，确认预览后保存并执行。
 
 ## 11. API 速览
 
@@ -266,7 +266,7 @@ python scripts/check_release_package.py D:\path\to\extracted-package
 | 飞书数据源 | `POST /api/v1/feishu/sources/check-permission`、`POST /api/v1/feishu/sources/send-authorization-card`、`GET /api/v1/feishu/sources/oauth/callback` |
 | 个人校验 | `GET/PUT /api/v1/workbench/config`、`POST /api/v1/workbench/svn-update`、`POST /api/v1/workbench/package-items/preview`、`POST /api/v1/engine/execute` |
 | 执行任务 | `POST /api/v1/execute-runs`、`GET /api/v1/execute-runs/{run_id}`、`GET /api/v1/execute-runs/{run_id}/items` |
-| AI 规则助手 | `GET/PUT/DELETE /api/v1/ai/providers/me`、`POST /api/v1/ai/agents/rule-draft`、`POST /api/v1/ai/agents/rule-prompt-optimize`、`GET/DELETE /api/v1/ai/drafts`、`POST /api/v1/ai/drafts/{draft_id}/apply` |
+| 项目级 AI 配置 | `/api/v1/admin/projects/{id}/ai-config*` |
 | 项目校验 | `GET/PUT /api/v1/fixed-rules/config`、`GET/POST /api/v1/fixed-rules/import/workbench/{draft,preview,commit}`、`POST /api/v1/fixed-rules/execute` |
 | 管理后台 | `/api/v1/admin/projects*`、`/api/v1/admin/projects/{id}/members*`、`POST /api/v1/admin/users/{id}/reset-password`、`/api/v1/admin/projects/{id}/feishu-bot*` |
 
@@ -278,6 +278,7 @@ python scripts/check_release_package.py D:\path\to\extracted-package
 - 模块速查：[docs/MODULES.md](docs/MODULES.md)
 - 开发规范：[docs/STANDARDS.md](docs/STANDARDS.md)
 - 前端样式规范：[docs/FRONTEND_STYLE_GUIDE.md](docs/FRONTEND_STYLE_GUIDE.md)
+- 架构决策记录：[docs/adr/](docs/adr/)
 - 前端说明：[frontend/README.md](frontend/README.md)
 - 版本日志：[CHANGELOG.md](CHANGELOG.md)
 - 项目进度：[PROJECT_RECORD.md](PROJECT_RECORD.md)

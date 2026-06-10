@@ -72,6 +72,7 @@ npm run build
 | `docs/MODULES.md` | 路由、目录和业务切片定位。 |
 | `docs/STANDARDS.md` | 本文档：开发与文档维护规则。 |
 | `frontend/README.md` | 前端子项目启动、构建、目录和约定。 |
+| `docs/adr/` | 架构决策记录，记录稳定设计取舍和不可逆收口。 |
 | `CHANGELOG.md` | 版本级变化，不记录分钟级流水。 |
 | `PROJECT_RECORD.md` | 当前执行进度记录，按次追加本次完成和项目整体状态。 |
 | `docs/archive/` | 历史需求、旧进度日记、一次性方案和快照，不再追加。 |

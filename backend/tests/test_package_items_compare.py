@@ -9,10 +9,6 @@ import pandas as pd
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from backend.app.ai.materializers.registry import materialize_rule_definition
-from backend.app.ai.rule_type_inference import infer_hint_rule_type
-from backend.app.ai.schemas import RuleIntent, VariableIntent
-from backend.app.ai.workflow_hints import AiRuleWorkflowHints
 from backend.app.api.fixed_rules_schemas import FixedRuleDefinition, FixedRulesConfig
 from backend.app.api.schemas import DataSource, VariableTag
 from backend.app.fixed_rules.config_normalizer import validate_and_normalize_fixed_rules_config
@@ -587,63 +583,3 @@ def test_fixed_rules_config_normalizes_package_items_compare_params(tmp_path: Pa
         "rule_name": "礼包明细对比STR_Items",
     }
 
-
-def test_ai_rule_type_inference_recognizes_package_items_compare() -> None:
-    rule_type = infer_hint_rule_type(
-        RuleIntent(verdict="needs_input", rule_type=None),
-        AiRuleWorkflowHints(),
-        "礼包id 与 INT_PackageId 对齐，比较道具id/个数和 STR_Items 中的 {item,id,count}",
-    )
-
-    assert rule_type == "package_items_compare"
-
-
-def test_ai_materializer_builds_package_items_compare_rule() -> None:
-    target_variable = VariableTag(
-        tag="[package-detail]",
-        source_id="src",
-        sheet="package_detail",
-        variable_kind="composite",
-        columns=["礼包id", "道具ID", "个数"],
-        key_column="礼包id",
-        append_index_to_key=True,
-    )
-    reference_variable = VariableTag(
-        tag="[package-config]",
-        source_id="src",
-        sheet="package_config",
-        variable_kind="composite",
-        columns=["INT_PackageId", "STR_Items"],
-        key_column="INT_PackageId",
-    )
-    intent = RuleIntent(
-        verdict="ready",
-        rule_type="package_items_compare",
-        target=VariableIntent(tag="[package-detail]", variable_kind="composite"),
-        reference=VariableIntent(tag="[package-config]", variable_kind="composite"),
-        left_package_field="礼包id",
-        right_package_field="INT_PackageId",
-        left_item_field="道具ID",
-        left_count_field="个数",
-        right_items_field="STR_Items",
-        package_id_filter="26042411",
-    )
-
-    rule, missing = materialize_rule_definition(
-        intent,
-        target_variable=target_variable,
-        reference_variable=reference_variable,
-        description="礼包道具配置校验",
-    )
-
-    assert missing == []
-    assert rule is not None
-    assert rule.rule_type == "package_items_compare"
-    assert rule.target_variable_tag == "[package-detail]"
-    assert rule.reference_variable_tag == "[package-config]"
-    assert rule.left_package_field == "礼包id"
-    assert rule.right_package_field == "INT_PackageId"
-    assert rule.left_item_field == "道具ID"
-    assert rule.left_count_field == "个数"
-    assert rule.right_items_field == "STR_Items"
-    assert rule.package_id_filter == "26042411"

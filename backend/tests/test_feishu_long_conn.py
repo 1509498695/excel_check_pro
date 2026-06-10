@@ -28,6 +28,14 @@ from sqlalchemy import select
 
 from backend.app.database import async_session_factory
 from backend.app.integrations import feishu_long_conn
+from backend.app.config_lookup.schemas import (
+    ConfigLookupAiInfo,
+    ConfigLookupCandidate,
+    ConfigLookupFieldValue,
+    ConfigLookupResponse,
+    ConfigLookupResultItem,
+    ConfigLookupThresholds,
+)
 from backend.app.integrations.feishu_bot import FeishuApiError
 from backend.app.integrations.feishu_download import QueryListingGroup
 from backend.app.integrations.feishu_long_conn import (
@@ -44,7 +52,7 @@ from backend.app.integrations.feishu_long_conn import (
     parse_allowed_open_ids,
     translate_execution_error,
 )
-from backend.app.models import FeishuBotConfigRecord, Project
+from backend.app.models import FeishuBotBoundChatRecord, FeishuBotConfigRecord, Project
 from backend.app.security.crypto import encrypt_secret
 
 
@@ -295,6 +303,171 @@ def test_build_project_check_card_renders_action_when_url_present() -> None:
     assert actions[0]["actions"][0]["url"] == "https://example.com/result/1"
 
 
+def test_parse_config_lookup_command_standard_format() -> None:
+    command = feishu_long_conn.parse_config_lookup_command("礼包 查询 /datas_qa88 26051802")
+
+    assert command is not None
+    assert command.query_type == "礼包"
+    assert command.versioned_config_folder == "/datas_qa88"
+    assert command.lookup_input == "26051802"
+
+
+def test_parse_config_lookup_command_compact_alias() -> None:
+    command = feishu_long_conn.parse_config_lookup_command("礼包查询 /datas_qa88 26051802")
+
+    assert command is not None
+    assert command.query_type == "礼包"
+    assert command.versioned_config_folder == "/datas_qa88"
+    assert command.lookup_input == "26051802"
+
+
+def test_parse_config_lookup_command_keeps_spaces_in_lookup_input() -> None:
+    command = feishu_long_conn.parse_config_lookup_command("礼包 查询 /datas_qa88 26年7月 扭蛋机 礼包")
+
+    assert command is not None
+    assert command.lookup_input == "26年7月 扭蛋机 礼包"
+
+
+def test_parse_config_lookup_command_does_not_match_legacy_commands() -> None:
+    assert feishu_long_conn.parse_config_lookup_command("项目校验") is None
+    assert feishu_long_conn.parse_config_lookup_command("@_user_1 下载 configs/a.xlsx") is None
+    assert feishu_long_conn.parse_config_lookup_command("@_user_1 查询 configs ab") is None
+
+
+def _lookup_hit_response(count: int = 1) -> ConfigLookupResponse:
+    results = [
+        ConfigLookupResultItem(
+            query_type="礼包",
+            page=f"Page{index}",
+            id_value=str(1000 + index),
+            name_value=f"礼包{index}",
+            fields=[
+                ConfigLookupFieldValue(
+                    field="INT_PackageId",
+                    label="INT_PackageId",
+                    value=str(1000 + index),
+                ),
+                ConfigLookupFieldValue(field="DESC", label="礼包名称", value=f"礼包{index}"),
+            ],
+            warnings=[],
+        )
+        for index in range(count)
+    ]
+    return ConfigLookupResponse(status="hit", message="查询命中", results=results)
+
+
+def _lookup_candidates_response() -> ConfigLookupResponse:
+    return ConfigLookupResponse(
+        status="candidates",
+        message="找到多个可能匹配的候选，请选择后查看详情",
+        candidates=[
+            ConfigLookupCandidate(
+                key="Page0:0:1001",
+                page="Page0",
+                id_value="1001",
+                name_value="月卡",
+                score=0.82,
+            )
+        ],
+        ai=ConfigLookupAiInfo(
+            used=True,
+            thresholds=ConfigLookupThresholds(
+                auto_match_threshold=0.9,
+                candidate_threshold=0.6,
+                max_candidates=5,
+            ),
+        ),
+    )
+
+
+def test_format_config_lookup_messages_splits_results_by_five() -> None:
+    messages = feishu_long_conn.format_config_lookup_messages(
+        _lookup_hit_response(6),
+        query_type="礼包",
+        version_folder="/datas_qa88",
+        lookup_input="1001",
+        max_results_per_message=5,
+        max_chars=10_000,
+    )
+
+    assert len(messages) == 2
+    assert messages[0].startswith("配置表查询结果（第 1/2 段）")
+    assert messages[1].startswith("配置表查询结果（第 2/2 段）")
+    assert "礼包4" in messages[0]
+    assert "礼包5" in messages[1]
+
+
+def test_format_config_lookup_messages_splits_by_message_length() -> None:
+    response = ConfigLookupResponse(
+        status="hit",
+        message="查询命中",
+        results=[
+            ConfigLookupResultItem(
+                query_type="礼包",
+                page=f"Page{index}",
+                id_value=str(1000 + index),
+                name_value=f"礼包{index}",
+                fields=[
+                    ConfigLookupFieldValue(
+                        field="LONG_FIELD",
+                        label="长字段",
+                        value="很长的字段值" * 40,
+                    )
+                ],
+                warnings=[],
+            )
+            for index in range(2)
+        ],
+    )
+
+    messages = feishu_long_conn.format_config_lookup_messages(
+        response,
+        query_type="礼包",
+        version_folder="/datas_qa88",
+        lookup_input="1001",
+        max_results_per_message=5,
+        max_chars=260,
+    )
+
+    assert len(messages) > 1
+    assert all(len(message) <= 260 for message in messages)
+    assert all("配置表查询结果（第 " in message for message in messages)
+    joined = "\n".join(messages)
+    assert "Page0" in joined
+    assert "Page1" in joined
+
+
+def test_format_config_lookup_messages_keeps_multi_page_results_separate() -> None:
+    messages = feishu_long_conn.format_config_lookup_messages(
+        _lookup_hit_response(2),
+        query_type="礼包",
+        version_folder="/datas_qa88",
+        lookup_input="1001",
+        max_results_per_message=5,
+        max_chars=10_000,
+    )
+
+    text = messages[0]
+    assert "1. 分页：Page0" in text
+    assert "2. 分页：Page1" in text
+    assert "礼包0" in text
+    assert "礼包1" in text
+
+
+def test_format_config_lookup_messages_renders_candidates() -> None:
+    messages = feishu_long_conn.format_config_lookup_messages(
+        _lookup_candidates_response(),
+        query_type="礼包",
+        version_folder="/datas_qa88",
+        lookup_input="月卡",
+    )
+
+    assert len(messages) == 1
+    assert "配置表查询候选（第 1/1 段）" in messages[0]
+    assert "月卡" in messages[0]
+    assert "82%" in messages[0]
+
+
 # --------------------------------------------------------------------------- #
 # 2. dispatch_message_event 路径测试
 # --------------------------------------------------------------------------- #
@@ -347,6 +520,26 @@ def stub_dispatch_dependencies(
         _execute,
     )
     return stub_calls
+
+
+async def _seed_config_lookup_bot_binding(
+    project_id: int,
+    *,
+    chat_id: str = "oc_demo",
+    allowed_open_ids: str = "",
+    app_id: str = "cli_lookup",
+) -> None:
+    async with async_session_factory() as session:
+        session.add(
+            FeishuBotConfigRecord(
+                project_id=project_id,
+                app_id=app_id,
+                app_secret_cipher=encrypt_secret("secret"),
+                allowed_open_ids=allowed_open_ids,
+            )
+        )
+        session.add(FeishuBotBoundChatRecord(project_id=project_id, chat_id=chat_id))
+        await session.commit()
 
 
 @pytest.mark.anyio
@@ -687,6 +880,336 @@ async def test_dispatch_query_splits_long_result_messages(
 
 
 @pytest.mark.anyio
+async def test_dispatch_config_lookup_unbound_chat_does_not_reply(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_dispatch_dependencies: dict[str, Any],
+) -> None:
+    async def _fail_lookup(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("unbound chat must not execute config lookup")
+
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.lookup_config_table",
+        _fail_lookup,
+    )
+
+    event = make_event(text="礼包 查询 /datas_qa88 1001")
+    async with async_session_factory() as session:
+        await dispatch_message_event(session, test_project_id, [], event)
+
+    assert stub_dispatch_dependencies["text"] == []
+    assert stub_dispatch_dependencies["execute"] == []
+    assert stub_dispatch_dependencies["card"] == []
+
+
+@pytest.mark.anyio
+async def test_dispatch_config_lookup_reuses_open_id_whitelist(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_dispatch_dependencies: dict[str, Any],
+) -> None:
+    await _seed_config_lookup_bot_binding(test_project_id, allowed_open_ids="ou_admin")
+
+    async def _fail_lookup(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("forbidden user must not execute config lookup")
+
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.lookup_config_table",
+        _fail_lookup,
+    )
+
+    event = make_event(text="礼包 查询 /datas_qa88 1001", open_id="ou_intruder")
+    async with async_session_factory() as session:
+        await dispatch_message_event(session, test_project_id, [], event)
+
+    assert stub_dispatch_dependencies["text"] == [
+        {
+            "project_id": test_project_id,
+            "chat_id": "oc_demo",
+            "text": "当前用户无机器人指令执行权限",
+        }
+    ]
+    assert stub_dispatch_dependencies["execute"] == []
+    assert stub_dispatch_dependencies["card"] == []
+
+
+@pytest.mark.anyio
+async def test_dispatch_config_lookup_allows_any_sender_when_allowlist_empty(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_dispatch_dependencies: dict[str, Any],
+) -> None:
+    await _seed_config_lookup_bot_binding(test_project_id, allowed_open_ids="")
+    captured: dict[str, Any] = {}
+
+    async def _lookup(db, request, **kwargs):  # noqa: ANN001, ANN003
+        captured["project_id"] = request.project_id
+        captured["lookup_input"] = request.lookup_input
+        return _lookup_hit_response(1)
+
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.lookup_config_table",
+        _lookup,
+    )
+
+    event = make_event(
+        text="礼包 查询 /datas_qa88 26051802",
+        open_id="ou_not_in_any_allowlist",
+    )
+    async with async_session_factory() as session:
+        await dispatch_message_event(session, test_project_id, [], event)
+
+    assert captured == {
+        "project_id": test_project_id,
+        "lookup_input": "26051802",
+    }
+    texts = [item["text"] for item in stub_dispatch_dependencies["text"]]
+    assert len(texts) == 1
+    assert "配置表查询结果（第 1/1 段）" in texts[0]
+    assert stub_dispatch_dependencies["execute"] == []
+    assert stub_dispatch_dependencies["card"] == []
+
+
+@pytest.mark.anyio
+async def test_dispatch_config_lookup_sends_hit_results_to_bound_project(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_dispatch_dependencies: dict[str, Any],
+) -> None:
+    await _seed_config_lookup_bot_binding(test_project_id)
+    captured: dict[str, Any] = {}
+
+    async def _lookup(db, request, **kwargs):  # noqa: ANN001, ANN003
+        captured["project_id"] = request.project_id
+        captured["query_type"] = request.query_type
+        captured["versioned_config_folder"] = request.versioned_config_folder
+        captured["lookup_input"] = request.lookup_input
+        return _lookup_hit_response(2)
+
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.lookup_config_table",
+        _lookup,
+    )
+
+    event = make_event(text="礼包查询 /datas_qa88 26051802")
+    async with async_session_factory() as session:
+        await dispatch_message_event(session, test_project_id, [], event)
+
+    assert captured == {
+        "project_id": test_project_id,
+        "query_type": "礼包",
+        "versioned_config_folder": "/datas_qa88",
+        "lookup_input": "26051802",
+    }
+    texts = [item["text"] for item in stub_dispatch_dependencies["text"]]
+    assert len(texts) == 1
+    assert "配置表查询结果（第 1/1 段）" in texts[0]
+    assert "礼包0" in texts[0]
+    assert "礼包1" in texts[0]
+    assert stub_dispatch_dependencies["execute"] == []
+    assert stub_dispatch_dependencies["card"] == []
+
+
+@pytest.mark.anyio
+async def test_dispatch_config_lookup_sends_candidates(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_dispatch_dependencies: dict[str, Any],
+) -> None:
+    await _seed_config_lookup_bot_binding(test_project_id)
+
+    async def _lookup(db, request, **kwargs):  # noqa: ANN001, ANN003
+        return _lookup_candidates_response()
+
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.lookup_config_table",
+        _lookup,
+    )
+
+    event = make_event(text="礼包 查询 /datas_qa88 月卡")
+    async with async_session_factory() as session:
+        await dispatch_message_event(session, test_project_id, [], event)
+
+    text = stub_dispatch_dependencies["text"][0]["text"]
+    assert "配置表查询候选（第 1/1 段）" in text
+    assert "月卡" in text
+    assert "82%" in text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "message",
+    [
+        "当前项目尚未发布配置表查询规则，请先在规则配置页发布",
+        "查询类型不存在：礼包",
+        "未找到版本配置目录：/datas_qa88，请确认目录是否存在于数据根 game_datas 下",
+        "未找到配置文件：IAPConfig.xls，请确认 /datas_qa88 下是否存在该文件",
+    ],
+)
+async def test_dispatch_config_lookup_sends_business_error_messages(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_dispatch_dependencies: dict[str, Any],
+    message: str,
+) -> None:
+    await _seed_config_lookup_bot_binding(test_project_id)
+
+    async def _lookup(db, request, **kwargs):  # noqa: ANN001, ANN003
+        return ConfigLookupResponse(status="not_found", message=message)
+
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.lookup_config_table",
+        _lookup,
+    )
+
+    event = make_event(text="礼包 查询 /datas_qa88 1001")
+    async with async_session_factory() as session:
+        await dispatch_message_event(session, test_project_id, [], event)
+
+    assert [item["text"] for item in stub_dispatch_dependencies["text"]] == [message]
+
+
+@pytest.mark.anyio
+async def test_dispatch_config_lookup_routes_by_bound_chat_project(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_dispatch_dependencies: dict[str, Any],
+) -> None:
+    other_project_id = await _create_extra_project(f"lookup-{uuid4().hex[:6]}")
+    await _seed_config_lookup_bot_binding(other_project_id, chat_id="oc_other", app_id="cli_shared")
+    captured: dict[str, Any] = {}
+
+    async def _lookup(db, request, **kwargs):  # noqa: ANN001, ANN003
+        captured["project_id"] = request.project_id
+        return _lookup_hit_response(1)
+
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.lookup_config_table",
+        _lookup,
+    )
+
+    event = make_event(text="礼包 查询 /datas_qa88 1001", chat_id="oc_other")
+    async with async_session_factory() as session:
+        await dispatch_message_event(session, test_project_id, [], event)
+
+    assert captured["project_id"] == other_project_id
+    assert stub_dispatch_dependencies["text"][0]["project_id"] == other_project_id
+
+
+@pytest.mark.anyio
+async def test_dispatch_download_command_takes_priority_over_config_lookup_parser(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_dispatch_dependencies: dict[str, Any],
+) -> None:
+    async def _fail_lookup(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("download command must not call config lookup")
+
+    def _resolve_download_file(requested_path, **kwargs):  # noqa: ANN001
+        assert requested_path == "configs/query.xlsx"
+        return SimpleNamespace(
+            path=Path("D:/configs/query.xlsx"),
+            display_name="query.xlsx",
+        )
+
+    async def _send_file(*, db, project_id, chat_id, file_path, file_name):  # noqa: ANN001
+        return {"message_id": "om_file", "file_key": "file_x"}
+
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.lookup_config_table",
+        _fail_lookup,
+    )
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.resolve_download_file",
+        _resolve_download_file,
+    )
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.send_file_to_chat",
+        _send_file,
+    )
+
+    async with async_session_factory() as session:
+        session.add(
+            FeishuBotConfigRecord(
+                project_id=test_project_id,
+                app_id="cli_download_priority",
+                app_secret_cipher=encrypt_secret("secret"),
+                local_download_roots='["D:/configs"]',
+                svn_download_roots="[]",
+                allowed_download_suffixes='[".xlsx"]',
+            )
+        )
+        await session.commit()
+
+    event = make_event(text="@_user_1 下载 configs/query.xlsx")
+    async with async_session_factory() as session:
+        await dispatch_message_event(session, test_project_id, [], event)
+
+    assert [item["text"] for item in stub_dispatch_dependencies["text"]] == [
+        _DOWNLOAD_STARTED_REPLY
+    ]
+    assert stub_dispatch_dependencies["execute"] == []
+    assert stub_dispatch_dependencies["card"] == []
+
+
+@pytest.mark.anyio
+async def test_dispatch_legacy_commands_do_not_call_config_lookup(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    stub_dispatch_dependencies: dict[str, Any],
+) -> None:
+    async def _fail_lookup(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("legacy commands must not call config lookup")
+
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.lookup_config_table",
+        _fail_lookup,
+    )
+
+    async with async_session_factory() as session:
+        session.add(
+            FeishuBotConfigRecord(
+                project_id=test_project_id,
+                app_id="cli_legacy",
+                app_secret_cipher=encrypt_secret("secret"),
+                local_download_roots='["D:/local"]',
+                svn_download_roots="[]",
+                allowed_download_suffixes='[".xlsx"]',
+            )
+        )
+        await session.commit()
+
+    def _resolve_query_listing(request, **kwargs):  # noqa: ANN001
+        return []
+
+    monkeypatch.setattr(
+        "backend.app.integrations.feishu_long_conn.resolve_query_listing",
+        _resolve_query_listing,
+    )
+
+    events = [
+        make_event(text="@_user_1 查询 configs ab"),
+        make_event(text="项目校验"),
+    ]
+    async with async_session_factory() as session:
+        for event in events:
+            await dispatch_message_event(session, test_project_id, [], event)
+
+    texts = [item["text"] for item in stub_dispatch_dependencies["text"]]
+    assert _QUERY_STARTED_REPLY in texts
+    assert _STARTED_REPLY in texts
+
+
+@pytest.mark.anyio
 async def test_dispatch_swallows_send_errors(
     test_db,
     test_project_id: int,
@@ -819,7 +1342,7 @@ async def test_stop_all_is_idempotent(
 
 
 @pytest.mark.anyio
-async def test_app_id_conflict_keeps_first_owner(
+async def test_shared_app_id_reuses_existing_client_for_multiple_projects(
     test_db,
     test_project_id: int,
     fake_lark: type[FakeWsClient],
@@ -832,11 +1355,35 @@ async def test_app_id_conflict_keeps_first_owner(
 
     try:
         assert supervisor.get_state(test_project_id) == "active"
-        assert supervisor.get_state(other_project_id) == "error"
-        # 仅创建了一个 ws client，第二个项目因冲突跳过创建。
+        assert supervisor.get_state(other_project_id) == "active"
+        # 共享 app_id 只创建一条 ws 连接，事件后续按 chat_id 路由到真实项目。
         assert len(FakeWsClient.instances) == 1
-        # _app_id_owner 仍指向第一个项目。
         assert supervisor._app_id_owner == {"cli_shared": test_project_id}
+    finally:
+        await supervisor.stop_all()
+
+
+@pytest.mark.anyio
+async def test_different_app_ids_create_independent_clients(
+    test_db,
+    test_project_id: int,
+    fake_lark: type[FakeWsClient],
+    supervisor: FeishuLongConnSupervisor,
+) -> None:
+    other_project_id = await _create_extra_project(f"other-{uuid4().hex[:6]}")
+
+    await supervisor.start_one(test_project_id, "cli_a", "s1", [])
+    await supervisor.start_one(other_project_id, "cli_b", "s2", [])
+
+    try:
+        assert supervisor.get_state(test_project_id) == "active"
+        assert supervisor.get_state(other_project_id) == "active"
+        assert len(FakeWsClient.instances) == 2
+        assert {client.app_id for client in FakeWsClient.instances} == {"cli_a", "cli_b"}
+        assert supervisor._app_id_owner == {
+            "cli_a": test_project_id,
+            "cli_b": other_project_id,
+        }
     finally:
         await supervisor.stop_all()
 

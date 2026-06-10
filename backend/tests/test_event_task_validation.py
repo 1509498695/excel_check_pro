@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from backend.app.ai.credentials import PROJECT_AI_UNAVAILABLE_MESSAGE
 from backend.app.integrations.feishu_client import FeishuSheetTable
 from backend.app.services.event_task_parser import (
     build_event_task_config_rows,
@@ -20,6 +21,7 @@ from backend.run import app
 
 _PREVIEW_URL = "/api/v1/workbench/event-tasks/preview"
 _VALIDATE_URL = "/api/v1/workbench/event-tasks/validate"
+_AI_SUGGESTIONS_URL = "/api/v1/workbench/event-tasks/ai-suggestions"
 
 
 def _create_event_task_workbook(
@@ -219,6 +221,28 @@ async def _post_event_task_validate(
         payload["task_group_id_filter"] = task_group_id_filter
 
     response = await auth_client.post(_VALIDATE_URL, json=payload)
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+async def _post_event_task_ai_suggestions(
+    auth_client: AsyncClient,
+    *,
+    config_variable_tag: str = "[EventTask]",
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "feishu_source_id": "feishu-task",
+        "feishu_sheet_id": "gid_task",
+        "config_variable_tag": config_variable_tag,
+        "match_strategy": "groupId_desc_then_taskId",
+        "ai_assist_mode": "on",
+        "validation_scope": "all",
+        "parse_strategy": "group_desc",
+        "ai_parse_mode": "disabled",
+        "analysis_context": "preview",
+    }
+
+    response = await auth_client.post(_AI_SUGGESTIONS_URL, json=payload)
     assert response.status_code == 200, response.text
     return response.json()["data"]
 
@@ -766,6 +790,40 @@ async def test_workbench_event_task_validate_returns_reward_summary(
     ]
     assert data["results"][0]["feishuRowIndex"] == 2
     assert data["results"][0]["variableKey"].startswith("26051802_")
+
+
+@pytest.mark.anyio
+async def test_workbench_event_task_ai_suggestions_unconfigured_project_ai_returns_error(
+    auth_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    workbook_path = _create_event_task_workbook(
+        tmp_path / "event_task_config.xlsx",
+        right_rows=[
+            {
+                "INT_ID": 26051802,
+                "INT_TaskID": 4476,
+                "STR_Desc": "累计登陆1天",
+                "STR_Loot": "{item,16001,1}",
+            }
+        ],
+    )
+    await _seed_workbench_event_task_config(auth_client, workbook_path=workbook_path)
+    _patch_sheet_values(
+        monkeypatch,
+        [
+            ["任务组ID", "INT_TaskID", "任务描述", "STR_Loot"],
+            ["26051802", "4476", "累计登陆1天", "{item,16001,1}"],
+        ],
+    )
+
+    data = await _post_event_task_ai_suggestions(auth_client)
+
+    assert data["success"] is False
+    assert data["message"] == PROJECT_AI_UNAVAILABLE_MESSAGE
+    assert data["aiSuggestions"] == []
+    assert data["aiSuggestionUsed"] is False
 
 
 @pytest.mark.anyio

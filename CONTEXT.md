@@ -185,8 +185,12 @@ A lookup failure state where a configuration file declared by a query definition
 _Avoid_: Missing versioned config folder, missing sheet, missing query type
 
 **Project AI Credential**:
-An administrator-managed AI provider credential owned by a project and used by project-level automation such as Feishu bot configuration-table lookups.
-_Avoid_: Personal AI key, bot user key, shared admin key
+An administrator-managed AI provider credential owned by a project and used by project-level automation such as Feishu bot configuration-table lookups and AI-assisted validation helpers. It is the only configurable AI credential surface; individual users do not maintain separate AI provider keys.
+_Avoid_: Personal AI key, user-owned AI config, bot user key, shared admin key
+
+**Project AI Unavailable**:
+A project state where AI-assisted behavior cannot run because the project credential is missing, disabled, invalid, or unavailable. Automatic helpers may fall back to deterministic behavior when possible; explicit AI actions should tell the user that a project administrator must configure the project AI credential.
+_Avoid_: Personal AI missing, silent AI success, model guessed result
 
 **Project Credential Status**:
 A credential visibility state shown to project members without exposing secrets, such as whether SVN or AI credentials are configured and when they were last updated. Ordinary project members may view status but may not trigger credential connection tests.

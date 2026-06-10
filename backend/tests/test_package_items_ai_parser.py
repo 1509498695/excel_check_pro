@@ -7,6 +7,10 @@ from typing import Any
 
 import pytest
 
+from backend.app.ai.providers import ProviderConnectionError
+from backend.app.database import async_session_factory
+from backend.app.models import ProjectAiCredentialRecord
+from backend.app.security.crypto import encrypt_secret
 from backend.app.services.package_items_ai_parser import (
     PackageAiParseError,
     PackageAiParseSuggestion,
@@ -106,6 +110,90 @@ async def test_parse_package_sheet_with_ai_valid_json_success() -> None:
         "item_id",
         "count",
     }
+
+
+@pytest.mark.anyio
+async def test_default_package_ai_client_uses_project_credential(
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_call_provider_json(**kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        captured.update(kwargs)
+        return _valid_payload(), {"latency_ms": 7}
+
+    monkeypatch.setattr(
+        "backend.app.services.package_items_ai_parser.call_provider_json",
+        fake_call_provider_json,
+    )
+    async with async_session_factory() as session:
+        session.add(
+            ProjectAiCredentialRecord(
+                project_id=test_project_id,
+                provider_preset="openai",
+                base_url="https://api.openai.com/v1",
+                model="gpt-4o-mini",
+                encrypted_api_key=encrypt_secret("sk-project-secret"),
+                extra_headers_json='{"X-Project":"ExcelCheck"}',
+                enabled=True,
+            )
+        )
+        await session.commit()
+
+        result = await parse_package_sheet_with_ai(
+            _sheet_matrix(),
+            "礼包规划",
+            {"db": session, "project_id": test_project_id},
+        )
+
+    assert result.field_mapping["package_id"] == "礼包id"
+    assert captured["provider_preset"] == "openai"
+    assert captured["base_url"] == "https://api.openai.com/v1"
+    assert captured["model"] == "gpt-4o-mini"
+    assert captured["api_key"] == "sk-project-secret"
+    assert captured["extra_headers"] == {"X-Project": "ExcelCheck"}
+
+
+@pytest.mark.anyio
+async def test_default_package_ai_client_sanitizes_provider_error_api_key(
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fake_call_provider_json(**_: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        raise ProviderConnectionError(
+            "unknown",
+            "上游拒绝了 API Key sk-project-secret，请检查配置。",
+        )
+
+    monkeypatch.setattr(
+        "backend.app.services.package_items_ai_parser.call_provider_json",
+        fake_call_provider_json,
+    )
+    async with async_session_factory() as session:
+        session.add(
+            ProjectAiCredentialRecord(
+                project_id=test_project_id,
+                provider_preset="openai",
+                base_url="https://api.openai.com/v1",
+                model="gpt-4o-mini",
+                encrypted_api_key=encrypt_secret("sk-project-secret"),
+                extra_headers_json="{}",
+                enabled=True,
+            )
+        )
+        await session.commit()
+
+        with pytest.raises(PackageAiParseError) as exc_info:
+            await parse_package_sheet_with_ai(
+                _sheet_matrix(),
+                "礼包规划",
+                {"db": session, "project_id": test_project_id},
+            )
+
+    error_message = str(exc_info.value)
+    assert "sk-project-secret" not in error_message
+    assert "sk-***cret" in error_message
 
 
 @pytest.mark.anyio

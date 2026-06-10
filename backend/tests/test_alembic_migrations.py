@@ -66,6 +66,8 @@ def test_migrate_empty_sqlite_database_creates_current_schema(tmp_path: Path) ->
     tables = set(inspector.get_table_names())
     assert set(Base.metadata.tables).issubset(tables)
     assert "alembic_version" in tables
+    assert "ai_rule_drafts" not in tables
+    assert "ai_provider_credentials" not in tables
 
     assert to_sync_database_url(_async_sqlite_url(db_path)).startswith("sqlite:///")
     execution_run_columns = _column_names(inspector, "execution_runs")
@@ -109,7 +111,83 @@ def test_migrate_empty_sqlite_database_creates_current_schema(tmp_path: Path) ->
         inspector,
         "rule_config_versions",
     )
-    assert _alembic_version(db_path) == "0003_rule_configs"
+    assert {
+        "project_id",
+        "alias",
+        "display_name",
+        "svn_root_url",
+        "status",
+        "created_at",
+        "updated_at",
+    }.issubset(_column_names(inspector, "project_query_roots"))
+    assert "uq_project_query_roots_project_alias" in _index_names(
+        inspector,
+        "project_query_roots",
+    )
+    assert "ix_project_query_roots_project_status" in _index_names(
+        inspector,
+        "project_query_roots",
+    )
+    assert {
+        "auto_match_threshold",
+        "candidate_threshold",
+        "max_candidates",
+    }.issubset(_column_names(inspector, "feishu_bot_configs"))
+    assert "ix_feishu_bot_configs_app_id" in _index_names(
+        inspector,
+        "feishu_bot_configs",
+    )
+    assert "uq_feishu_bot_configs_app_id" not in _index_names(
+        inspector,
+        "feishu_bot_configs",
+    )
+    assert {
+        "project_id",
+        "chat_id",
+        "created_at",
+    }.issubset(_column_names(inspector, "feishu_bot_bound_chats"))
+    assert "uq_feishu_bot_bound_chats_chat_id" in _index_names(
+        inspector,
+        "feishu_bot_bound_chats",
+    )
+    assert "ix_feishu_bot_bound_chats_project_id" in _index_names(
+        inspector,
+        "feishu_bot_bound_chats",
+    )
+    assert {
+        "project_id",
+        "username",
+        "password_cipher",
+        "created_at",
+        "updated_at",
+    }.issubset(_column_names(inspector, "project_svn_credentials"))
+    assert "ix_project_svn_credentials_project_id" in _index_names(
+        inspector,
+        "project_svn_credentials",
+    )
+    assert {
+        "project_id",
+        "provider_preset",
+        "base_url",
+        "model",
+        "encrypted_api_key",
+        "extra_headers_json",
+        "enabled",
+        "auto_match_threshold",
+        "candidate_threshold",
+        "max_candidates",
+        "last_test_status",
+        "last_test_at",
+        "last_test_error_summary",
+        "updated_by",
+        "created_at",
+        "updated_at",
+    }.issubset(_column_names(inspector, "project_ai_credentials"))
+    assert "ix_project_ai_credentials_project_id" in _index_names(
+        inspector,
+        "project_ai_credentials",
+    )
+    assert _alembic_version(db_path) == "0008_drop_ai_provider_credentials"
 
 
 def test_migrate_legacy_sqlite_database_adds_missing_columns_and_indexes(
@@ -203,20 +281,37 @@ def test_migrate_legacy_sqlite_database_adds_missing_columns_and_indexes(
         "local_download_roots",
         "svn_download_roots",
         "allowed_download_suffixes",
+        "auto_match_threshold",
+        "candidate_threshold",
+        "max_candidates",
     }.issubset(_column_names(inspector, "feishu_bot_configs"))
     assert "ix_users_primary_project_id" in _index_names(inspector, "users")
     assert "ix_execution_result_items_run_id" in _index_names(
         inspector,
         "execution_result_items",
     )
-    assert "uq_feishu_bot_configs_app_id" in _index_names(
+    assert "ix_feishu_bot_configs_app_id" in _index_names(
         inspector,
         "feishu_bot_configs",
     )
-    assert "WHERE app_id <> ''" in _sqlite_master_sql(
-        db_path,
-        "uq_feishu_bot_configs_app_id",
+    assert "uq_feishu_bot_configs_app_id" not in _index_names(
+        inspector,
+        "feishu_bot_configs",
     )
+    assert "feishu_bot_bound_chats" in set(inspector.get_table_names())
+    assert "project_svn_credentials" in set(inspector.get_table_names())
+    assert "project_ai_credentials" in set(inspector.get_table_names())
+    assert "ai_provider_credentials" not in set(inspector.get_table_names())
+    assert {
+        "enabled",
+        "auto_match_threshold",
+        "candidate_threshold",
+        "max_candidates",
+        "last_test_status",
+        "last_test_at",
+        "last_test_error_summary",
+        "updated_by",
+    }.issubset(_column_names(inspector, "project_ai_credentials"))
     assert {
         "execution_mode",
         "status",
@@ -252,4 +347,6 @@ def test_migration_can_run_twice_without_duplicate_columns(tmp_path: Path) -> No
     inspector = _inspect_database(db_path)
     assert "extra_json" in _column_names(inspector, "execution_result_items")
     assert "status" in _column_names(inspector, "execution_runs")
-    assert _alembic_version(db_path) == "0003_rule_configs"
+    assert "project_query_roots" in set(inspector.get_table_names())
+    assert "feishu_bot_bound_chats" in set(inspector.get_table_names())
+    assert _alembic_version(db_path) == "0008_drop_ai_provider_credentials"

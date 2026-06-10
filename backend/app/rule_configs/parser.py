@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
+from dataclasses import dataclass
 import re
 from pathlib import PurePosixPath
 from typing import Any
@@ -12,6 +14,27 @@ from typing import Any
 
 class RuleConfigParseError(ValueError):
     """规则配置 Markdown 无法解析或结构不合法。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        errors: list[str] | None = None,
+        summary: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.errors = errors or [message]
+        self.summary = summary or {}
+
+
+@dataclass(frozen=True)
+class RuleConfigValidationResult:
+    """配置表查询规则结构校验结果。"""
+
+    ok: bool
+    parsed_config_json: dict[str, Any]
+    errors: list[str]
+    summary: dict[str, Any]
 
 
 _SUPPORTED_TOP_KEYS = {"查询类型", "数据根", "配置文件", "分页", "引用"}
@@ -39,10 +62,117 @@ _FORBIDDEN_ENGLISH_KEYS = {
 _KEY_VALUE_RE = re.compile(r"^(?P<indent>\s*)(?P<dash>-\s*)?(?P<key>[^:：]+)[:：]\s*(?P<value>.*)$")
 _PLAIN_LIST_RE = re.compile(r"^(?P<indent>\s*)-\s*(?P<value>[^:：]+?)\s*$")
 _QUERY_ROOT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
+_URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+_DRIVE_RE = re.compile(r"^[A-Za-z]:")
+_JOIN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z_][A-Za-z0-9_]*$")
 
 
-def parse_config_lookup_markdown(content_md: str) -> dict[str, Any]:
+def validate_config_lookup_markdown(
+    content_md: str,
+    *,
+    allowed_query_roots: Collection[str] | None = None,
+) -> RuleConfigValidationResult:
+    """校验 config_lookup 中文 Markdown，返回结构化结果。"""
+    try:
+        parsed_config = _parse_config_lookup_markdown(content_md)
+    except RuleConfigParseError as exc:
+        return RuleConfigValidationResult(
+            ok=False,
+            parsed_config_json={},
+            errors=exc.errors,
+            summary=exc.summary,
+        )
+
+    summary = build_config_lookup_summary(parsed_config)
+    errors = _validate_allowed_query_roots(
+        parsed_config,
+        allowed_query_roots=allowed_query_roots,
+    )
+    return RuleConfigValidationResult(
+        ok=not errors,
+        parsed_config_json=parsed_config,
+        errors=errors,
+        summary=summary,
+    )
+
+
+def parse_config_lookup_markdown(
+    content_md: str,
+    *,
+    allowed_query_roots: Collection[str] | None = None,
+) -> dict[str, Any]:
     """解析 config_lookup 中文 Markdown，返回确定性的内部 JSON。"""
+    result = validate_config_lookup_markdown(
+        content_md,
+        allowed_query_roots=allowed_query_roots,
+    )
+    if not result.ok:
+        raise RuleConfigParseError(
+            result.errors[0] if result.errors else "规则结构校验失败",
+            errors=result.errors,
+            summary=result.summary,
+        )
+    return result.parsed_config_json
+
+
+def build_config_lookup_summary(parsed_config: dict[str, Any]) -> dict[str, Any]:
+    """为前端结构校验结果生成摘要。"""
+    queries = parsed_config.get("queries")
+    if not isinstance(queries, list):
+        queries = []
+
+    query_types: list[str] = []
+    query_roots: list[str] = []
+    primary_files: list[str] = []
+    pages: list[dict[str, Any]] = []
+    references: list[dict[str, str]] = []
+
+    for raw_query in queries:
+        if not isinstance(raw_query, dict):
+            continue
+        query_type = str(raw_query.get("query_type") or "")
+        query_root = str(raw_query.get("query_root") or "")
+        primary_file = str(raw_query.get("file") or "")
+        if query_type:
+            query_types.append(query_type)
+        if query_root and query_root not in query_roots:
+            query_roots.append(query_root)
+        if primary_file and primary_file not in primary_files:
+            primary_files.append(primary_file)
+
+        raw_pages = raw_query.get("pages")
+        page_names = [
+            str(page.get("name"))
+            for page in raw_pages
+            if isinstance(page, dict) and page.get("name")
+        ] if isinstance(raw_pages, list) else []
+        pages.append({"query_type": query_type, "names": page_names})
+
+        raw_references = raw_query.get("references")
+        if isinstance(raw_references, list):
+            for reference in raw_references:
+                if not isinstance(reference, dict):
+                    continue
+                references.append(
+                    {
+                        "query_type": query_type,
+                        "name": str(reference.get("name") or ""),
+                        "file": str(reference.get("file") or ""),
+                        "page": str(reference.get("page") or ""),
+                    }
+                )
+
+    return {
+        "query_count": len(query_types),
+        "query_types": query_types,
+        "query_roots": query_roots,
+        "primary_files": primary_files,
+        "pages": pages,
+        "references": references,
+    }
+
+
+def _parse_config_lookup_markdown(content_md: str) -> dict[str, Any]:
     blocks = _split_definition_blocks(content_md)
     if not blocks:
         raise RuleConfigParseError("规则内容不能为空")
@@ -198,7 +328,9 @@ def _normalize_safe_path(value: str, key: str, line_no: int) -> str:
     normalized = value.strip().replace("\\", "/")
     if not normalized:
         raise RuleConfigParseError(f"第 {line_no} 行 {key} 不能为空")
-    if re.match(r"^[A-Za-z]:/", normalized) or normalized.startswith("/"):
+    if _URL_RE.match(normalized):
+        raise RuleConfigParseError(f"第 {line_no} 行 {key} 不能使用 URL")
+    if _DRIVE_RE.match(normalized) or normalized.startswith("/"):
         raise RuleConfigParseError(f"第 {line_no} 行 {key} 不能使用绝对路径")
     parts = PurePosixPath(normalized).parts
     if any(part in {"..", ""} for part in parts):
@@ -234,7 +366,7 @@ def _assign_item_key(item: dict[str, Any], key: str, value: str, line_no: int) -
     elif key == "分页":
         item["page"] = required_value
     elif key == "关联":
-        item["join"] = required_value
+        item["join"] = _normalize_join(required_value, line_no)
     elif key == "名称":
         item["name"] = required_value
     else:
@@ -244,6 +376,12 @@ def _assign_item_key(item: dict[str, Any], key: str, value: str, line_no: int) -
 def _append_output_field(owner: dict[str, Any], field: str, display_name: str | None) -> None:
     owner.setdefault("output_fields", [])
     owner["output_fields"].append({"field": field, "display_name": display_name})
+
+
+def _normalize_join(value: str, line_no: int) -> str:
+    if not _JOIN_RE.fullmatch(value):
+        raise RuleConfigParseError(f"第 {line_no} 行关联格式必须是 A=B")
+    return value
 
 
 def _validate_query(query: dict[str, Any]) -> None:
@@ -281,3 +419,21 @@ def _validate_query(query: dict[str, Any]) -> None:
                 raise RuleConfigParseError(f"引用 {reference['name']} 缺少 {label}")
         if not reference["output_fields"]:
             raise RuleConfigParseError(f"引用 {reference['name']} 输出字段不能为空")
+
+
+def _validate_allowed_query_roots(
+    parsed_config: dict[str, Any],
+    *,
+    allowed_query_roots: Collection[str] | None,
+) -> list[str]:
+    if allowed_query_roots is None:
+        return []
+    allowed = set(allowed_query_roots)
+    errors: list[str] = []
+    for query in parsed_config.get("queries", []):
+        if not isinstance(query, dict):
+            continue
+        query_root = str(query.get("query_root") or "")
+        if query_root and query_root not in allowed:
+            errors.append(f"数据根 alias 不存在：{query_root}")
+    return errors

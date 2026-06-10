@@ -30,6 +30,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 import lark_oapi as lark
 
+from backend.app.config_lookup.schemas import ConfigLookupRequest, ConfigLookupResponse
+from backend.app.config_lookup.service import lookup_config_table
 from backend.app.fixed_rules.service import execute_fixed_rules_for_project
 from backend.app.integrations.feishu_bot import (
     FeishuApiError,
@@ -48,7 +50,7 @@ from backend.app.integrations.feishu_download import (
     resolve_download_file,
     resolve_query_listing,
 )
-from backend.app.models import FeishuBotConfigRecord
+from backend.app.models import FeishuBotBoundChatRecord, FeishuBotConfigRecord
 from backend.app.security.crypto import decrypt_secret
 from backend.config import settings
 
@@ -70,6 +72,14 @@ _DOWNLOAD_USAGE_REPLY = "请按格式发送：@机器人 下载 <文件路径>"
 _DOWNLOAD_UNCONFIGURED_REPLY = "后台尚未配置可下载根目录，请先配置本地或 SVN 下载根目录。"
 _QUERY_STARTED_REPLY = "配置目录查询已开始，正在更新并读取目录…"
 _QUERY_MESSAGE_LIMIT = 3500
+_CONFIG_LOOKUP_FORBIDDEN_REPLY = "当前用户无机器人指令执行权限"
+_CONFIG_LOOKUP_RESULT_PAGE_SIZE = 5
+_CONFIG_LOOKUP_STANDARD_PATTERN = re.compile(
+    r"^\s*(?P<query_type>.+?)\s+查询\s+(?P<folder>\S+)\s+(?P<input>.+?)\s*$"
+)
+_CONFIG_LOOKUP_COMPACT_PATTERN = re.compile(
+    r"^\s*(?P<query_type>.+?)查询\s+(?P<folder>\S+)\s+(?P<input>.+?)\s*$"
+)
 
 ConnectionState = Literal["inactive", "active", "error", "reconnecting"]
 
@@ -139,6 +149,43 @@ def parse_allowed_open_ids(raw: str) -> list[str]:
             seen.add(normalized)
             result.append(normalized)
     return result
+
+
+@dataclass(frozen=True)
+class ConfigLookupBotCommand:
+    """飞书群消息中的配置表查询命令。"""
+
+    query_type: str
+    versioned_config_folder: str
+    lookup_input: str
+
+
+def parse_config_lookup_command(text: str) -> ConfigLookupBotCommand | None:
+    """解析配置表查询命令，保留查询内容中的空格。
+
+    旧下载 / 目录查询命令以 ``@_user_`` mention 开头，本解析器直接跳过，
+    让这些命令继续走原有分支。
+    """
+    if not isinstance(text, str):
+        return None
+    stripped = text.strip()
+    if not stripped or stripped.startswith("@_user_"):
+        return None
+
+    for pattern in (_CONFIG_LOOKUP_STANDARD_PATTERN, _CONFIG_LOOKUP_COMPACT_PATTERN):
+        match = pattern.match(stripped)
+        if match is None:
+            continue
+        query_type = match.group("query_type").strip()
+        versioned_config_folder = match.group("folder").strip()
+        lookup_input = match.group("input").strip()
+        if query_type and versioned_config_folder and lookup_input:
+            return ConfigLookupBotCommand(
+                query_type=query_type,
+                versioned_config_folder=versioned_config_folder,
+                lookup_input=lookup_input,
+            )
+    return None
 
 
 def translate_execution_error(exc: BaseException) -> str:
@@ -534,6 +581,118 @@ def _format_query_listing_messages(
     return _split_text_messages("\n".join(lines), _QUERY_MESSAGE_LIMIT)
 
 
+def _format_config_lookup_result_block(index: int, item: Any) -> str:
+    lines = [
+        f"{index}. 分页：{item.page}",
+        f"ID：{item.id_value or '-'}",
+        f"名称：{item.name_value or '-'}",
+    ]
+    if item.fields:
+        lines.append("字段：")
+        for field in item.fields:
+            label = field.label or field.field
+            lines.append(f"- {label}：{field.value}")
+    if item.warnings:
+        lines.append("提示：")
+        for warning in item.warnings:
+            lines.append(f"- {warning}")
+    return "\n".join(lines)
+
+
+def _format_config_lookup_candidate_block(index: int, candidate: Any) -> str:
+    score_text = f"{round(float(candidate.score) * 100)}%"
+    return "\n".join(
+        [
+            f"{index}. 分页：{candidate.page}",
+            f"ID：{candidate.id_value or '-'}",
+            f"名称：{candidate.name_value or '-'}",
+            f"置信度：{score_text}",
+        ]
+    )
+
+
+def _chunk_config_lookup_blocks(
+    blocks: list[str],
+    *,
+    summary: str,
+    max_results_per_message: int,
+    max_chars: int,
+) -> list[str]:
+    content_limit = max(200, max_chars - 80)
+    parts: list[str] = []
+    current: list[str] = []
+
+    for block in blocks:
+        candidate_blocks = [*current, block]
+        candidate_text = f"{summary}\n\n" + "\n\n".join(candidate_blocks)
+        if current and (
+            len(current) >= max_results_per_message
+            or len(candidate_text) > content_limit
+        ):
+            parts.append(f"{summary}\n\n" + "\n\n".join(current))
+            current = [block]
+            continue
+        current = candidate_blocks
+
+    if current:
+        parts.append(f"{summary}\n\n" + "\n\n".join(current))
+
+    split_parts: list[str] = []
+    for part in parts:
+        split_parts.extend(_split_text_messages(part, content_limit))
+    return split_parts
+
+
+def format_config_lookup_messages(
+    result: ConfigLookupResponse,
+    *,
+    query_type: str,
+    version_folder: str,
+    lookup_input: str,
+    max_results_per_message: int = _CONFIG_LOOKUP_RESULT_PAGE_SIZE,
+    max_chars: int = _QUERY_MESSAGE_LIMIT,
+) -> list[str]:
+    """把配置表查询核心服务结果转成飞书纯文本分段消息。"""
+    if result.status == "hit":
+        if not result.results:
+            return [result.message]
+        title = "配置表查询结果"
+        blocks = [
+            _format_config_lookup_result_block(index, item)
+            for index, item in enumerate(result.results, start=1)
+        ]
+    elif result.status == "candidates":
+        if not result.candidates:
+            return [result.message]
+        title = "配置表查询候选"
+        blocks = [
+            _format_config_lookup_candidate_block(index, candidate)
+            for index, candidate in enumerate(result.candidates, start=1)
+        ]
+    else:
+        return _split_text_messages(result.message, max_chars)
+
+    summary = "\n".join(
+        [
+            f"查询类型：{query_type}",
+            f"版本目录：{version_folder}",
+            f"查询内容：{lookup_input}",
+            result.message,
+        ]
+    )
+    parts = _chunk_config_lookup_blocks(
+        blocks,
+        summary=summary,
+        max_results_per_message=max_results_per_message,
+        max_chars=max_chars,
+    )
+    total = len(parts)
+    return [
+        f"{title}（第 {index}/{total} 段）\n{part}"
+        for index, part in enumerate(parts, start=1)
+    ]
+
+
 def _split_text_messages(text: str, max_chars: int) -> list[str]:
     if len(text) <= max_chars:
         return [text]
@@ -554,6 +713,53 @@ def _split_text_messages(text: str, max_chars: int) -> list[str]:
     if current:
         messages.append(current)
     return messages
+
+
+async def resolve_bound_chat_project(db: AsyncSession, chat_id: str) -> int | None:
+    """根据飞书群 chat_id 查绑定项目；未绑定返回 None。"""
+    result = await db.execute(
+        select(FeishuBotBoundChatRecord.project_id).where(
+            FeishuBotBoundChatRecord.chat_id == chat_id
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def _load_config_lookup_allowed_open_ids(
+    db: AsyncSession,
+    project_id: int,
+) -> list[str]:
+    result = await db.execute(
+        select(FeishuBotConfigRecord.allowed_open_ids).where(
+            FeishuBotConfigRecord.project_id == project_id
+        )
+    )
+    return parse_allowed_open_ids(result.scalar_one_or_none() or "")
+
+
+async def _handle_config_lookup_command(
+    db: AsyncSession,
+    project_id: int,
+    chat_id: str,
+    command: ConfigLookupBotCommand,
+) -> None:
+    result = await lookup_config_table(
+        db,
+        ConfigLookupRequest(
+            project_id=project_id,
+            query_type=command.query_type,
+            versioned_config_folder=command.versioned_config_folder,
+            lookup_input=command.lookup_input,
+        ),
+    )
+    messages = format_config_lookup_messages(
+        result,
+        query_type=command.query_type,
+        version_folder=command.versioned_config_folder,
+        lookup_input=command.lookup_input,
+    )
+    for message in messages:
+        await _safe_send_text(db, project_id, chat_id, message)
 
 
 async def dispatch_message_event(
@@ -608,11 +814,13 @@ async def dispatch_message_event(
         query_request = None
         query_error = exc
     is_project_check = matches_project_check_command(text)
+    config_lookup_command = parse_config_lookup_command(text)
     if (
         download_path is None
         and query_request is None
         and query_error is None
         and not is_project_check
+        and config_lookup_command is None
     ):
         return
 
@@ -626,6 +834,43 @@ async def dispatch_message_event(
         return
 
     sender_open_id = extract_sender_open_id(event)
+
+    if config_lookup_command is not None:
+        bound_project_id = await resolve_bound_chat_project(db, chat_id)
+        if bound_project_id is None:
+            logger.info(
+                "配置表查询命令来自未绑定飞书群，已忽略 chat_id=%s text=%r",
+                chat_id,
+                text,
+            )
+            return
+
+        bound_allowed = await _load_config_lookup_allowed_open_ids(
+            db,
+            bound_project_id,
+        )
+        if bound_allowed and sender_open_id not in bound_allowed:
+            logger.info(
+                "飞书配置表查询白名单拒绝 project_id=%s sender=%s",
+                bound_project_id,
+                sender_open_id,
+            )
+            await _safe_send_text(
+                db,
+                bound_project_id,
+                chat_id,
+                _CONFIG_LOOKUP_FORBIDDEN_REPLY,
+            )
+            return
+
+        await _handle_config_lookup_command(
+            db,
+            bound_project_id,
+            chat_id,
+            config_lookup_command,
+        )
+        return
+
     allowed = list(allowed_open_ids)
     if allowed and sender_open_id not in allowed:
         logger.info(
@@ -696,8 +941,9 @@ class FeishuLongConnSupervisor:
     - 事件回调由 SDK 同步调用，落到我们注册的同步 handler，再用
       ``asyncio.run_coroutine_threadsafe`` 把 ``dispatch_message_event``
       调度回主循环（即使未来 SDK 在另一个线程触发也安全）。
-    - 同 ``app_id`` 不允许跨项目复用：start_one 进入时检查
-      ``_app_id_owner``，命中冲突则只把状态置为 ``error`` 不抛。
+    - 同 ``app_id`` 跨项目复用同一条长连接：start_one 进入时检查
+      ``_app_id_owner``，命中已有连接则把当前项目标记为 active，后续事件
+      按 ``chat_id`` 路由到真实项目。
     """
 
     def __init__(self) -> None:
@@ -797,14 +1043,14 @@ class FeishuLongConnSupervisor:
         async with self._supervisor_lock:
             existing_owner = self._app_id_owner.get(app_id)
             if existing_owner is not None and existing_owner != project_id:
-                logger.warning(
-                    "飞书 app_id 已被其他项目占用，跳过启动 app_id=%s "
+                logger.info(
+                    "飞书 app_id 已有长连接，复用现有 runtime app_id=%s "
                     "owner_project_id=%s requested_project_id=%s",
                     app_id,
                     existing_owner,
                     project_id,
                 )
-                self._states[project_id] = "error"
+                self._states[project_id] = "active"
                 self._allowed_open_ids[project_id] = list(allowed_open_ids)
                 return
 
@@ -1029,15 +1275,19 @@ long_conn_supervisor = FeishuLongConnSupervisor()
 
 __all__ = [
     "PROJECT_CHECK_COMMAND",
+    "ConfigLookupBotCommand",
     "ConnectionState",
     "FeishuLongConnSupervisor",
     "build_project_check_card",
     "dispatch_message_event",
     "extract_sender_open_id",
+    "format_config_lookup_messages",
     "format_int",
     "long_conn_supervisor",
     "matches_project_check_command",
     "parse_allowed_open_ids",
+    "parse_config_lookup_command",
+    "resolve_bound_chat_project",
     "translate_download_error",
     "translate_execution_error",
     "translate_query_error",

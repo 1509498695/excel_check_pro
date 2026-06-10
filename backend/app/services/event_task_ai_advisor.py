@@ -15,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.ai.credentials import (
     AiProviderInvalid,
     AiProviderNotConfigured,
+    PROJECT_AI_UNAVAILABLE_MESSAGE,
     decrypt_credential_key,
-    load_user_credential,
+    load_project_credential,
     parse_extra_headers,
+    sanitize_ai_error,
 )
 from backend.app.ai.providers import ProviderConnectionError, call_provider_json, extract_json_object
 from backend.app.api.fixed_rules_schemas import (
@@ -48,7 +50,7 @@ class EventTaskAiAdvisorClient(Protocol):
 @dataclass(frozen=True)
 class EventTaskAiAdvisorContext:
     db: AsyncSession | None = None
-    user_id: int | None = None
+    project_id: int | None = None
     ai_client: EventTaskAiAdvisorClient | None = None
     max_rows: int = 80
     max_results: int = 40
@@ -77,9 +79,9 @@ class _AiSuggestionPayload(BaseModel):
 
 
 class _DefaultEventTaskAiAdvisorClient:
-    def __init__(self, *, db: AsyncSession, user_id: int) -> None:
+    def __init__(self, *, db: AsyncSession, project_id: int) -> None:
         self._db = db
-        self._user_id = user_id
+        self._project_id = project_id
 
     async def complete_json(
         self,
@@ -88,19 +90,26 @@ class _DefaultEventTaskAiAdvisorClient:
         user_prompt: str,
         json_schema: dict[str, Any],
     ) -> dict[str, Any] | str:
-        credential = await load_user_credential(self._db, self._user_id)
+        credential = await load_project_credential(self._db, self._project_id)
         api_key = decrypt_credential_key(credential)
-        raw_result, _meta = await call_provider_json(
-            provider_preset=credential.provider_preset,  # type: ignore[arg-type]
-            base_url=credential.base_url,
-            model=credential.model,
-            api_key=api_key,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            json_schema=json_schema,
-            extra_headers=parse_extra_headers(credential.extra_headers_json),
-            timeout_seconds=30.0,
-        )
+        try:
+            raw_result, _meta = await call_provider_json(
+                provider_preset=credential.provider_preset,  # type: ignore[arg-type]
+                base_url=credential.base_url,
+                model=credential.model,
+                api_key=api_key,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                json_schema=json_schema,
+                extra_headers=parse_extra_headers(credential.extra_headers_json),
+                timeout_seconds=30.0,
+            )
+        except ProviderConnectionError as exc:
+            raise ProviderConnectionError(
+                exc.category,
+                sanitize_ai_error(exc.message, api_key),
+                exc.status_code,
+            ) from exc
         return raw_result
 
 
@@ -142,8 +151,15 @@ async def advise_event_task_validation(
             ),
             json_schema=_get_ai_suggestion_json_schema(),
         )
-    except (AiProviderInvalid, AiProviderNotConfigured, ProviderConnectionError) as exc:
-        return EventTaskAiAdviceResult([], [str(exc)], False, trigger_reasons)
+    except (AiProviderInvalid, AiProviderNotConfigured) as exc:
+        if force:
+            raise AiProviderNotConfigured(PROJECT_AI_UNAVAILABLE_MESSAGE) from exc
+        return EventTaskAiAdviceResult([], [PROJECT_AI_UNAVAILABLE_MESSAGE], False, trigger_reasons)
+    except ProviderConnectionError as exc:
+        message = sanitize_ai_error(exc.message)
+        if force:
+            raise ValueError(message) from exc
+        return EventTaskAiAdviceResult([], [message], False, trigger_reasons)
 
     try:
         payload = _validate_ai_payload(response)
@@ -210,7 +226,7 @@ def _coerce_context(
         return raw_context
     return EventTaskAiAdvisorContext(
         db=raw_context.get("db"),
-        user_id=raw_context.get("user_id"),
+        project_id=raw_context.get("project_id"),
         ai_client=raw_context.get("ai_client"),
         max_rows=int(raw_context.get("max_rows") or 80),
         max_results=int(raw_context.get("max_results") or 40),
@@ -220,9 +236,9 @@ def _coerce_context(
 def _resolve_ai_client(context: EventTaskAiAdvisorContext) -> EventTaskAiAdvisorClient:
     if context.ai_client is not None:
         return context.ai_client
-    if context.db is None or context.user_id is None:
-        raise AiProviderNotConfigured("请先在个人设置中配置 AI 模型。")
-    return _DefaultEventTaskAiAdvisorClient(db=context.db, user_id=context.user_id)
+    if context.db is None or context.project_id is None:
+        raise AiProviderNotConfigured(PROJECT_AI_UNAVAILABLE_MESSAGE)
+    return _DefaultEventTaskAiAdvisorClient(db=context.db, project_id=context.project_id)
 
 
 def _validate_ai_payload(response: dict[str, Any] | str) -> _AiSuggestionPayload:

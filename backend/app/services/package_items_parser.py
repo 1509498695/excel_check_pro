@@ -20,6 +20,7 @@ from backend.app.api.fixed_rules_schemas import (
 )
 from backend.app.api.schemas import DataSource
 from backend.app.loaders.feishu_reader import parse_feishu_sheet_url
+from backend.app.ai.credentials import PROJECT_AI_UNAVAILABLE_MESSAGE, sanitize_ai_error
 from backend.app.services.package_items_ai_parse_cache import (
     PackageItemsAiParseCacheKey,
     build_sheet_matrix_hash,
@@ -28,6 +29,7 @@ from backend.app.services.package_items_ai_parse_cache import (
 )
 from backend.app.services.package_items_ai_parser import (
     PackageAiParseError,
+    PackageAiUnavailableError,
     PackageItemsAiClient,
     PROMPT_VERSION,
     parse_package_sheet_with_ai,
@@ -109,7 +111,6 @@ async def preview_package_items_from_feishu(
     ai_parse_mode: PackageAiParseMode,
     db: AsyncSession,
     project_id: int,
-    user_id: int | None = None,
 ) -> PackageItemsPreviewResult:
     """读取飞书 Sheet 显示值并执行礼包明细解析。"""
     from backend.app.integrations.feishu_client import read_sheet_values
@@ -128,7 +129,7 @@ async def preview_package_items_from_feishu(
         parse_strategy=parse_strategy,
         ai_parse_mode=ai_parse_mode,
         db=db,
-        user_id=user_id,
+        project_id=project_id,
         ai_cache_context=PackageItemsAiParseCacheContext(
             feishu_source_id=source.id,
             sheet_id=table.sheet_id or sheet_id,
@@ -146,7 +147,7 @@ async def parse_package_items_sheet_async(
     parse_strategy: PackageParseStrategy = "auto",
     ai_parse_mode: PackageAiParseMode = "auto",
     db: AsyncSession | None = None,
-    user_id: int | None = None,
+    project_id: int | None = None,
     ai_client: PackageItemsAiClient | None = None,
     ai_cache_context: PackageItemsAiParseCacheContext | None = None,
 ) -> PackageItemsPreviewResult:
@@ -165,7 +166,7 @@ async def parse_package_items_sheet_async(
             raw_values,
             sheet_name=sheet_name,
             db=db,
-            user_id=user_id,
+            project_id=project_id,
             ai_client=ai_client,
             fallback_rule_result=None,
             cache_context=ai_cache_context,
@@ -188,7 +189,7 @@ async def parse_package_items_sheet_async(
         raw_values,
         sheet_name=sheet_name,
         db=db,
-        user_id=user_id,
+        project_id=project_id,
         ai_client=ai_client,
         fallback_rule_result=rule_result,
         cache_context=ai_cache_context,
@@ -443,7 +444,7 @@ async def _parse_package_items_with_ai(
     *,
     sheet_name: str | None,
     db: AsyncSession | None,
-    user_id: int | None,
+    project_id: int | None,
     ai_client: PackageItemsAiClient | None,
     fallback_rule_result: PackageItemsPreviewResult | None,
     cache_context: PackageItemsAiParseCacheContext | None,
@@ -466,7 +467,7 @@ async def _parse_package_items_with_ai(
             sheet_name or "",
             {
                 "db": db,
-                "user_id": user_id,
+                "project_id": project_id,
                 "ai_client": ai_client,
             },
         )
@@ -480,7 +481,11 @@ async def _parse_package_items_with_ai(
             )
         return preview_result
     except PackageAiParseError as exc:
-        return _handle_ai_parse_failure(exc, fallback_rule_result=fallback_rule_result)
+        return _handle_ai_parse_failure(
+            exc,
+            fallback_rule_result=fallback_rule_result,
+            explicit_ai=parse_strategy == "ai",
+        )
 
 
 def _build_ai_parse_cache_key(
@@ -505,8 +510,23 @@ def _handle_ai_parse_failure(
     exc: PackageAiParseError,
     *,
     fallback_rule_result: PackageItemsPreviewResult | None,
+    explicit_ai: bool,
 ) -> PackageItemsPreviewResult:
-    warning = f"AI 辅助解析失败：{exc}"
+    if isinstance(exc, PackageAiUnavailableError):
+        if explicit_ai:
+            return PackageItemsPreviewResult(
+                parse_status="failed",
+                parse_mode="ai",
+                ai_used=False,
+                errors=[PROJECT_AI_UNAVAILABLE_MESSAGE],
+            )
+        if fallback_rule_result is not None:
+            next_result = _as_preview_result(fallback_rule_result)
+            next_result.ai_used = False
+            next_result.warnings.append(PROJECT_AI_UNAVAILABLE_MESSAGE)
+            return next_result
+
+    warning = f"AI 辅助解析失败：{sanitize_ai_error(str(exc))}"
     if fallback_rule_result is not None and fallback_rule_result.rows:
         next_result = _as_preview_result(fallback_rule_result)
         next_result.ai_used = True

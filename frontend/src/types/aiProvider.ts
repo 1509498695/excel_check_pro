@@ -1,0 +1,16 @@
+export type AiProviderPreset =
+  | 'openai'
+  | 'anthropic'
+  | 'gemini'
+  | 'deepseek'
+  | 'qwen'
+  | 'kimi'
+  | 'zhipu'
+  | 'openrouter'
+  | 'xiaomi_mimo'
+  | 'xiaomi_mimo_token_plan'
+  | 'siliconflow'
+  | 'custom_openai_compatible'
+  | 'custom_openai'
+
+export type AiProviderProtocol = 'openai_compatible' | 'anthropic' | 'gemini'

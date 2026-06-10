@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import pytest
 
+from backend.app.ai.credentials import PROJECT_AI_UNAVAILABLE_MESSAGE
+from backend.app.database import async_session_factory
 from backend.app.integrations.feishu_client import FeishuSheetTable
 from backend.app.services.package_items_ai_parse_cache import (
     PackageItemsAiParseCacheKey,
@@ -379,6 +381,81 @@ async def test_parse_package_items_auto_low_confidence_rule_calls_ai(
     assert result.parse_mode == "ai"
     assert result.ai_used is True
     assert result.confidence == 0.88
+
+
+@pytest.mark.anyio
+async def test_parse_package_items_auto_unconfigured_project_ai_falls_back_to_rule(
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backend.app.api.fixed_rules_schemas import PackageItemsPreviewResult, PackagePlanItemRow
+
+    def _low_confidence_rule(*_args, **_kwargs):
+        return PackageItemsPreviewResult(
+            parse_status="success",
+            parse_mode="rule",
+            confidence=0.7,
+            header_rows=[1],
+            package_ids=["26042411"],
+            package_count=1,
+            detail_row_count=1,
+            rows=[
+                PackagePlanItemRow(
+                    package_id="26042411",
+                    item_id="16001",
+                    count=3,
+                    row_index=2,
+                    raw_row=["26042411", "16001", "3"],
+                )
+            ],
+        )
+
+    monkeypatch.setattr(
+        "backend.app.services.package_items_parser.parse_package_items_sheet",
+        _low_confidence_rule,
+    )
+
+    async with async_session_factory() as session:
+        result = await parse_package_items_sheet_async(
+            [
+                ["礼包id", "道具ID", "个数"],
+                ["26042411", "16001", "3"],
+            ],
+            sheet_name="礼包规划",
+            parse_strategy="auto",
+            ai_parse_mode="enabled",
+            db=session,
+            project_id=test_project_id,
+        )
+
+    assert result.parse_status == "success"
+    assert result.parse_mode == "rule"
+    assert result.ai_used is False
+    assert result.package_ids == ["26042411"]
+    assert PROJECT_AI_UNAVAILABLE_MESSAGE in result.warnings
+
+
+@pytest.mark.anyio
+async def test_parse_package_items_explicit_ai_unconfigured_project_ai_returns_error(
+    test_project_id: int,
+) -> None:
+    async with async_session_factory() as session:
+        result = await parse_package_items_sheet_async(
+            [
+                ["礼包", "道具", "数量"],
+                ["26042411", "16001", "3"],
+            ],
+            sheet_name="礼包规划",
+            parse_strategy="ai",
+            ai_parse_mode="enabled",
+            db=session,
+            project_id=test_project_id,
+        )
+
+    assert result.parse_status == "failed"
+    assert result.parse_mode == "ai"
+    assert result.ai_used is False
+    assert result.errors == [PROJECT_AI_UNAVAILABLE_MESSAGE]
 
 
 @pytest.mark.anyio

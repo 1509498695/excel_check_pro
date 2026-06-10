@@ -1,6 +1,8 @@
 """管理后台请求/响应模型。"""
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from backend.app.ai.schemas import AiProviderPreset
 
 
 class ProjectCreateRequest(BaseModel):
@@ -45,6 +47,92 @@ class ResetUserPasswordRequest(BaseModel):
     new_password: str = Field(min_length=4, max_length=128)
 
 
+class FeishuBotQueryRootRequest(BaseModel):
+    """项目级配置表查询数据根。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    alias: str = Field(min_length=1, max_length=64)
+    display_name: str = Field(default="", max_length=128)
+    svn_url: str = Field(max_length=2048)
+    enabled: bool = True
+
+    @field_validator("alias", "display_name", "svn_url", mode="before")
+    @classmethod
+    def _strip_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class ProjectSvnCredentialRequest(BaseModel):
+    """项目级 SVN 凭据输入。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    username: str | None = Field(default=None, max_length=128)
+    password: str | None = Field(default=None, max_length=512)
+
+    @field_validator("username", "password", mode="before")
+    @classmethod
+    def _strip_optional_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class ProjectAiCredentialRequest(BaseModel):
+    """项目级 AI 凭据输入。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider_preset: AiProviderPreset
+    base_url: str | None = Field(default=None, max_length=2048)
+    model: str | None = Field(default=None, max_length=128)
+    api_key: str | None = Field(default=None, max_length=2048)
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("base_url", "model", "api_key", mode="before")
+    @classmethod
+    def _strip_optional_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class ProjectAiConfigRequest(BaseModel):
+    """项目级 AI 凭据与名称匹配参数输入。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: AiProviderPreset
+    model: str | None = Field(default=None, max_length=128)
+    api_key: str | None = Field(default=None, max_length=2048)
+    base_url: str | None = Field(default=None, max_length=2048)
+    enabled: bool = True
+    auto_match_threshold: float = Field(default=0.9, ge=0, le=1)
+    candidate_threshold: float = Field(default=0.6, ge=0, le=1)
+    max_candidates: int = Field(default=10, ge=1, le=20)
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("base_url", "model", "api_key", mode="before")
+    @classmethod
+    def _strip_optional_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class AiMatchParamsRequest(BaseModel):
+    """AI 名称匹配默认参数。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    auto_match_threshold: float | None = Field(default=None, ge=0, le=1)
+    candidate_threshold: float | None = Field(default=None, ge=0, le=1)
+    max_candidates: int | None = Field(default=None, ge=1, le=20)
+
+
 class FeishuBotConfigUpdateRequest(BaseModel):
     """更新或创建项目级飞书机器人配置请求。
 
@@ -69,6 +157,26 @@ class FeishuBotConfigUpdateRequest(BaseModel):
     local_download_roots: str | None = Field(default=None, max_length=4096)
     svn_download_roots: str | None = Field(default=None, max_length=4096)
     allowed_download_suffixes: str | None = Field(default=None, max_length=1024)
+    bound_chat_ids: list[str] | None = None
+    query_roots: list[FeishuBotQueryRootRequest] | None = None
+    svn_credential: ProjectSvnCredentialRequest | None = None
+    ai_credential: ProjectAiCredentialRequest | None = None
+    ai_match_params: AiMatchParamsRequest | None = None
+
+    @field_validator("bound_chat_ids")
+    @classmethod
+    def _normalize_bound_chat_ids(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        result: list[str] = []
+        seen: set[str] = set()
+        for item in value:
+            normalized = item.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            result.append(normalized)
+        return result
 
 
 class FeishuBotTestSendRequest(BaseModel):

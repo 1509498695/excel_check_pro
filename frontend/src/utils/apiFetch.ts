@@ -9,6 +9,20 @@ export type { ApiFileResponse } from '../types/api'
 
 const TOKEN_KEY = 'ec_token'
 
+export class ApiRequestError extends Error {
+  status: number
+  detail: unknown
+  payload: unknown
+
+  constructor(message: string, status: number, detail: unknown = null, payload: unknown = null) {
+    super(message)
+    this.name = 'ApiRequestError'
+    this.status = status
+    this.detail = detail
+    this.payload = payload
+  }
+}
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY)
 }
@@ -95,8 +109,9 @@ export async function apiFetch<T = unknown>(url: string, options: RequestInit = 
 
   if (!response.ok) {
     let message = '请求失败，请稍后重试。'
+    let payload: { detail?: unknown } | null = null
     try {
-      const payload = (await response.json()) as { detail?: unknown }
+      payload = (await response.json()) as { detail?: unknown }
       const extractedMessage = extractApiErrorMessage(payload.detail)
       if (extractedMessage) {
         message = extractedMessage
@@ -110,10 +125,10 @@ export async function apiFetch<T = unknown>(url: string, options: RequestInit = 
       if (!isAuthLoginOrRegisterUrl(url)) {
         window.location.href = '/login'
       }
-      throw new Error(message)
+      throw new ApiRequestError(message, response.status, payload?.detail, payload)
     }
 
-    throw new Error(message)
+    throw new ApiRequestError(message, response.status, payload?.detail, payload)
   }
 
   if (response.status === 204) {
@@ -144,8 +159,9 @@ export async function apiDownloadFile(
 
   if (!response.ok) {
     let message = '下载失败，请稍后重试。'
+    let payload: { detail?: unknown } | null = null
     try {
-      const payload = (await response.json()) as { detail?: unknown }
+      payload = (await response.json()) as { detail?: unknown }
       const extractedMessage = extractApiErrorMessage(payload.detail)
       if (extractedMessage) {
         message = extractedMessage
@@ -161,7 +177,7 @@ export async function apiDownloadFile(
       }
     }
 
-    throw new Error(message)
+    throw new ApiRequestError(message, response.status, payload?.detail, payload)
   }
 
   return {

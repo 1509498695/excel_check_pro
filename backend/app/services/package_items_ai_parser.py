@@ -15,9 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from backend.app.ai.credentials import (
     AiProviderInvalid,
     AiProviderNotConfigured,
+    PROJECT_AI_UNAVAILABLE_MESSAGE,
     decrypt_credential_key,
-    load_user_credential,
+    load_project_credential,
     parse_extra_headers,
+    sanitize_ai_error,
 )
 from backend.app.ai.providers import ProviderConnectionError, call_provider_json, extract_json_object
 
@@ -32,6 +34,10 @@ _REQUIRED_FIELDS = ("package_id", "item_id", "count")
 
 class PackageAiParseError(ValueError):
     """礼包规划表 AI 结构识别失败。"""
+
+
+class PackageAiUnavailableError(PackageAiParseError):
+    """项目级 AI 不可用，调用方可按自动/显式模式分流。"""
 
 
 class PackageItemsAiClient(Protocol):
@@ -52,7 +58,7 @@ class PackageAiParseRuleContext:
     """AI 结构识别上下文。"""
 
     db: AsyncSession | None = None
-    user_id: int | None = None
+    project_id: int | None = None
     ai_client: PackageItemsAiClient | None = None
     max_rows: int = DEFAULT_MAX_ROWS
     max_columns: int = DEFAULT_MAX_COLUMNS
@@ -101,9 +107,9 @@ class PackageAiParseSuggestion(BaseModel):
 class _DefaultPackageItemsAiClient:
     """复用项目已有 AI provider 的默认 client。"""
 
-    def __init__(self, *, db: AsyncSession, user_id: int) -> None:
+    def __init__(self, *, db: AsyncSession, project_id: int) -> None:
         self._db = db
-        self._user_id = user_id
+        self._project_id = project_id
 
     async def complete_json(
         self,
@@ -112,19 +118,26 @@ class _DefaultPackageItemsAiClient:
         user_prompt: str,
         json_schema: dict[str, Any],
     ) -> dict[str, Any] | str:
-        credential = await load_user_credential(self._db, self._user_id)
+        credential = await load_project_credential(self._db, self._project_id)
         api_key = decrypt_credential_key(credential)
-        raw_result, _meta = await call_provider_json(
-            provider_preset=credential.provider_preset,  # type: ignore[arg-type]
-            base_url=credential.base_url,
-            model=credential.model,
-            api_key=api_key,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            json_schema=json_schema,
-            extra_headers=parse_extra_headers(credential.extra_headers_json),
-            timeout_seconds=30.0,
-        )
+        try:
+            raw_result, _meta = await call_provider_json(
+                provider_preset=credential.provider_preset,  # type: ignore[arg-type]
+                base_url=credential.base_url,
+                model=credential.model,
+                api_key=api_key,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                json_schema=json_schema,
+                extra_headers=parse_extra_headers(credential.extra_headers_json),
+                timeout_seconds=30.0,
+            )
+        except ProviderConnectionError as exc:
+            raise ProviderConnectionError(
+                exc.category,
+                sanitize_ai_error(exc.message, api_key),
+                exc.status_code,
+            ) from exc
         return raw_result
 
 
@@ -154,9 +167,9 @@ async def parse_package_sheet_with_ai(
     except PackageAiParseError:
         raise
     except ProviderConnectionError as exc:
-        raise PackageAiParseError(exc.message) from exc
+        raise PackageAiParseError(sanitize_ai_error(exc.message)) from exc
     except (AiProviderInvalid, AiProviderNotConfigured) as exc:
-        raise PackageAiParseError(str(exc)) from exc
+        raise PackageAiUnavailableError(PROJECT_AI_UNAVAILABLE_MESSAGE) from exc
     payload = _parse_ai_payload(response)
     suggestion = _validate_suggestion_payload(payload, sheet_matrix)
     return suggestion
@@ -171,7 +184,7 @@ def _coerce_rule_context(
         return raw_context
     return PackageAiParseRuleContext(
         db=raw_context.get("db"),
-        user_id=raw_context.get("user_id"),
+        project_id=raw_context.get("project_id"),
         ai_client=raw_context.get("ai_client"),
         max_rows=int(raw_context.get("max_rows") or DEFAULT_MAX_ROWS),
         max_columns=int(raw_context.get("max_columns") or DEFAULT_MAX_COLUMNS),
@@ -182,9 +195,9 @@ def _coerce_rule_context(
 def _resolve_ai_client(context: PackageAiParseRuleContext) -> PackageItemsAiClient:
     if context.ai_client is not None:
         return context.ai_client
-    if context.db is None or context.user_id is None:
-        raise PackageAiParseError("缺少 AI 调用上下文：请提供 ai_client，或同时提供 db 和 user_id。")
-    return _DefaultPackageItemsAiClient(db=context.db, user_id=context.user_id)
+    if context.db is None or context.project_id is None:
+        raise PackageAiParseError("缺少 AI 调用上下文：请提供 ai_client，或同时提供 db 和 project_id。")
+    return _DefaultPackageItemsAiClient(db=context.db, project_id=context.project_id)
 
 
 def _parse_ai_payload(response: dict[str, Any] | str) -> dict[str, Any]:

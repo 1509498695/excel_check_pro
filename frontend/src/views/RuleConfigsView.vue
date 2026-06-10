@@ -1,139 +1,46 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
 
 import AppCard from '../components/shell/AppCard.vue'
 import DataTable from '../components/shell/DataTable.vue'
+import MetricCard from '../components/shell/MetricCard.vue'
 import PageHeader from '../components/shell/PageHeader.vue'
 import PrimaryButton from '../components/shell/PrimaryButton.vue'
 import SecondaryButton from '../components/shell/SecondaryButton.vue'
 import StatusBadge from '../components/shell/StatusBadge.vue'
 import type { StatusBadgeType } from '../components/shell/types'
-
-type RuleStatus = 'published' | 'draft' | 'unpublished'
-type OverviewTone = 'default' | 'success' | 'warning' | 'danger'
-
-interface RuleOverviewItem {
-  label: string
-  value: string
-  tone: OverviewTone
-}
-
-interface RuleItem {
-  id: string
-  title: string
-  family: string
-  status: RuleStatus
-  statusLabel: string
-  badgeType: StatusBadgeType
-  description: string
-  updatedAt: string
-  supported: boolean
-  futureLabel?: string
-}
-
-interface VersionItem {
-  version: string
-  statusLabel: string
-  badgeType: StatusBadgeType
-  operator: string
-  updatedAt: string
-  description: string
-}
+import {
+  canOpenRuleDetail,
+  createConfigLookupRuleState,
+  type RuleCatalogItem,
+  type RuleOverviewItem,
+} from '../features/rule-configs/useConfigLookupRule'
+import { RULE_FAMILY_CONFIG_LOOKUP } from '../types/ruleConfigs'
 
 const router = useRouter()
 const keyword = ref('')
 const activeTab = ref('all')
-const selectedRuleId = ref('config_lookup')
+const selectedRuleId = ref(RULE_FAMILY_CONFIG_LOOKUP)
 const familyFilter = ref('all')
-
-const overviewItems: RuleOverviewItem[] = [
-  { label: '全部规则', value: '3', tone: 'default' },
-  { label: '已发布', value: '2', tone: 'success' },
-  { label: '草稿中', value: '1', tone: 'warning' },
-  { label: '校验失败', value: '0', tone: 'danger' },
-  { label: '最近发布', value: '2024/05/27 02:32:18', tone: 'default' },
-]
+const ruleState = createConfigLookupRuleState()
+const {
+  record,
+  loading,
+  fallbackActive,
+  errorMessage,
+  overviewItems,
+  ruleItems,
+  versionRows,
+  load,
+} = ruleState
 
 const tabs = [
   { id: 'all', label: '全部规则' },
-  { id: 'config_lookup', label: '配置表查询' },
+  { id: RULE_FAMILY_CONFIG_LOOKUP, label: '配置表查询' },
   { id: 'future', label: '其他规则（未来扩展）' },
-]
-
-const rules: RuleItem[] = [
-  {
-    id: 'config_lookup',
-    title: '配置表查询',
-    family: 'config_lookup',
-    status: 'published',
-    statusLabel: '已发布',
-    badgeType: 'success',
-    description: '用于通过飞书机器人按配置表查询命令读取数据，支持多分页查询与引用关联。',
-    updatedAt: '2024/05/27 02:32:18',
-    supported: true,
-  },
-  {
-    id: 'project_check',
-    title: '项目校验规则',
-    family: 'project_check',
-    status: 'draft',
-    statusLabel: '草稿',
-    badgeType: 'warning',
-    description: '项目级固定校验规则配置，当前仅作为未来扩展入口展示。',
-    updatedAt: '2024/05/26 18:15:42',
-    supported: false,
-    futureLabel: '未来扩展',
-  },
-  {
-    id: 'directory_query',
-    title: '目录查询规则',
-    family: 'directory_query',
-    status: 'unpublished',
-    statusLabel: '未发布',
-    badgeType: 'neutral',
-    description: '目录级文件查询规则配置，当前仅作为未来扩展入口展示。',
-    updatedAt: '2024/05/24 10:09:31',
-    supported: false,
-    futureLabel: '未来扩展',
-  },
-]
-
-const versions: VersionItem[] = [
-  {
-    version: 'v1.3',
-    statusLabel: '已发布',
-    badgeType: 'success',
-    operator: 'admin',
-    updatedAt: '2024/05/27 02:32:18',
-    description: '优化输出字段，补充 price 字段',
-  },
-  {
-    version: 'v1.2',
-    statusLabel: '草稿',
-    badgeType: 'warning',
-    operator: 'admin',
-    updatedAt: '2024/05/26 18:15:42',
-    description: '调整分页默认条数为 50',
-  },
-  {
-    version: 'v1.1',
-    statusLabel: '已发布',
-    badgeType: 'success',
-    operator: 'admin',
-    updatedAt: '2024/05/24 10:09:31',
-    description: '初始版本发布',
-  },
-  {
-    version: 'v1.0',
-    statusLabel: '已归档',
-    badgeType: 'neutral',
-    operator: 'admin',
-    updatedAt: '2024/05/23 09:41:07',
-    description: '初始草稿',
-  },
 ]
 
 const guideItems = [
@@ -145,11 +52,11 @@ const guideItems = [
 
 const filteredRules = computed(() => {
   const normalizedKeyword = keyword.value.trim().toLowerCase()
-  return rules.filter((rule) => {
+  return ruleItems.value.filter((rule) => {
     const matchesTab =
       activeTab.value === 'all' ||
-      (activeTab.value === 'config_lookup' && rule.family === 'config_lookup') ||
-      (activeTab.value === 'future' && rule.family !== 'config_lookup')
+      (activeTab.value === RULE_FAMILY_CONFIG_LOOKUP && rule.family === RULE_FAMILY_CONFIG_LOOKUP) ||
+      (activeTab.value === 'future' && rule.family !== RULE_FAMILY_CONFIG_LOOKUP)
     const matchesFamily = familyFilter.value === 'all' || rule.family === familyFilter.value
     const matchesKeyword =
       !normalizedKeyword ||
@@ -159,25 +66,73 @@ const filteredRules = computed(() => {
   })
 })
 
-const selectedRule = computed(() => rules.find((rule) => rule.id === selectedRuleId.value) ?? rules[0])
+const selectedRule = computed(() => {
+  return ruleItems.value.find((rule) => rule.id === selectedRuleId.value) ?? ruleItems.value[0]
+})
 
-function getOverviewValueClass(tone: OverviewTone): string {
-  if (tone === 'success') return 'rule-config-overview__value--success'
-  if (tone === 'warning') return 'rule-config-overview__value--warning'
-  if (tone === 'danger') return 'rule-config-overview__value--danger'
-  return ''
+const queryTypeCount = computed(() => {
+  const queries = record.value.parsed_config_json.queries
+  return Array.isArray(queries) ? queries.length : 0
+})
+
+const currentVersionLabel = computed(() => {
+  return record.value.draft_version > 0 ? `v${record.value.draft_version}` : '-'
+})
+
+const publisherLabel = computed(() => {
+  return record.value.published_by === null ? '-' : `用户 #${record.value.published_by}`
+})
+
+const publishedAtLabel = computed(() => {
+  return overviewItems.value.find((item) => item.label === '最近发布')?.value ?? '-'
+})
+
+function getOverviewNumericValue(item: RuleOverviewItem): number {
+  const parsed = Number.parseInt(item.value, 10)
+  return Number.isFinite(parsed) ? parsed : 0
 }
 
-function selectRule(rule: RuleItem): void {
-  if (!rule.supported) {
+function getOverviewStatusLabel(item: RuleOverviewItem): string {
+  const count = getOverviewNumericValue(item)
+  if (item.label === '全部规则') return '规则族'
+  if (item.label === '已发布') return count > 0 ? '已发布' : '未发布'
+  if (item.label === '草稿中') return count > 0 ? '有草稿' : '无草稿'
+  if (item.label === '校验失败') return count > 0 ? '需处理' : '无失败'
+  if (item.label === '最近发布') return item.value === '-' ? '未发布' : '已记录'
+  return '规则状态'
+}
+
+function getOverviewStatusType(item: RuleOverviewItem): StatusBadgeType {
+  const count = getOverviewNumericValue(item)
+  if (item.label === '已发布') return count > 0 ? 'success' : 'neutral'
+  if (item.label === '草稿中') return count > 0 ? 'warning' : 'success'
+  if (item.label === '校验失败') return count > 0 ? 'danger' : 'success'
+  if (item.label === '最近发布') return item.value === '-' ? 'neutral' : 'success'
+  return 'neutral'
+}
+
+function getOverviewIconTone(
+  item: RuleOverviewItem,
+  index: number,
+): 'primary' | 'success' | 'warning' | 'danger' | 'purple' {
+  if (item.label === '已发布') return 'success'
+  if (item.label === '草稿中') return 'warning'
+  if (item.label === '校验失败') return 'danger'
+  if (item.label === '最近发布') return 'purple'
+  const fallbackTones = ['primary', 'success', 'warning', 'danger', 'purple'] as const
+  return fallbackTones[index % fallbackTones.length]
+}
+
+function selectRule(rule: RuleCatalogItem): void {
+  if (!canOpenRuleDetail(rule)) {
     ElMessage.info('当前版本暂不支持该规则族')
     return
   }
   selectedRuleId.value = rule.id
 }
 
-function openRuleDetail(rule: RuleItem = selectedRule.value): void {
-  if (!rule.supported) {
+function openRuleDetail(rule = selectedRule.value): void {
+  if (!canOpenRuleDetail(rule)) {
     ElMessage.info('当前版本暂不支持该规则族')
     return
   }
@@ -187,6 +142,10 @@ function openRuleDetail(rule: RuleItem = selectedRule.value): void {
 function showStaticNotice(label: string): void {
   ElMessage.info(`${label}将在后续阶段接入`)
 }
+
+onMounted(() => {
+  void load()
+})
 </script>
 
 <template>
@@ -212,24 +171,108 @@ function showStaticNotice(label: string): void {
       </template>
     </PageHeader>
 
-    <div class="admin-dashboard-content rule-config-content flex flex-1 flex-col overflow-y-auto px-8 py-8">
-      <AppCard as="section" padding="none" class="admin-dashboard-card rule-config-overview-card">
-        <div class="rule-config-overview">
-          <div
-            v-for="item in overviewItems"
-            :key="item.label"
-            class="rule-config-overview__item"
-          >
-            <div class="rule-config-overview__label">{{ item.label }}</div>
-            <div
-              class="rule-config-overview__value"
-              :class="getOverviewValueClass(item.tone)"
-            >
-              {{ item.value }}
-            </div>
-          </div>
+    <div
+      v-loading="loading"
+      class="admin-dashboard-content rule-config-content flex flex-1 flex-col overflow-y-auto px-8 py-8"
+    >
+      <el-alert
+        v-if="fallbackActive"
+        title="当前使用开发 fallback，后端规则配置接口不可用。"
+        type="warning"
+        show-icon
+        :closable="false"
+      />
+      <AppCard
+        v-if="errorMessage"
+        as="section"
+        padding="none"
+        class="admin-dashboard-card rule-config-alert-card"
+      >
+        <div class="rule-config-alert-card__body">
+          <span>{{ errorMessage }}</span>
+          <SecondaryButton size="sm" @click="load">重新加载</SecondaryButton>
         </div>
       </AppCard>
+
+      <section aria-label="规则概览" class="rule-config-overview">
+        <MetricCard
+          v-for="(item, index) in overviewItems"
+          :key="item.label"
+          :label="item.label"
+          :value="item.value"
+          :status-label="getOverviewStatusLabel(item)"
+          :status-type="getOverviewStatusType(item)"
+          :icon-tone="getOverviewIconTone(item, index)"
+        >
+          <template #icon>
+            <svg
+              v-if="item.label === '全部规则'"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M8 6h13" />
+              <path d="M8 12h13" />
+              <path d="M8 18h13" />
+              <path d="M3 6h.01" />
+              <path d="M3 12h.01" />
+              <path d="M3 18h.01" />
+            </svg>
+            <svg
+              v-else-if="item.label === '已发布'"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M20 6 9 17l-5-5" />
+              <circle cx="12" cy="12" r="10" />
+            </svg>
+            <svg
+              v-else-if="item.label === '草稿中'"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M12 20h9" />
+              <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
+            </svg>
+            <svg
+              v-else-if="item.label === '校验失败'"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="M10.3 3.6 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0Z" />
+              <path d="M12 9v4" />
+              <path d="M12 17h.01" />
+            </svg>
+            <svg
+              v-else
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <circle cx="12" cy="12" r="10" />
+              <path d="M12 6v6l4 2" />
+            </svg>
+          </template>
+        </MetricCard>
+      </section>
 
       <AppCard as="section" padding="none" class="admin-dashboard-card rule-config-workspace">
         <div class="rule-config-workspace__toolbar">
@@ -334,19 +377,19 @@ function showStaticNotice(label: string): void {
               </div>
               <div>
                 <span>查询类型数量</span>
-                <strong>5 个</strong>
+                <strong>{{ queryTypeCount }} 个</strong>
               </div>
               <div>
                 <span>当前版本</span>
-                <strong>v1.3</strong>
+                <strong>{{ currentVersionLabel }}</strong>
               </div>
               <div>
                 <span>发布者</span>
-                <strong>admin</strong>
+                <strong>{{ publisherLabel }}</strong>
               </div>
               <div>
                 <span>发布时间</span>
-                <strong>2024/05/27 02:32:18</strong>
+                <strong>{{ publishedAtLabel }}</strong>
               </div>
             </div>
 
@@ -380,7 +423,7 @@ function showStaticNotice(label: string): void {
                 </template>
                 <template #body>
                   <tr
-                    v-for="version in versions"
+                    v-for="version in versionRows"
                     :key="version.version"
                     class="bg-white transition hover:bg-gray-50"
                   >
@@ -436,52 +479,31 @@ function showStaticNotice(label: string): void {
 .rule-config-overview {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 0;
-  padding: 24px 26px;
+  gap: 16px;
 }
 
-.rule-config-overview__item {
-  min-width: 0;
-  border-right: 1px solid var(--color-border);
-  padding: 0 24px;
+.rule-config-page :deep(.ui-metric-card) {
+  min-height: 112px;
+  padding: 18px;
 }
 
-.rule-config-overview__item:first-child {
-  padding-left: 0;
+.rule-config-page :deep(.ui-metric-card__value) {
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
-.rule-config-overview__item:last-child {
-  border-right: 0;
-  padding-right: 0;
+.rule-config-alert-card {
+  padding: 14px 18px;
 }
 
-.rule-config-overview__label {
-  color: #64748b;
-  font-size: 13px;
-  font-weight: 650;
-}
-
-.rule-config-overview__value {
-  overflow: hidden;
-  margin-top: 10px;
-  color: var(--color-text-main);
-  font-size: 26px;
-  font-weight: 850;
-  line-height: 1.15;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.rule-config-overview__value--success {
-  color: var(--color-success);
-}
-
-.rule-config-overview__value--warning {
-  color: var(--color-warning);
-}
-
-.rule-config-overview__value--danger {
+.rule-config-alert-card__body {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   color: var(--color-danger);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .rule-config-workspace__toolbar {
@@ -821,13 +843,13 @@ function showStaticNotice(label: string): void {
 
   .rule-config-overview {
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 20px 0;
+    gap: 16px;
   }
+}
 
-  .rule-config-overview__item {
-    border-right: 0;
-    padding-right: 18px;
-    padding-left: 0;
+@media (max-width: 900px) {
+  .rule-config-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -852,7 +874,6 @@ function showStaticNotice(label: string): void {
     grid-column: 2;
   }
 
-  .rule-config-overview,
   .rule-config-summary-grid,
   .rule-config-guide__grid {
     grid-template-columns: 1fr;
@@ -862,6 +883,12 @@ function showStaticNotice(label: string): void {
     border-right: 0;
     padding-right: 0;
     padding-left: 0;
+  }
+}
+
+@media (max-width: 640px) {
+  .rule-config-overview {
+    grid-template-columns: 1fr;
   }
 }
 </style>

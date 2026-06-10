@@ -4,7 +4,17 @@ from __future__ import annotations
 
 import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text, UniqueConstraint, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from backend.app.database import Base
@@ -175,6 +185,112 @@ class RuleConfigVersionRecord(Base):
     )
 
 
+class ProjectQueryRootRecord(Base):
+    """项目级配置表查询数据根（query_roots）。"""
+
+    __tablename__ = "project_query_roots"
+    __table_args__ = (
+        Index(
+            "uq_project_query_roots_project_alias",
+            "project_id",
+            "alias",
+            unique=True,
+        ),
+        Index(
+            "ix_project_query_roots_project_status",
+            "project_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    alias: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(128), default="")
+    svn_root_url: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="enabled", index=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProjectSvnCredentialRecord(Base):
+    """项目级 SVN 凭据配置（按 project_id 隔离）。"""
+
+    __tablename__ = "project_svn_credentials"
+    __table_args__ = (
+        Index(
+            "ix_project_svn_credentials_project_id",
+            "project_id",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    username: Mapped[str] = mapped_column(String(128), default="")
+    password_cipher: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProjectAiCredentialRecord(Base):
+    """项目级 AI 模型凭据配置（按 project_id 隔离）。"""
+
+    __tablename__ = "project_ai_credentials"
+    __table_args__ = (
+        Index(
+            "ix_project_ai_credentials_project_id",
+            "project_id",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider_preset: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_url: Mapped[str] = mapped_column(Text, default="")
+    model: Mapped[str] = mapped_column(String(128), default="")
+    encrypted_api_key: Mapped[str] = mapped_column(Text, default="")
+    extra_headers_json: Mapped[str] = mapped_column(Text, default="{}")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    auto_match_threshold: Mapped[float] = mapped_column(Float, default=0.9)
+    candidate_threshold: Mapped[float] = mapped_column(Float, default=0.6)
+    max_candidates: Mapped[int] = mapped_column(default=10)
+    last_test_status: Mapped[str] = mapped_column(String(32), default="")
+    last_test_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_test_error_summary: Mapped[str] = mapped_column(Text, default="")
+    updated_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class WorkbenchConfigRecord(Base):
     """工作台配置持久化记录（按 project_id + user_id 隔离）。"""
 
@@ -190,56 +306,6 @@ class WorkbenchConfigRecord(Base):
     config_json: Mapped[str] = mapped_column(Text, default="{}")
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-
-class AiProviderCredentialRecord(Base):
-    """个人 AI 模型凭据配置（按 user_id 隔离）。"""
-
-    __tablename__ = "ai_provider_credentials"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
-        unique=True,
-        index=True,
-        nullable=False,
-    )
-    provider_preset: Mapped[str] = mapped_column(String(64), nullable=False)
-    base_url: Mapped[str] = mapped_column(Text, default="")
-    model: Mapped[str] = mapped_column(String(128), default="")
-    encrypted_api_key: Mapped[str] = mapped_column(Text, default="")
-    extra_headers_json: Mapped[str] = mapped_column(Text, default="{}")
-    created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-    updated_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
-    )
-
-
-class AiRuleDraftRecord(Base):
-    """AI 规则草稿历史（按 project_id + user_id 隔离）。"""
-
-    __tablename__ = "ai_rule_drafts"
-
-    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    project_id: Mapped[int] = mapped_column(
-        ForeignKey("projects.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    user_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"), index=True, nullable=False
-    )
-    description: Mapped[str] = mapped_column(Text, default="")
-    verdict: Mapped[str] = mapped_column(String(32), default="rejected")
-    rule_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    response_json: Mapped[str] = mapped_column(Text, default="{}")
-    applied: Mapped[bool] = mapped_column(Boolean, default=False)
-    applied_at: Mapped[datetime.datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
-    )
-    created_at: Mapped[datetime.datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now(), index=True
     )
 
 
@@ -328,11 +394,34 @@ class FeishuBotConfigRecord(Base):
         Text,
         default='[".xls",".xlsx",".csv",".json",".xml",".txt"]',
     )
+    auto_match_threshold: Mapped[float] = mapped_column(Float, default=0.9)
+    candidate_threshold: Mapped[float] = mapped_column(Float, default=0.6)
+    max_candidates: Mapped[int] = mapped_column(default=10)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class FeishuBotBoundChatRecord(Base):
+    """项目级飞书机器人绑定群，一个 chat_id 只能绑定一个项目。"""
+
+    __tablename__ = "feishu_bot_bound_chats"
+    __table_args__ = (
+        Index("ix_feishu_bot_bound_chats_project_id", "project_id"),
+        Index("uq_feishu_bot_bound_chats_chat_id", "chat_id", unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chat_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
     )
 
 

@@ -8,7 +8,7 @@ Excel Check 解决配置表规则校验的工程问题：把数据源、变量�
 
 | 业务线 | 路由 | 持久化边界 | 用途 |
 |---|---|---|---|
-| 个人校验 | `/` | `project_id + user_id` | 临时排查、个人编排、AI 草稿确认、IAP 礼包校验。 |
+| 个人校验 | `/` | `project_id + user_id` | 临时排查、个人编排、IAP 礼包校验。 |
 | 项目校验 | `/fixed-rules` | `project_id` | 长期规则配置、导入个人规则、周期性复用。 |
 
 明确不做：
@@ -16,7 +16,7 @@ Excel Check 解决配置表规则校验的工程问题：把数据源、变量�
 - 不做 SaaS 化、容器编排、反代、HTTPS。
 - 不恢复 CSV 数据源。
 - 飞书只支持电子表格和 wiki 电子表格链接；不支持多维表格、文档表格或任意 Drive 文件。
-- AI 不直接写底层执行配置，只生成草稿并由用户确认。
+- AI provider 基础能力只服务项目级 AI 配置、配置表查询 AI 名称匹配、礼包结构识别和活动任务建议；个人校验不提供自然语言生成规则入口。
 - SVN 远端只支持白名单 host、`http(s)://`、单文件 `.xls/.xlsx`。
 
 ## 2. 核心契约
@@ -110,32 +110,24 @@ class TaskTree:
 | 数据源 | `/sources/capabilities`、`/sources/upload`、`/sources/local-pick`、`/sources/metadata`、`/sources/column-preview`、`/sources/composite-preview`、`/sources/svn-*` |
 | 飞书数据源 | `/feishu/sources/check-permission`、`/feishu/sources/send-authorization-card`、`/feishu/sources/oauth/callback` |
 | 个人校验 | `/workbench/config`、`/workbench/svn-update`、`/workbench/package-items/preview`、`/engine/execute` |
-| AI 规则助手 | `/ai/providers/me`、`/ai/agents/rule-draft`、`/ai/agents/rule-prompt-optimize`、`/ai/drafts` |
+| 项目级 AI 配置 | `/admin/projects/{id}/ai-config*` |
 | 项目校验 | `/fixed-rules/config`、`/fixed-rules/import/workbench/draft`、`/fixed-rules/import/workbench/preview`、`/fixed-rules/import/workbench/commit`、`/fixed-rules/execute`、`/fixed-rules/results/*` |
 
 SVN 鉴权失败使用 HTTP 403，不触发前端登录态过期逻辑；HTTP 401 只表达认证失效。
 
 飞书数据源权限不足时不直接失败为登录态问题：前端先调用权限检测接口，必要时通过项目飞书机器人向默认群发送授权卡片；有权限的飞书用户完成 OAuth 后，服务端把机器人加入表格只读协作者，再复用同一飞书电子表格读取链路获取元数据、列预览和执行数据。
 
-## 5. AI 规则助手
+## 5. 项目级 AI provider 基础能力
 
-AI 规则助手只作用于个人校验步骤 03：
+项目级 AI 凭据是系统唯一 AI 配置入口，由项目管理员在管理后台保存、测试、删除和查看脱敏状态。个人设置只承担账号、密码和项目切换职责，后端 AI 配置接口只保留项目级边界。所有保留的 AI 辅助能力都读取当前项目的 AI 凭据。
 
-```mermaid
-flowchart LR
-  Input["规则描述 + 已选变量"] --> Draft["生成草稿"]
-  Draft --> State{"ready / needs_input / rejected"}
-  State --> Preview["ready 预校验"]
-  Preview --> Apply["用户确认写入配置"]
-```
+保留的 AI 调用场景：
 
-约束：
+- 配置表查询 AI 名称匹配：在确定性候选范围内做排序或归一化，不改变查询规则配置。
+- 礼包规划表结构识别。
+- 活动任务配置建议。
 
-- `dry_run=true` 只做本地线索抽取，不读 AI 凭据、不调用模型、不写草稿历史。
-- `ready` 必须预校验后才能确认添加。
-- `needs_input` 只提示缺口，不保存半成品。
-- `rejected` 表示当前规则库不支持。
-- 模型上下文不发送业务单元格值，只发送元数据、变量 schema 和规则摘要。
+项目级 AI 不可用时，自动辅助能力应尽量回退到确定性逻辑并给出告警；用户显式触发的 AI 操作应提示联系项目管理员配置项目级 AI 凭据。任何接口、日志和持久化摘要都不得暴露完整 API Key。
 
 ## 6. 多用户与安全
 
@@ -157,4 +149,4 @@ flowchart LR
 | SVN 远端 | 仅支持白名单 host、`http(s)://`、单文件 Excel。 |
 | SVN 缓存清理 | 暂无定时清理策略。 |
 | IAP 礼包校验 | 当前重点接在个人校验 03 规则页签；固定规则侧保留预览与运行时兼容能力，但不作为主要业务入口。 |
-| AI 能力 | 只覆盖当前规则库中的确定性规则场景；聚合、公式、平均值等复杂规则返回 `rejected`。 |
+| AI 能力 | 当前仅保留 provider 基础调用、礼包规划表结构识别和活动任务配置建议。 |

@@ -4,7 +4,7 @@
 - GET：未配置返回脱敏空值；已配置返回 has_app_secret=True，密文不外露。
 - PUT：首次必须传 app_secret；增量保留 app_secret；空串清空被拒绝。
 - PUT：白名单 round-trip（多行 + 逗号混合 → 去重保序），default_chat_id 清空。
-- 跨项目 app_id 冲突 → 400。
+- 跨项目同 app_id + 同 app_secret 允许，不同 app_secret → 400。
 - DELETE：幂等，重复调用仍返回 204；调用 invalidate_token_cache。
 - POST test-send：monkeypatch 替换底层发送函数，不真实打飞书；FeishuApiError → 400。
 - 403：非项目管理员访问任意路由都被拒绝。
@@ -25,12 +25,16 @@ from backend.app.database import async_session_factory
 from backend.app.integrations import feishu_bot as feishu_bot_module
 from backend.app.integrations.feishu_bot import FeishuApiError
 from backend.app.models import (
+    FeishuBotBoundChatRecord,
     FeishuBotConfigRecord,
+    ProjectAiCredentialRecord,
     Project,
+    ProjectQueryRootRecord,
+    ProjectSvnCredentialRecord,
     User,
     UserProjectRole,
 )
-from backend.app.security.crypto import decrypt_secret
+from backend.app.security.crypto import decrypt_secret, encrypt_secret
 from backend.run import app
 
 
@@ -132,6 +136,75 @@ async def _read_feishu_record(project_id: int) -> FeishuBotConfigRecord | None:
         return result.scalar_one_or_none()
 
 
+async def _read_bound_chats(project_id: int) -> list[str]:
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(FeishuBotBoundChatRecord.chat_id)
+            .where(FeishuBotBoundChatRecord.project_id == project_id)
+            .order_by(FeishuBotBoundChatRecord.chat_id)
+        )
+        return list(result.scalars().all())
+
+
+async def _read_query_roots(project_id: int) -> list[ProjectQueryRootRecord]:
+    async with async_session_factory() as session:
+        result = await session.execute(
+            select(ProjectQueryRootRecord)
+            .where(ProjectQueryRootRecord.project_id == project_id)
+            .order_by(ProjectQueryRootRecord.alias)
+        )
+        return list(result.scalars().all())
+
+
+async def _read_project_credentials(
+    project_id: int,
+) -> tuple[ProjectSvnCredentialRecord | None, ProjectAiCredentialRecord | None]:
+    async with async_session_factory() as session:
+        svn_result = await session.execute(
+            select(ProjectSvnCredentialRecord).where(
+                ProjectSvnCredentialRecord.project_id == project_id
+            )
+        )
+        ai_result = await session.execute(
+            select(ProjectAiCredentialRecord).where(
+                ProjectAiCredentialRecord.project_id == project_id
+            )
+        )
+        return svn_result.scalar_one_or_none(), ai_result.scalar_one_or_none()
+
+
+async def _seed_project_svn_test_config(
+    project_id: int,
+    *,
+    password: str = "svn_pwd",
+    roots: list[tuple[str, str, str, str]] | None = None,
+) -> None:
+    """直接准备项目级 SVN 凭据和 query_roots，用于连接测试接口。"""
+    rows = roots or [
+        ("game_datas", "游戏配置主目录", "https://svn.example.com/game", "enabled"),
+        ("activity_datas", "活动配置目录", "https://svn.example.com/activity", "enabled"),
+    ]
+    async with async_session_factory() as session:
+        session.add(
+            ProjectSvnCredentialRecord(
+                project_id=project_id,
+                username="svn_admin",
+                password_cipher=encrypt_secret(password),
+            )
+        )
+        for alias, display_name, svn_url, status in rows:
+            session.add(
+                ProjectQueryRootRecord(
+                    project_id=project_id,
+                    alias=alias,
+                    display_name=display_name,
+                    svn_root_url=svn_url,
+                    status=status,
+                )
+            )
+        await session.commit()
+
+
 @pytest.mark.anyio
 async def test_get_returns_empty_skeleton_when_unconfigured(
     auth_client: AsyncClient,
@@ -148,6 +221,7 @@ async def test_get_returns_empty_skeleton_when_unconfigured(
         "app_id": "",
         "has_app_secret": False,
         "default_chat_id": "",
+        "bound_chat_ids": [],
         "allowed_open_ids": [],
         "local_download_roots": [],
         "svn_download_roots": [],
@@ -159,6 +233,32 @@ async def test_get_returns_empty_skeleton_when_unconfigured(
             ".xml",
             ".txt",
         ],
+        "query_roots": [],
+        "svn_credential": {
+            "configured": False,
+            "username_masked": "",
+            "updated_at": None,
+        },
+        "ai_credential": {
+            "configured": False,
+            "provider_preset": "",
+            "provider": "",
+            "base_url": "",
+            "model": "",
+            "api_key_masked": "",
+            "masked_api_key": "",
+            "has_extra_headers": False,
+            "enabled": False,
+            "last_test_status": "",
+            "last_test_at": None,
+            "last_test_error_summary": "",
+            "updated_at": None,
+        },
+        "ai_match_params": {
+            "auto_match_threshold": 0.9,
+            "candidate_threshold": 0.6,
+            "max_candidates": 10,
+        },
         "connection_state": "inactive",
         "updated_at": None,
     }
@@ -261,6 +361,248 @@ async def test_put_creates_then_get_returns_masked_data(
 
 
 @pytest.mark.anyio
+async def test_put_saves_extended_project_feishu_settings(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    tmp_path,
+) -> None:
+    """PUT 应保存新增绑定群、query_roots、项目凭据和 AI 默认参数。"""
+    payload = {
+        "app_id": "cli_extended",
+        "app_secret": "S3CRET_ext",
+        "default_chat_id": "oc_default",
+        "bound_chat_ids": ["oc_default", "oc_backup"],
+        "allowed_open_ids": "",
+        "local_download_roots": str((tmp_path / "local").resolve(strict=False)),
+        "svn_download_roots": str((tmp_path / "svn").resolve(strict=False)),
+        "allowed_download_suffixes": ".xls,.xlsx",
+        "query_roots": [
+            {
+                "alias": "game_datas",
+                "display_name": "游戏配置主目录",
+                "svn_url": "https://svn.example.com/game",
+                "enabled": True,
+            },
+            {
+                "alias": "activity_datas",
+                "display_name": "活动配置目录",
+                "svn_url": "https://svn.example.com/activity",
+                "enabled": False,
+            },
+        ],
+        "svn_credential": {"username": "svn_admin", "password": "svn_pwd"},
+        "ai_credential": {
+            "provider_preset": "openai",
+            "base_url": "",
+            "model": "",
+            "api_key": "sk-project-secret",
+            "extra_headers": {"X-Project": "ExcelCheck"},
+        },
+        "ai_match_params": {
+            "auto_match_threshold": 0.91,
+            "candidate_threshold": 0.61,
+            "max_candidates": 8,
+        },
+    }
+
+    response = await auth_client.put(
+        f"/api/v1/admin/projects/{test_project_id}/feishu-bot",
+        json=payload,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["bound_chat_ids"] == ["oc_default", "oc_backup"]
+    assert data["allowed_open_ids"] == []
+    assert data["query_roots"] == [
+        {
+            "alias": "game_datas",
+            "display_name": "游戏配置主目录",
+            "svn_url": "https://svn.example.com/game",
+            "enabled": True,
+        },
+        {
+            "alias": "activity_datas",
+            "display_name": "活动配置目录",
+            "svn_url": "https://svn.example.com/activity",
+            "enabled": False,
+        },
+    ]
+    assert data["svn_credential"]["configured"] is True
+    assert data["svn_credential"]["username_masked"] == "svn_admin"
+    assert "password" not in str(data["svn_credential"]).lower()
+    assert data["ai_credential"]["configured"] is True
+    assert data["ai_credential"]["provider_preset"] == "openai"
+    assert data["ai_credential"]["base_url"] == "https://api.openai.com/v1"
+    assert data["ai_credential"]["model"] == "gpt-5.4-mini"
+    assert data["ai_credential"]["api_key_masked"] == "sk-***cret"
+    assert data["ai_credential"]["has_extra_headers"] is True
+    assert data["ai_match_params"] == {
+        "auto_match_threshold": 0.91,
+        "candidate_threshold": 0.61,
+        "max_candidates": 8,
+    }
+
+    record = await _read_feishu_record(test_project_id)
+    assert record is not None
+    assert record.auto_match_threshold == 0.91
+    assert record.candidate_threshold == 0.61
+    assert record.max_candidates == 8
+    assert await _read_bound_chats(test_project_id) == ["oc_backup", "oc_default"]
+    roots = await _read_query_roots(test_project_id)
+    assert [(root.alias, root.svn_root_url, root.status) for root in roots] == [
+        ("activity_datas", "https://svn.example.com/activity", "disabled"),
+        ("game_datas", "https://svn.example.com/game", "enabled"),
+    ]
+    svn_credential, ai_credential = await _read_project_credentials(test_project_id)
+    assert svn_credential is not None
+    assert decrypt_secret(svn_credential.password_cipher) == "svn_pwd"
+    assert ai_credential is not None
+    assert decrypt_secret(ai_credential.encrypted_api_key) == "sk-project-secret"
+
+
+@pytest.mark.anyio
+async def test_project_svn_credential_test_checks_enabled_query_roots(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """项目级 SVN 连接测试应逐个测试启用的远端 query_roots。"""
+    await _seed_project_svn_test_config(
+        test_project_id,
+        password="svn_password_should_not_leak",
+        roots=[
+            ("game_datas", "游戏配置主目录", "https://svn.example.com/game", "enabled"),
+            ("activity_datas", "活动配置目录", "https://svn.example.com/activity", "enabled"),
+            ("local_datas", "本地目录", "D:/configs/local", "enabled"),
+            ("disabled_datas", "禁用目录", "https://svn.example.com/disabled", "disabled"),
+        ],
+    )
+    calls: list[tuple[str, str]] = []
+
+    def _list_svn_directory(url, *, credentials, timeout=None):  # noqa: ANN001
+        calls.append((url, credentials.password))
+        return {"dir_url": url, "entries": [{"name": "IAPConfig.xls"}]}
+
+    monkeypatch.setattr(
+        "backend.app.admin.router.list_svn_directory",
+        _list_svn_directory,
+    )
+
+    response = await auth_client.post(
+        f"/api/v1/admin/projects/{test_project_id}/svn-credential/test"
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["status"] == "success"
+    assert [item["alias"] for item in data["items"]] == ["game_datas", "activity_datas"]
+    assert all(item["status"] == "success" for item in data["items"])
+    assert calls == [
+        ("https://svn.example.com/game", "svn_password_should_not_leak"),
+        ("https://svn.example.com/activity", "svn_password_should_not_leak"),
+    ]
+    assert "svn_password_should_not_leak" not in response.text
+
+
+@pytest.mark.anyio
+async def test_project_svn_credential_test_rejects_non_admin(
+    test_project_id: int,
+) -> None:
+    """普通项目成员不能触发项目级 SVN 连接测试。"""
+    headers = await _create_normal_user_headers(test_project_id)
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://testserver",
+        headers=headers,
+    ) as client:
+        response = await client.post(
+            f"/api/v1/admin/projects/{test_project_id}/svn-credential/test"
+        )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_project_svn_credential_test_requires_saved_credential(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    """未保存项目级 SVN 凭据时返回明确中文错误。"""
+    response = await auth_client.post(
+        f"/api/v1/admin/projects/{test_project_id}/svn-credential/test"
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "请先保存项目级 SVN 凭据后再测试连接"
+
+
+@pytest.mark.anyio
+async def test_project_svn_credential_test_requires_enabled_remote_query_root(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    """无启用远端 query_roots 时返回明确中文错误。"""
+    await _seed_project_svn_test_config(
+        test_project_id,
+        roots=[
+            ("local_datas", "本地目录", "D:/configs/local", "enabled"),
+            ("disabled_datas", "禁用目录", "https://svn.example.com/disabled", "disabled"),
+        ],
+    )
+
+    response = await auth_client.post(
+        f"/api/v1/admin/projects/{test_project_id}/svn-credential/test"
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "请先配置并启用至少一个 SVN 数据根后再测试连接"
+
+
+@pytest.mark.anyio
+async def test_project_svn_credential_test_returns_failure_summary_without_password(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """单个 query_root 失败时返回脱敏错误摘要，不泄露 SVN 密码。"""
+    await _seed_project_svn_test_config(
+        test_project_id,
+        password="do_not_return_this_password",
+        roots=[
+            ("game_datas", "游戏配置主目录", "https://svn.example.com/game", "enabled"),
+            ("activity_datas", "活动配置目录", "https://svn.example.com/activity", "enabled"),
+        ],
+    )
+
+    def _list_svn_directory(url, *, credentials, timeout=None):  # noqa: ANN001
+        if "activity" in url:
+            raise RuntimeError(
+                "当前账号无权访问测试目录，请检查 SVN 用户权限或重新输入凭据。"
+            )
+        return {"dir_url": url, "entries": [{"name": "IAPConfig.xls"}]}
+
+    monkeypatch.setattr(
+        "backend.app.admin.router.list_svn_directory",
+        _list_svn_directory,
+    )
+
+    response = await auth_client.post(
+        f"/api/v1/admin/projects/{test_project_id}/svn-credential/test"
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["status"] == "failed"
+    assert [(item["alias"], item["status"]) for item in data["items"]] == [
+        ("game_datas", "success"),
+        ("activity_datas", "failed"),
+    ]
+    assert "当前账号无权访问测试目录" in data["items"][1]["message"]
+    assert "do_not_return_this_password" not in response.text
+
+
+@pytest.mark.anyio
 async def test_put_omitting_app_secret_keeps_existing_secret(
     auth_client: AsyncClient,
     test_project_id: int,
@@ -295,25 +637,142 @@ async def test_put_omitting_app_secret_keeps_existing_secret(
 
 
 @pytest.mark.anyio
-async def test_put_cross_project_app_id_conflict_returns_400(
+async def test_put_rejects_default_chat_id_not_in_explicit_bound_chats(
     auth_client: AsyncClient,
     test_project_id: int,
 ) -> None:
-    """同一个 app_id 不能被两个不同项目同时占用。"""
+    """显式传 bound_chat_ids 时 default_chat_id 必须包含其中。"""
+    response = await auth_client.put(
+        f"/api/v1/admin/projects/{test_project_id}/feishu-bot",
+        json={
+            "app_id": "cli_bound_check",
+            "app_secret": "s",
+            "default_chat_id": "oc_default",
+            "bound_chat_ids": ["oc_other"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "default_chat_id 必须包含在绑定群列表中" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_put_rejects_chat_id_already_bound_to_other_project(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    """一个飞书群只能绑定一个项目。"""
+    other_project_id = await _create_secondary_project("项目 A")
+
+    first = await auth_client.put(
+        f"/api/v1/admin/projects/{other_project_id}/feishu-bot",
+        json={
+            "app_id": "cli_chat_owner",
+            "app_secret": "s1",
+            "default_chat_id": "oc_shared",
+            "bound_chat_ids": ["oc_shared"],
+        },
+    )
+    assert first.status_code == 200, first.text
+
+    second = await auth_client.put(
+        f"/api/v1/admin/projects/{test_project_id}/feishu-bot",
+        json={
+            "app_id": "cli_chat_target",
+            "app_secret": "s2",
+            "default_chat_id": "oc_shared",
+            "bound_chat_ids": ["oc_shared"],
+        },
+    )
+
+    assert second.status_code == 400
+    assert second.json()["detail"] == "该飞书群已绑定项目「项目 A」，不能重复绑定到「test-project」"
+
+
+@pytest.mark.anyio
+async def test_put_allows_same_app_id_with_same_app_secret(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    """同一个 app_id 可被多个项目复用，但 app_secret 必须一致。"""
     other_project_id = await _create_secondary_project()
 
     first = await auth_client.put(
         f"/api/v1/admin/projects/{test_project_id}/feishu-bot",
-        json={"app_id": "cli_shared", "app_secret": "s1"},
+        json={"app_id": "cli_shared", "app_secret": "same_secret"},
     )
     assert first.status_code == 200
 
     second = await auth_client.put(
         f"/api/v1/admin/projects/{other_project_id}/feishu-bot",
-        json={"app_id": "cli_shared", "app_secret": "s2"},
+        json={"app_id": "cli_shared", "app_secret": "same_secret"},
+    )
+    assert second.status_code == 200, second.text
+
+
+@pytest.mark.anyio
+async def test_put_rejects_same_app_id_with_different_app_secret(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    """同 app_id 跨项目配置不同 app_secret 时应返回指定中文错误。"""
+    other_project_id = await _create_secondary_project()
+
+    first = await auth_client.put(
+        f"/api/v1/admin/projects/{test_project_id}/feishu-bot",
+        json={"app_id": "cli_shared_reject", "app_secret": "s1"},
+    )
+    assert first.status_code == 200
+
+    second = await auth_client.put(
+        f"/api/v1/admin/projects/{other_project_id}/feishu-bot",
+        json={"app_id": "cli_shared_reject", "app_secret": "s2"},
     )
     assert second.status_code == 400
-    assert "app_id" in second.json()["detail"]
+    assert second.json()["detail"] == "该 App ID 已在其他项目配置，请使用相同 App Secret 或联系管理员确认"
+
+
+@pytest.mark.anyio
+async def test_put_rejects_duplicate_query_root_alias(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    """query_roots alias 在项目内必须唯一。"""
+    response = await auth_client.put(
+        f"/api/v1/admin/projects/{test_project_id}/feishu-bot",
+        json={
+            "app_id": "cli_duplicate_alias",
+            "app_secret": "s",
+            "query_roots": [
+                {"alias": "game_datas", "display_name": "主目录", "svn_url": "https://svn/a", "enabled": True},
+                {"alias": "game_datas", "display_name": "重复", "svn_url": "https://svn/b", "enabled": True},
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "query_roots alias 重复：game_datas" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_put_rejects_empty_query_root_svn_url(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    """query_roots.svn_url 不能为空。"""
+    response = await auth_client.put(
+        f"/api/v1/admin/projects/{test_project_id}/feishu-bot",
+        json={
+            "app_id": "cli_empty_svn_url",
+            "app_secret": "s",
+            "query_roots": [
+                {"alias": "game_datas", "display_name": "主目录", "svn_url": " ", "enabled": True}
+            ],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "query_roots.svn_url 不能为空：game_datas" in response.json()["detail"]
 
 
 @pytest.mark.anyio

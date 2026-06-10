@@ -23,7 +23,6 @@ import './styles/admin-dashboard.css'
 import './styles/profile-settings.css'
 import './styles/shared-final.css'
 import './styles/user-guide.css'
-import './styles/ai-rule.css'
 
 const app = createApp(App)
 const pinia = createPinia()
