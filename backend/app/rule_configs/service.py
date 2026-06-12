@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +25,7 @@ from backend.app.rule_configs.parser import (
 SUPPORTED_RULE_FAMILY = "config_lookup"
 RULE_CONFIG_VERSION_CONFLICT = "RULE_CONFIG_VERSION_CONFLICT"
 RULE_CONFIG_VALIDATION_FAILED = "RULE_CONFIG_VALIDATION_FAILED"
-RuleConfigAction = Literal["save_draft", "publish", "rollback"]
+RuleConfigAction = Literal["publish"]
 
 
 @dataclass(frozen=True)
@@ -98,6 +98,31 @@ async def get_rule_config_by_id(
     return result.scalar_one_or_none()
 
 
+async def delete_rule_config(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    rule_family: str,
+    rule_id: int,
+    expected_optimistic_lock_version: int,
+) -> None:
+    """硬删除当前项目的一条查询规则及其版本历史。"""
+    record = await require_rule_config_by_id(
+        db,
+        project_id=project_id,
+        rule_family=rule_family,
+        rule_id=rule_id,
+    )
+    _ensure_expected_lock(record, expected_optimistic_lock_version)
+    await db.execute(
+        delete(RuleConfigVersionRecord).where(
+            RuleConfigVersionRecord.rule_config_id == record.id
+        )
+    )
+    await db.delete(record)
+    await db.commit()
+
+
 async def require_rule_config_by_id(
     db: AsyncSession,
     *,
@@ -159,22 +184,6 @@ async def create_rule_config(
     )
     try:
         db.add(record)
-        await db.flush()
-        db.add(
-            RuleConfigVersionRecord(
-                rule_config_id=record.id,
-                project_id=project_id,
-                rule_family=rule_family,
-                query_type=query_type,
-                version=1,
-                content_md=content_md,
-                parsed_config_json=parsed_json,
-                status="draft",
-                action="save_draft",
-                operator=user_id,
-                description=description or "创建草稿",
-            )
-        )
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -193,7 +202,7 @@ async def save_rule_config_draft(
     rule_id: int,
     mutation: RuleConfigMutation,
 ) -> RuleConfigMutationResult:
-    """保存草稿并写入版本历史。"""
+    """保存当前草稿，不写入发布历史。"""
     record = await require_rule_config_by_id(
         db,
         project_id=project_id,
@@ -216,14 +225,12 @@ async def save_rule_config_draft(
     )
     if not validation.ok:
         raise RuleConfigValidationError(validation)
-    record = await _mutate_rule_config(
+    record = await _save_current_draft(
         db,
         record=record,
         user_id=user_id,
         content_md=mutation.content_md,
         parsed_config=validation.parsed_config_json,
-        action="save_draft",
-        description=mutation.description,
     )
     return RuleConfigMutationResult(record=record, validation=validation)
 
@@ -343,7 +350,7 @@ async def list_rule_config_versions(
     rule_family: str,
     rule_id: int,
 ) -> list[RuleConfigVersionRecord]:
-    """按版本号倒序读取指定规则版本历史。"""
+    """按版本号倒序读取指定规则发布历史。"""
     await require_rule_config_by_id(
         db,
         project_id=project_id,
@@ -352,7 +359,10 @@ async def list_rule_config_versions(
     )
     result = await db.execute(
         select(RuleConfigVersionRecord)
-        .where(RuleConfigVersionRecord.rule_config_id == rule_id)
+        .where(
+            RuleConfigVersionRecord.rule_config_id == rule_id,
+            RuleConfigVersionRecord.status == "published",
+        )
         .order_by(RuleConfigVersionRecord.version.desc())
     )
     return list(result.scalars().all())
@@ -369,7 +379,7 @@ async def rollback_rule_config_version(
     expected_optimistic_lock_version: int,
     description: str = "",
 ) -> RuleConfigRecord:
-    """回滚到历史版本，生成新的草稿版本。"""
+    """把已发布历史版本复制到当前草稿，不写入发布历史。"""
     record = await require_rule_config_by_id(
         db,
         project_id=project_id,
@@ -381,6 +391,7 @@ async def rollback_rule_config_version(
         select(RuleConfigVersionRecord).where(
             RuleConfigVersionRecord.rule_config_id == rule_id,
             RuleConfigVersionRecord.version == version,
+            RuleConfigVersionRecord.status == "published",
         )
     )
     source = source_result.scalar_one_or_none()
@@ -403,14 +414,12 @@ async def rollback_rule_config_version(
     )
     if not validation.ok:
         raise RuleConfigValidationError(validation)
-    return await _mutate_rule_config(
+    return await _save_current_draft(
         db,
         record=record,
         user_id=user_id,
         content_md=source.content_md,
         parsed_config=parsed_config,
-        action="rollback",
-        description=description or f"回滚到 v{version}",
     )
 
 
@@ -466,6 +475,36 @@ async def has_any_published_rule_config(
     return result.scalar_one_or_none() is not None
 
 
+async def _save_current_draft(
+    db: AsyncSession,
+    *,
+    record: RuleConfigRecord,
+    user_id: int,
+    content_md: str,
+    parsed_config: dict[str, Any],
+) -> RuleConfigRecord:
+    query_type = _extract_query_type(parsed_config)
+    parsed_json = json.dumps(parsed_config, ensure_ascii=False)
+
+    record.query_type = query_type
+    record.content_md = content_md
+    record.parsed_config_json = parsed_json
+    record.status = "draft"
+    record.draft_version = _next_draft_version(record)
+    record.updated_by = user_id
+    record.optimistic_lock_version += 1
+
+    db.add(record)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        _raise_query_type_duplicate(query_type)
+        raise exc
+    await db.refresh(record)
+    return record
+
+
 async def _mutate_rule_config(
     db: AsyncSession,
     *,
@@ -478,20 +517,18 @@ async def _mutate_rule_config(
 ) -> RuleConfigRecord:
     query_type = _extract_query_type(parsed_config)
     version = await _next_version(db, rule_config_id=record.id)
-    status = "published" if action == "publish" else "draft"
     parsed_json = json.dumps(parsed_config, ensure_ascii=False)
 
     record.query_type = query_type
     record.content_md = content_md
     record.parsed_config_json = parsed_json
-    record.status = status
+    record.status = "published"
     record.draft_version = version
+    record.published_version = version
+    record.published_by = user_id
+    record.published_at = func.now()
     record.updated_by = user_id
     record.optimistic_lock_version += 1
-    if action == "publish":
-        record.published_version = version
-        record.published_by = user_id
-        record.published_at = func.now()
 
     db.add(record)
     db.add(
@@ -503,7 +540,7 @@ async def _mutate_rule_config(
             version=version,
             content_md=content_md,
             parsed_config_json=parsed_json,
-            status=status,
+            status="published",
             action=action,
             operator=user_id,
             description=description,
@@ -517,6 +554,14 @@ async def _mutate_rule_config(
         raise exc
     await db.refresh(record)
     return record
+
+
+def _next_draft_version(record: RuleConfigRecord) -> int:
+    if record.published_version is None:
+        return 1
+    if record.status == "draft" and record.draft_version > record.published_version:
+        return record.draft_version
+    return record.published_version + 1
 
 
 async def _validate_query_type_constraints(

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
+from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -224,21 +226,31 @@ def _find_main_hits_and_candidates(
     for page_config in _list_page_configs(query_config):
         page_name = str(page_config.get("name") or "")
         rows = _read_cached_sheet(sheet_cache, main_file_path, page_name)
-        id_field = str(page_config.get("id_field") or "")
-        name_field = str(page_config.get("name_field") or "")
+        id_field = _id_match_field(page_config)
+        text_match_fields = _text_match_fields(page_config)
+        candidate_label_field = _candidate_label_field(page_config)
         for row_index, row in enumerate(rows):
             id_value = normalize_cell_value(get_cell(row, id_field))
-            name_value = normalize_cell_value(get_cell(row, name_field))
+            display_name_value = _candidate_display_name(
+                row,
+                candidate_label_field=candidate_label_field,
+                fallback_fields=text_match_fields,
+            )
             if is_numeric_input and id_value == normalized_input:
                 hits.append((page_config, row))
-            elif not is_numeric_input and name_value == normalized_input:
+            elif not is_numeric_input and _matches_any_text_field(
+                row,
+                text_match_fields=text_match_fields,
+                lookup_input=normalized_input,
+                exact=True,
+            ):
                 hits.append((page_config, row))
-            if name_value:
+            if display_name_value:
                 candidate = ConfigLookupCandidate(
                     key=f"{page_name}:{row_index}:{id_value}",
                     page=page_name,
                     id_value=id_value,
-                    name_value=name_value,
+                    name_value=display_name_value,
                     row=row,
                     page_config=page_config,
                 )
@@ -246,8 +258,18 @@ def _find_main_hits_and_candidates(
                 if (
                     not is_numeric_input
                     and normalized_input
-                    and normalized_input in name_value
-                    and name_value != normalized_input
+                    and _matches_any_text_field(
+                        row,
+                        text_match_fields=text_match_fields,
+                        lookup_input=normalized_input,
+                        exact=False,
+                    )
+                    and not _matches_any_text_field(
+                        row,
+                        text_match_fields=text_match_fields,
+                        lookup_input=normalized_input,
+                        exact=True,
+                    )
                 ):
                     partial_name_candidates.append(candidate)
     return hits, candidates, partial_name_candidates
@@ -300,10 +322,14 @@ def _build_result_item(
     sheet_cache: dict[tuple[str, str], list[dict[str, Any]]],
     query_root_alias: str,
 ) -> ConfigLookupResultItem:
-    id_field = str(page_config.get("id_field") or "")
-    name_field = str(page_config.get("name_field") or "")
+    id_field = _id_match_field(page_config)
+    name_field = _candidate_label_field(page_config)
     id_value = normalize_cell_value(get_cell(row, id_field))
-    name_value = normalize_cell_value(get_cell(row, name_field))
+    name_value = _candidate_display_name(
+        row,
+        candidate_label_field=name_field,
+        fallback_fields=_text_match_fields(page_config),
+    )
     fields: list[ConfigLookupFieldValue] = []
     warnings: list[str] = []
     for output_field in _list_output_fields(page_config):
@@ -464,6 +490,65 @@ def _dedupe_candidates(candidates: list[ConfigLookupCandidate]) -> list[ConfigLo
     return deduped
 
 
+def _id_match_field(page_config: dict[str, Any]) -> str:
+    return str(page_config.get("id_match_field") or page_config.get("id_field") or "")
+
+
+def _text_match_fields(page_config: dict[str, Any]) -> list[str]:
+    raw_fields = page_config.get("text_match_fields")
+    fields: list[str] = []
+    if isinstance(raw_fields, list):
+        for item in raw_fields:
+            if isinstance(item, dict):
+                field = str(item.get("field") or "").strip()
+                if field:
+                    fields.append(field)
+    if fields:
+        return fields
+    legacy = str(page_config.get("name_field") or "").strip()
+    return [legacy] if legacy else []
+
+
+def _candidate_label_field(page_config: dict[str, Any]) -> str:
+    label_field = str(page_config.get("candidate_label_field") or "").strip()
+    if label_field:
+        return label_field
+    fields = _text_match_fields(page_config)
+    return fields[0] if fields else ""
+
+
+def _candidate_display_name(
+    row: dict[str, Any],
+    *,
+    candidate_label_field: str,
+    fallback_fields: list[str],
+) -> str:
+    primary = normalize_cell_value(get_cell(row, candidate_label_field))
+    if primary:
+        return primary
+    for field in fallback_fields:
+        value = normalize_cell_value(get_cell(row, field))
+        if value:
+            return value
+    return ""
+
+
+def _matches_any_text_field(
+    row: dict[str, Any],
+    *,
+    text_match_fields: list[str],
+    lookup_input: str,
+    exact: bool,
+) -> bool:
+    for field in text_match_fields:
+        value = normalize_cell_value(get_cell(row, field))
+        if exact and value == lookup_input:
+            return True
+        if not exact and lookup_input in value:
+            return True
+    return False
+
+
 class _CandidateReply:
     def __init__(self, *, message: str, candidates: list[ConfigLookupCandidate]) -> None:
         self.message = message
@@ -545,7 +630,11 @@ def _field_value(
         )
         return ConfigLookupFieldValue(field=field_name, label=label, value=value), warning
 
-    value = _apply_value_map(raw_value, output_field.get("value_map"))
+    formatter = output_field.get("formatter")
+    if isinstance(formatter, dict):
+        value = _apply_formatter(raw_value, formatter)
+    else:
+        value = _apply_value_map(raw_value, output_field.get("value_map"))
     return ConfigLookupFieldValue(
         field=field_name,
         label=label,
@@ -599,6 +688,25 @@ def _apply_value_map(raw_value: str, value_map: Any) -> str:
             if mapped is not None:
                 return str(mapped)
     return raw_value
+
+
+def _apply_formatter(raw_value: str, formatter: dict[str, Any]) -> str:
+    if raw_value in {"", "0"}:
+        return "未配置"
+
+    formatter_type = str(formatter.get("type") or "")
+    timezone_name = str(formatter.get("timezone") or "Asia/Shanghai")
+    if formatter_type != "timestamp_seconds" or timezone_name != "Asia/Shanghai":
+        raise ConfigLookupExcelError("输出字段格式配置只支持 时间戳秒 + Asia/Shanghai")
+    if not raw_value.isdigit() or len(raw_value) != 10:
+        return f"{raw_value}(时间格式错误)"
+
+    try:
+        timestamp = int(raw_value)
+        formatted = datetime.fromtimestamp(timestamp, ZoneInfo(timezone_name))
+    except (OverflowError, ValueError):
+        return f"{raw_value}(时间格式错误)"
+    return formatted.strftime("%Y/%m/%d %H:%M:%S")
 
 
 def _colon_tail(raw_value: str) -> str:

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, h, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
 
 import AppCard from '../components/shell/AppCard.vue'
@@ -62,8 +62,69 @@ function openCreateDialog(): void {
   createDialogVisible.value = true
 }
 
-function showPendingNotice(label: string): void {
-  ElMessage.info(`${label}请进入详情页操作`)
+async function handleDeleteRule(rule: RuleConfigRecord): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      h('div', { class: 'rule-config-delete-confirm' }, [
+        h('div', { class: 'rule-config-delete-confirm__icon', 'aria-hidden': 'true' }, [
+          h(
+            'svg',
+            {
+              viewBox: '0 0 24 24',
+              fill: 'none',
+              stroke: 'currentColor',
+              'stroke-width': '2',
+              'stroke-linecap': 'round',
+              'stroke-linejoin': 'round',
+            },
+            [
+              h('path', {
+                d: 'M10.3 3.6 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0Z',
+              }),
+              h('path', { d: 'M12 9v4' }),
+              h('path', { d: 'M12 17h.01' }),
+            ],
+          ),
+        ]),
+        h('div', { class: 'rule-config-delete-confirm__body' }, [
+          h('p', { class: 'rule-config-delete-confirm__title' }, [
+            '确认删除 ',
+            h('strong', `「${rule.query_type}」`),
+            ' 规则？',
+          ]),
+          h(
+            'p',
+            { class: 'rule-config-delete-confirm__desc' },
+            '删除后该查询类型的机器人查询将不可用，已发布版本也不会再参与运行时查询。',
+          ),
+          h('div', { class: 'rule-config-delete-confirm__meta' }, [
+            h('span', `规则族：${rule.rule_family}`),
+            h('span', `当前版本：v${rule.draft_version || 0}`),
+          ]),
+        ]),
+      ]),
+      '删除查询规则',
+      {
+        confirmButtonText: '确认删除',
+        cancelButtonText: '取消',
+        customClass: 'rule-config-delete-message-box',
+        confirmButtonClass: 'rule-config-delete-message-box__confirm',
+        cancelButtonClass: 'rule-config-delete-message-box__cancel',
+        closeOnClickModal: false,
+        closeOnPressEscape: true,
+        distinguishCancelAndClose: true,
+      },
+    )
+  } catch {
+    return
+  }
+
+  const result = await ruleListState.deleteRule(rule)
+  if (result.ok) {
+    ElMessage.success(result.message)
+    return
+  }
+  ElMessage.error(result.message)
 }
 
 async function submitCreateRule(): Promise<void> {
@@ -91,8 +152,8 @@ async function submitCreateRule(): Promise<void> {
 <template>
   <div class="admin-dashboard-page rule-config-page flex h-full flex-col bg-canvas font-sans text-ink-700">
     <PageHeader
-      breadcrumb="主页 / 规则配置"
-      title="规则配置"
+      breadcrumb="主页 / 查询配置"
+      title="查询配置"
       description="按查询类型维护配置表查询规则。规则发布后立即生效，无需重启机器人。"
     >
       <template #actions>
@@ -121,6 +182,7 @@ async function submitCreateRule(): Promise<void> {
           :status-label="item.statusLabel"
           :status-type="item.statusType"
           :icon-tone="item.iconTone"
+          :class="{ 'rule-config-overview__metric--datetime': item.label === '最近发布' }"
         >
           <template #icon>
             <svg
@@ -196,7 +258,7 @@ async function submitCreateRule(): Promise<void> {
         <div class="query-rule-list-head">
           <div>
             <h2>配置表查询规则列表</h2>
-            <p>每条规则对应一个查询类型。编辑、发布、版本和试查均围绕单条规则独立管理。</p>
+            <p>每条规则对应一个查询类型。列表仅保留编辑和删除入口，其余操作在详情页中完成。</p>
           </div>
           <div class="query-rule-list-head__tools">
             <span>共 {{ filteredRules.length }} 条</span>
@@ -257,13 +319,14 @@ async function submitCreateRule(): Promise<void> {
 
             <div class="query-rule-row__actions">
               <PrimaryButton size="sm" @click="openRuleDetail(rule)">编辑</PrimaryButton>
-              <div class="query-rule-row__secondary-actions">
-                <SecondaryButton size="sm" @click="showPendingNotice('试查')">试查</SecondaryButton>
-                <SecondaryButton size="sm" @click="showPendingNotice('版本历史')">历史</SecondaryButton>
-                <SecondaryButton size="sm" @click="showPendingNotice(rule.status === 'published' ? '归档' : '回滚')">
-                  {{ rule.status === 'published' ? '归档' : '回滚' }}
-                </SecondaryButton>
-              </div>
+              <SecondaryButton
+                class="query-rule-row__delete-button"
+                size="sm"
+                :loading="ruleListState.deletingRuleId.value === rule.rule_id"
+                @click="handleDeleteRule(rule)"
+              >
+                删除
+              </SecondaryButton>
             </div>
           </article>
         </div>
@@ -340,6 +403,11 @@ async function submitCreateRule(): Promise<void> {
   margin: 7px 0 8px;
   overflow-wrap: anywhere;
   white-space: normal;
+}
+
+.rule-config-page :deep(.rule-config-overview__metric--datetime .ui-metric-card__value) {
+  font-size: 21px;
+  line-height: 1.18;
 }
 
 .query-rule-list-card {
@@ -525,7 +593,7 @@ async function submitCreateRule(): Promise<void> {
   min-width: 0;
   flex-direction: column;
   justify-content: center;
-  gap: 7px;
+  gap: 8px;
 }
 
 .query-rule-row__actions :deep(.ui-button) {
@@ -536,15 +604,16 @@ async function submitCreateRule(): Promise<void> {
   padding-left: 10px;
 }
 
-.query-rule-row__secondary-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 7px;
+.query-rule-row__delete-button {
+  color: #dc2626;
+  border-color: #fecaca;
+  background: #ffffff;
 }
 
-.query-rule-row__secondary-actions :deep(.ui-button) {
-  padding-right: 8px;
-  padding-left: 8px;
+.query-rule-row__delete-button:hover:not(:disabled) {
+  color: #b91c1c;
+  border-color: #fca5a5;
+  background: #fef2f2;
 }
 
 .query-rule-create-form {
@@ -569,6 +638,145 @@ async function submitCreateRule(): Promise<void> {
   color: #64748b;
   font-size: 13px;
   line-height: 1.55;
+}
+
+:global(.rule-config-delete-message-box) {
+  width: min(460px, calc(100vw - 32px));
+  border: 1px solid rgba(226, 232, 240, 0.95);
+  border-radius: 16px;
+  padding: 0;
+  overflow: hidden;
+  box-shadow:
+    0 24px 60px rgba(15, 23, 42, 0.18),
+    0 2px 8px rgba(15, 23, 42, 0.08);
+}
+
+:global(.rule-config-delete-message-box .el-message-box__header) {
+  padding: 22px 24px 0;
+}
+
+:global(.rule-config-delete-message-box .el-message-box__title) {
+  color: var(--color-text-main);
+  font-size: 18px;
+  font-weight: 850;
+  line-height: 1.35;
+}
+
+:global(.rule-config-delete-message-box .el-message-box__headerbtn) {
+  top: 18px;
+  right: 18px;
+}
+
+:global(.rule-config-delete-message-box .el-message-box__content) {
+  padding: 18px 24px 4px;
+}
+
+:global(.rule-config-delete-message-box .el-message-box__message) {
+  width: 100%;
+}
+
+:global(.rule-config-delete-confirm) {
+  display: flex;
+  gap: 14px;
+  min-width: 0;
+}
+
+:global(.rule-config-delete-confirm__icon) {
+  display: inline-flex;
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(248, 113, 113, 0.22);
+  border-radius: 14px;
+  color: #dc2626;
+  background: linear-gradient(180deg, #fff1f2 0%, #fee2e2 100%);
+}
+
+:global(.rule-config-delete-confirm__icon svg) {
+  width: 22px;
+  height: 22px;
+}
+
+:global(.rule-config-delete-confirm__body) {
+  min-width: 0;
+}
+
+:global(.rule-config-delete-confirm__title) {
+  margin: 1px 0 0;
+  color: var(--color-text-main);
+  font-size: 15px;
+  font-weight: 750;
+  line-height: 1.55;
+}
+
+:global(.rule-config-delete-confirm__title strong) {
+  font-weight: 850;
+}
+
+:global(.rule-config-delete-confirm__desc) {
+  margin: 8px 0 0;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+:global(.rule-config-delete-confirm__meta) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+:global(.rule-config-delete-confirm__meta span) {
+  border: 1px solid #e2e8f0;
+  border-radius: 999px;
+  background: #f8fafc;
+  padding: 4px 10px;
+  color: #475569;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+:global(.rule-config-delete-message-box .el-message-box__btns) {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 20px 24px 24px;
+}
+
+:global(.rule-config-delete-message-box .el-message-box__btns .el-button) {
+  min-width: 96px;
+  height: 38px;
+  border-radius: 10px;
+  font-weight: 750;
+}
+
+:global(.rule-config-delete-message-box__cancel) {
+  border-color: #dbe4f0;
+  color: #334155;
+  background: #ffffff;
+}
+
+:global(.rule-config-delete-message-box__cancel:hover) {
+  border-color: #cbd5e1;
+  color: #0f172a;
+  background: #f8fafc;
+}
+
+:global(.rule-config-delete-message-box__confirm) {
+  border-color: #dc2626;
+  color: #ffffff;
+  background: #dc2626;
+  box-shadow: 0 10px 22px rgba(220, 38, 38, 0.22);
+}
+
+:global(.rule-config-delete-message-box__confirm:hover),
+:global(.rule-config-delete-message-box__confirm:focus) {
+  border-color: #b91c1c;
+  color: #ffffff;
+  background: #b91c1c;
 }
 
 @media (max-width: 1180px) {

@@ -9,7 +9,7 @@ A single project-level, query-type-specific Markdown rule that defines which con
 _Avoid_: Prompt file, AI config, query script, cross-project rule, expected-output fixture, multi-query Markdown bundle
 
 **Query Rule Workspace**:
-A project-member-visible workspace where users can view and edit Markdown query rule configurations, while the platform validates and publishes only deterministic, parseable query definitions.
+A project-member-visible workspace, labeled `查询配置` in the UI, where users can view and edit Markdown query rule configurations, while the platform validates and publishes only deterministic, parseable query definitions.
 _Avoid_: Admin-only bot settings, free-form prompt editor, runtime command
 
 **Rule Configuration Workspace**:
@@ -21,7 +21,7 @@ The entry view of the rule configuration workspace where project members browse 
 _Avoid_: Rule editor, admin bot settings, bundled Markdown editor
 
 **Rule Configuration Editor**:
-The detailed rule configuration workspace view where project members edit one query-type-specific Markdown rule, validate structure, publish versions, review history, and run lookup trials.
+The detailed rule configuration workspace view where project members edit one query-type-specific Markdown rule, validate structure, publish versions, review publish history, and run lookup trials.
 _Avoid_: Rule list, global settings, AI prompt editor, multi-query editor
 
 **Rule Family**:
@@ -37,8 +37,12 @@ A canonical user-facing Markdown rule language that uses a fixed set of Chinese 
 _Avoid_: English-only schema, dual-language schema, synonym schema, AI-parsed prose, developer-facing config, legacy template compatibility, `---` multi-query editing
 
 **Published Query Rule Version**:
-A query rule configuration version that passed deterministic validation and is active immediately for Feishu bot lookups, regardless of who edited it and without requiring bot reconnection.
+A query rule configuration version that passed deterministic validation and is active immediately for Feishu bot lookups, regardless of who edited it and without requiring bot reconnection. Only published versions belong to query rule publish history.
 _Avoid_: Draft, latest edit, unvalidated Markdown, restart-gated rule, cross-project published rule
+
+**Query Rule Publish History**:
+The reviewable history of published query rule versions that have been made eligible for runtime lookup. Draft saves and rollback preparation do not create publish history entries.
+_Avoid_: Draft history, edit log, autosave timeline, rollback draft
 
 **Project-Scoped Query Rule**:
 A query rule configuration that belongs to exactly one project and one query type. The same query type may exist in different projects with different files, sheets, roots, and output fields.
@@ -57,8 +61,12 @@ A save or publish attempt based on an older query rule draft version after anoth
 _Avoid_: Silent overwrite, last-write-wins
 
 **Query Rule Draft**:
-An editable Markdown query rule configuration version that is visible in the query rule workspace but is not used by Feishu bot lookups until it passes validation and is published.
-_Avoid_: Published rule, runtime config
+The single editable current Markdown state for a query rule, visible in the query rule workspace but not used by Feishu bot lookups until it passes validation and is published. Saving a draft updates this current draft instead of adding to publish history.
+_Avoid_: Published rule, runtime config, historical version
+
+**Query Rule Rollback**:
+An action that copies one published query rule version back into the current draft so project members can review, edit, and republish it. Rollback does not affect runtime lookup until the resulting draft is published.
+_Avoid_: Immediate runtime rollback, publish history deletion, hidden restore
 
 **Configuration Table Lookup**:
 A Feishu bot workflow that searches approved configuration table files according to the published query rule for the requested query type and replies to the originating group with selected configuration fields.
@@ -112,6 +120,10 @@ _Avoid_: AI intent, natural-language category, post-publication rename
 A lookup command state where the requested query type is not present as a currently published project-scoped query rule, including query types that existed in older versions but were removed or archived.
 _Avoid_: Historical fallback, deleted rule execution
 
+**Deleted Query Rule**:
+A project-scoped query rule that has been intentionally removed from the rule configuration workspace and no longer participates in lookup runtime, version history review, or rule listing. If it had previously been published, later lookup commands for that query type are treated as a missing query type rather than falling back to historical versions.
+_Avoid_: Archived rule, hidden draft, historical runtime fallback, disabled-but-queryable rule
+
 **Lookup Command**:
 A Feishu bot command shaped as query type, action, versioned config folder, and lookup input; for example `礼包 查询 /datas 26051802`. A compact form such as `礼包查询` is only a compatibility alias for the same query type plus action.
 _Avoid_: Natural-language prompt, arbitrary bot sentence
@@ -141,8 +153,12 @@ The Feishu bot message delivery of lookup result entries. Lookup semantics retur
 _Avoid_: Result truncation, business pagination
 
 **Lookup Output Field**:
-A configured field returned in a lookup result entry, declared with a user-facing label and deterministic source field, and optionally enriched by fixed value mapping or an explicit reference display expression. Fixed value mapping presents known raw values as user-facing labels while empty table values remain visible as an unconfigured state. Field names are used exactly as authored and are not inferred or corrected by the platform.
+A configured field returned in a lookup result entry, declared with a user-facing label and deterministic source field, and optionally enriched by fixed value mapping, an explicit reference display expression, or an output formatter. Fixed value mapping presents known raw values as user-facing labels while empty table values remain visible as an unconfigured state. Field names are used exactly as authored and are not inferred or corrected by the platform.
 _Avoid_: Match field, AI explanation, unconfigured field, inferred formatter, automatic field correction
+
+**Lookup Output Formatter**:
+A deterministic display instruction attached to one lookup output field so runtime replies can present raw table values in a human-readable form without changing matching behavior, rule identity, or source data. Formatters are authored explicitly in the query rule and are not inferred from field names.
+_Avoid_: Automatic type detection, AI formatting, Excel cell mutation, match field
 
 **Lookup Match Field**:
 A configured field used to resolve lookup input before output rendering. A query rule may define an ID match field and multiple text match fields. Candidate replies use the first text match field as the display name, falling back to the matched text field only when that primary display value is empty.

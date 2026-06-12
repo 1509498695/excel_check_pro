@@ -24,8 +24,9 @@ class RuleConfigParseError(ValueError):
 
 
 _TOP_KEYS = {"查询类型", "数据根", "配置文件"}
-_PAGE_KEYS = {"分页名称", "输出字段"}
+_PAGE_KEYS = {"分页名称", "匹配字段", "输出字段"}
 _REFERENCE_KEYS = {"引用分页名称", "引用规则", "显示内容"}
+_FORMATTER_KEYS = {"格式", "时区"}
 _OLD_KEYS = {"分页", "名称", "名称字段", "引用", "字段", "显示名"}
 _ENGLISH_KEYS = {
     "query_type",
@@ -152,7 +153,6 @@ def _collect_blocks(lines: list[str]) -> tuple[list[list[tuple[int, int, str]]],
     top_values: dict[str, str] = {}
     pages: list[list[tuple[int, int, str]]] = []
     current_page: list[tuple[int, int, str]] | None = None
-    seen_output_fields = False
 
     for line_no, raw_line in enumerate(lines, start=1):
         if not raw_line.strip():
@@ -176,19 +176,9 @@ def _collect_blocks(lines: list[str]) -> tuple[list[list[tuple[int, int, str]]],
         if key == "分页名称":
             current_page = [(line_no, indent, body)]
             pages.append(current_page)
-            seen_output_fields = False
             continue
         if current_page is None:
             raise RuleConfigParseError(f"第 {line_no} 行分页字段必须出现在 分页名称 之后")
-        if indent <= 2 and key in _PAGE_KEYS:
-            if key == "输出字段":
-                if value:
-                    raise RuleConfigParseError(f"第 {line_no} 行 输出字段 不应带值")
-                seen_output_fields = True
-            current_page.append((line_no, indent, body))
-            continue
-        if not seen_output_fields:
-            raise RuleConfigParseError(f"第 {line_no} 行输出字段必须出现在 输出字段 之后")
         current_page.append((line_no, indent, body))
 
     return pages, top_values
@@ -196,10 +186,13 @@ def _collect_blocks(lines: list[str]) -> tuple[list[list[tuple[int, int, str]]],
 
 def _parse_page(raw_page: list[tuple[int, int, str]]) -> dict[str, Any]:
     name = ""
+    match_fields_seen = False
     output_fields_seen = False
+    match_fields: list[dict[str, str]] = []
     fields: list[dict[str, Any]] = []
     current_field: dict[str, Any] | None = None
     current_field_indent = 0
+    current_section = ""
 
     for line_no, indent, body in raw_page:
         key, value = _parse_optional_key_value(body, line_no=line_no)
@@ -211,10 +204,26 @@ def _parse_page(raw_page: list[tuple[int, int, str]]) -> dict[str, Any]:
                 raise RuleConfigParseError(f"第 {line_no} 行 分页名称 不能为空")
             name = value
             continue
+        if key == "匹配字段":
+            if match_fields_seen:
+                raise RuleConfigParseError(f"第 {line_no} 行重复配置 匹配字段")
+            if value:
+                raise RuleConfigParseError(f"第 {line_no} 行 匹配字段 不应带值")
+            match_fields_seen = True
+            current_section = "match"
+            current_field = None
+            continue
         if key == "输出字段":
             if output_fields_seen:
                 raise RuleConfigParseError(f"第 {line_no} 行重复配置 输出字段")
+            if value:
+                raise RuleConfigParseError(f"第 {line_no} 行 输出字段 不应带值")
             output_fields_seen = True
+            current_section = "output"
+            current_field = None
+            continue
+        if current_section == "match":
+            match_fields.append(_parse_match_field(key, value, line_no=line_no))
             continue
         is_field_child = current_field is not None and indent > current_field_indent
         if is_field_child and key in _REFERENCE_KEYS:
@@ -223,12 +232,18 @@ def _parse_page(raw_page: list[tuple[int, int, str]]) -> dict[str, Any]:
             reference = current_field.setdefault("reference", {})
             reference[key] = value
             continue
+        if is_field_child and key in _FORMATTER_KEYS:
+            if current_field is None:
+                raise RuleConfigParseError(f"第 {line_no} 行格式配置必须跟在输出字段之后")
+            formatter = current_field.setdefault("formatter", {})
+            formatter[key] = value
+            continue
         if is_field_child and _looks_like_value_map_key(key):
             value_map = current_field.setdefault("value_map", {})
             value_map[key] = value
             continue
 
-        if not output_fields_seen:
+        if current_section != "output" or not output_fields_seen:
             raise RuleConfigParseError(f"第 {line_no} 行输出字段必须出现在 输出字段 之后")
         field = _parse_output_field(key, value, line_no=line_no)
         fields.append(field)
@@ -237,15 +252,17 @@ def _parse_page(raw_page: list[tuple[int, int, str]]) -> dict[str, Any]:
 
     if not name:
         raise RuleConfigParseError("每个分页必须配置 分页名称")
+    if not match_fields_seen:
+        raise RuleConfigParseError(f"分页 {name} 必须配置 匹配字段")
     if not output_fields_seen or not fields:
         raise RuleConfigParseError(f"分页 {name} 必须配置 输出字段")
 
-    id_fields = [field for field in fields if field.get("kind") == "id"]
+    id_fields = [field for field in match_fields if field.get("kind") == "id"]
     if not id_fields:
-        raise RuleConfigParseError(f"分页 {name} 必须配置 ID字段")
-    name_candidates = [field for field in fields if field.get("kind") != "id"]
-    if not name_candidates:
-        raise RuleConfigParseError(f"分页 {name} 必须配置至少一个名称匹配字段")
+        raise RuleConfigParseError(f"分页 {name} 的 匹配字段 必须配置 ID字段")
+    text_match_fields = [field for field in match_fields if field.get("kind") != "id"]
+    if not text_match_fields:
+        raise RuleConfigParseError(f"分页 {name} 的 匹配字段 必须配置至少一个文本匹配字段")
 
     for field in fields:
         _normalize_field_reference(
@@ -253,12 +270,29 @@ def _parse_page(raw_page: list[tuple[int, int, str]]) -> dict[str, Any]:
             current_page_name=name,
             line_no=int(field.get("_line_no") or 0),
         )
+        _normalize_field_formatter(
+            field,
+            line_no=int(field.get("_line_no") or 0),
+        )
 
     return {
         "name": name,
-        "id_field": id_fields[0]["field"],
-        "name_field": name_candidates[0]["field"],
+        "id_match_field": id_fields[0]["field"],
+        "text_match_fields": [
+            {"label": field["label"], "field": field["field"]} for field in text_match_fields
+        ],
+        "candidate_label_field": text_match_fields[0]["field"],
         "output_fields": [_strip_field_kind(field) for field in fields],
+    }
+
+
+def _parse_match_field(key: str, value: str, *, line_no: int) -> dict[str, str]:
+    if not value:
+        raise RuleConfigParseError(f"第 {line_no} 行匹配字段缺少字段名：{key}")
+    return {
+        "label": key,
+        "field": value,
+        "kind": "id" if key == "ID字段" else "field",
     }
 
 
@@ -316,6 +350,25 @@ def _normalize_field_reference(
     }
 
 
+def _normalize_field_formatter(field: dict[str, Any], *, line_no: int) -> None:
+    raw_formatter = field.get("formatter")
+    if not isinstance(raw_formatter, dict):
+        return
+
+    format_name = str(raw_formatter.get("格式") or "").strip()
+    timezone_name = str(raw_formatter.get("时区") or "Asia/Shanghai").strip()
+    if not format_name:
+        raise RuleConfigParseError(f"第 {line_no} 行格式配置缺少 格式")
+    if format_name != "时间戳秒":
+        raise RuleConfigParseError("格式 只支持 时间戳秒")
+    if timezone_name != "Asia/Shanghai":
+        raise RuleConfigParseError("时区 只支持 Asia/Shanghai")
+    field["formatter"] = {
+        "type": "timestamp_seconds",
+        "timezone": "Asia/Shanghai",
+    }
+
+
 def _strip_field_kind(field: dict[str, Any]) -> dict[str, Any]:
     cleaned = {key: value for key, value in field.items() if key not in {"kind", "_line_no"}}
     if "value_map" in cleaned and not cleaned["value_map"]:
@@ -353,7 +406,12 @@ def _reject_invalid_key(key: str, *, line_no: int) -> None:
 
 
 def _looks_like_value_map_key(key: str) -> bool:
-    return key not in _REFERENCE_KEYS and key not in _PAGE_KEYS and key != "分页名称"
+    return (
+        key not in _REFERENCE_KEYS
+        and key not in _FORMATTER_KEYS
+        and key not in _PAGE_KEYS
+        and key != "分页名称"
+    )
 
 
 def _validate_safe_relative_path(value: str, *, field_label: str) -> None:

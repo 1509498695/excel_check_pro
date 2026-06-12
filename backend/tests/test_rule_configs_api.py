@@ -15,9 +15,13 @@ from backend.app.models import (
     ProjectAiCredentialRecord,
     ProjectQueryRootRecord,
     ProjectSvnCredentialRecord,
+    RuleConfigRecord,
+    RuleConfigVersionRecord,
     User,
     UserProjectRole,
 )
+from backend.app.config_lookup.schemas import ConfigLookupRequest
+from backend.app.config_lookup.service import lookup_config_table
 from backend.app.security.crypto import encrypt_secret
 from backend.run import app
 
@@ -29,8 +33,11 @@ def content_md(query_type: str = "礼包") -> str:
 配置文件: IAPConfig.xls
 
   - 分页名称: AbsolutePack
-  - 输出字段
+  - 匹配字段
     - ID字段: INT_PackageId
+    - 礼包名称: DESC
+  - 输出字段
+    - 礼包ID: INT_PackageId
     - 礼包名称:DESC
 """.strip()
 
@@ -142,6 +149,13 @@ async def test_create_query_rule_success(test_project_id: int) -> None:
     assert data["published_version"] is None
     assert data["optimistic_lock_version"] == 1
     assert data["parsed_config_json"]["query_type"] == "礼包"
+    async with async_session_factory() as session:
+        version_result = await session.execute(
+            select(RuleConfigVersionRecord).where(
+                RuleConfigVersionRecord.rule_config_id == data["rule_id"]
+            )
+        )
+    assert version_result.scalars().all() == []
 
 
 @pytest.mark.anyio
@@ -201,7 +215,57 @@ async def test_unpublished_draft_can_rename_query_type(test_project_id: int) -> 
     assert response.status_code == 200, response.text
     data = response.json()["data"]
     assert data["query_type"] == "玩法开关"
-    assert data["draft_version"] == 2
+    assert data["draft_version"] == 1
+
+
+@pytest.mark.anyio
+async def test_publish_history_records_only_publish_entries(test_project_id: int) -> None:
+    """发布历史只记录发布成功的版本，创建和保存草稿不进入历史。"""
+    await _seed_query_root(test_project_id)
+    headers = await _create_user_headers(test_project_id)
+
+    async with _client(headers) as client:
+        created = await _create_rule(client, "礼包")
+        initial_history = await client.get(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}/versions"
+        )
+        saved = await client.put(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}/draft",
+            json={
+                "content_md": content_md("礼包"),
+                "expected_optimistic_lock_version": created["optimistic_lock_version"],
+                "description": "保存草稿",
+            },
+        )
+        draft_history = await client.get(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}/versions"
+        )
+        published = await client.post(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}/publish",
+            json={
+                "content_md": content_md("礼包"),
+                "expected_optimistic_lock_version": saved.json()["data"][
+                    "optimistic_lock_version"
+                ],
+                "description": "发布规则",
+            },
+        )
+        publish_history = await client.get(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}/versions"
+        )
+
+    assert initial_history.status_code == 200
+    assert initial_history.json()["data"]["items"] == []
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["data"]["draft_version"] == 1
+    assert draft_history.json()["data"]["items"] == []
+    assert published.status_code == 200, published.text
+    assert published.json()["data"]["published_version"] == 1
+    assert published.json()["data"]["draft_version"] == 1
+    items = publish_history.json()["data"]["items"]
+    assert [row["action"] for row in items] == ["publish"]
+    assert [row["status"] for row in items] == ["published"]
+    assert [row["version"] for row in items] == [1]
 
 
 @pytest.mark.anyio
@@ -282,7 +346,7 @@ async def test_publish_version_conflict_returns_409(test_project_id: int) -> Non
 
 @pytest.mark.anyio
 async def test_rollback_only_affects_current_rule_id(test_project_id: int) -> None:
-    """回滚按 rule_id 产生新草稿版本，不影响其它查询规则。"""
+    """回滚按 rule_id 替换当前草稿，不新增发布历史且不影响其它查询规则。"""
     await _seed_query_root(test_project_id)
     headers = await _create_user_headers(test_project_id)
 
@@ -324,18 +388,31 @@ async def test_rollback_only_affects_current_rule_id(test_project_id: int) -> No
         activity_history = await client.get(
             f"/api/v1/rule-configs/config_lookup/{activity['rule_id']}/versions"
         )
+        republished = await client.post(
+            f"/api/v1/rule-configs/config_lookup/{gift['rule_id']}/publish",
+            json={
+                "content_md": content_md("礼包"),
+                "expected_optimistic_lock_version": rollback.json()["data"][
+                    "optimistic_lock_version"
+                ],
+                "description": "发布回滚草稿",
+            },
+        )
+        republished_history = await client.get(
+            f"/api/v1/rule-configs/config_lookup/{gift['rule_id']}/versions"
+        )
 
-    assert rollback.status_code == 200, rollback.text
-    assert rollback.json()["data"]["draft_version"] == 4
-    assert rollback.json()["data"]["published_version"] == 2
+        assert rollback.status_code == 200, rollback.text
+    assert rollback.json()["data"]["draft_version"] == 2
+    assert rollback.json()["data"]["published_version"] == 1
     assert activity_detail.json()["data"]["draft_version"] == 1
     assert [row["action"] for row in gift_history.json()["data"]["items"]] == [
-        "rollback",
-        "save_draft",
         "publish",
-        "save_draft",
     ]
-    assert len(activity_history.json()["data"]["items"]) == 1
+    assert activity_history.json()["data"]["items"] == []
+    assert republished.status_code == 200, republished.text
+    assert republished.json()["data"]["published_version"] == 2
+    assert [row["version"] for row in republished_history.json()["data"]["items"]] == [2, 1]
 
 
 @pytest.mark.anyio
@@ -359,6 +436,158 @@ async def test_list_returns_only_current_project_rules(test_project_id: int) -> 
     assert data["total"] == 2
     assert {item["query_type"] for item in data["items"]} == {"礼包", "玩法开关"}
     assert all(item["project_id"] == test_project_id for item in data["items"])
+
+
+@pytest.mark.anyio
+async def test_member_can_delete_draft_rule_and_history(test_project_id: int) -> None:
+    """项目成员可以硬删除草稿规则，版本历史随规则清理。"""
+    await _seed_query_root(test_project_id)
+    headers = await _create_user_headers(test_project_id)
+
+    async with _client(headers) as client:
+        created = await _create_rule(client, "礼包")
+        delete_response = await client.delete(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}",
+            params={
+                "expected_optimistic_lock_version": created[
+                    "optimistic_lock_version"
+                ]
+            },
+        )
+        detail_response = await client.get(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}"
+        )
+        list_response = await client.get("/api/v1/rule-configs/config_lookup")
+
+    assert delete_response.status_code == 204
+    assert detail_response.status_code == 404
+    assert list_response.json()["data"]["total"] == 0
+    async with async_session_factory() as session:
+        rule_result = await session.execute(
+            select(RuleConfigRecord).where(RuleConfigRecord.id == created["rule_id"])
+        )
+        version_result = await session.execute(
+            select(RuleConfigVersionRecord).where(
+                RuleConfigVersionRecord.rule_config_id == created["rule_id"]
+            )
+        )
+    assert rule_result.scalars().all() == []
+    assert version_result.scalars().all() == []
+
+
+@pytest.mark.anyio
+async def test_member_can_delete_published_rule_without_affecting_other_rules(
+    test_project_id: int,
+) -> None:
+    """已发布规则也可删除，且只影响当前 rule_id。"""
+    await _seed_query_root(test_project_id)
+    headers = await _create_user_headers(test_project_id)
+
+    async with _client(headers) as client:
+        gift = await _create_rule(client, "礼包")
+        activity = await _create_rule(client, "活动")
+        published_gift = await client.post(
+            f"/api/v1/rule-configs/config_lookup/{gift['rule_id']}/publish",
+            json={
+                "content_md": content_md("礼包"),
+                "expected_optimistic_lock_version": gift["optimistic_lock_version"],
+            },
+        )
+        published_activity = await client.post(
+            f"/api/v1/rule-configs/config_lookup/{activity['rule_id']}/publish",
+            json={
+                "content_md": content_md("活动"),
+                "expected_optimistic_lock_version": activity[
+                    "optimistic_lock_version"
+                ],
+            },
+        )
+        delete_response = await client.delete(
+            f"/api/v1/rule-configs/config_lookup/{gift['rule_id']}",
+            params={
+                "expected_optimistic_lock_version": published_gift.json()["data"][
+                    "optimistic_lock_version"
+                ]
+            },
+        )
+        list_response = await client.get("/api/v1/rule-configs/config_lookup")
+
+    assert published_gift.status_code == 200, published_gift.text
+    assert published_activity.status_code == 200, published_activity.text
+    assert delete_response.status_code == 204
+    items = list_response.json()["data"]["items"]
+    assert [item["query_type"] for item in items] == ["活动"]
+    async with async_session_factory() as session:
+        runtime_result = await lookup_config_table(
+            session,
+            ConfigLookupRequest(
+                project_id=test_project_id,
+                query_type="礼包",
+                versioned_config_folder="/datas_qa88",
+                lookup_input="26060405",
+            ),
+        )
+    assert runtime_result.status == "not_found"
+    assert runtime_result.message == "查询类型不存在：礼包"
+
+
+@pytest.mark.anyio
+async def test_delete_rule_rejects_non_member_and_missing_rule(
+    test_project_id: int,
+) -> None:
+    """非项目成员不可删除；不存在的 rule_id 返回 404。"""
+    await _seed_query_root(test_project_id)
+    owner_headers = await _create_user_headers(test_project_id)
+    other_project_id = await _create_project()
+    other_headers = await _create_user_headers(other_project_id)
+
+    async with async_session_factory() as session:
+        result = await session.execute(select(User).where(User.primary_project_id == other_project_id))
+        user = result.scalar_one()
+        forbidden_token = create_access_token(user.id, project_id=test_project_id)
+
+    async with _client(owner_headers) as client:
+        created = await _create_rule(client, "礼包")
+        missing_response = await client.delete(
+            "/api/v1/rule-configs/config_lookup/999999",
+            params={"expected_optimistic_lock_version": 0},
+        )
+    async with _client({"Authorization": f"Bearer {forbidden_token}"}) as forbidden_client:
+        forbidden_response = await forbidden_client.delete(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}",
+            params={
+                "expected_optimistic_lock_version": created[
+                    "optimistic_lock_version"
+                ]
+            },
+        )
+
+    assert other_headers["Authorization"] != f"Bearer {forbidden_token}"
+    assert missing_response.status_code == 404
+    assert forbidden_response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_delete_rule_version_conflict_returns_409(test_project_id: int) -> None:
+    """删除也必须带当前乐观锁版本，旧 lock 返回冲突。"""
+    await _seed_query_root(test_project_id)
+    headers = await _create_user_headers(test_project_id)
+
+    async with _client(headers) as client:
+        created = await _create_rule(client, "礼包")
+        response = await client.delete(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}",
+            params={"expected_optimistic_lock_version": 0},
+        )
+        detail_response = await client.get(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}"
+        )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "RULE_CONFIG_VERSION_CONFLICT"
+    assert detail["current_optimistic_lock_version"] == 1
+    assert detail_response.status_code == 200
 
 
 @pytest.mark.anyio

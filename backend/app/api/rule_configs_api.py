@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,7 @@ from backend.app.rule_configs.service import (
     RuleConfigMutation,
     RuleConfigValidationError,
     create_rule_config,
+    delete_rule_config,
     ensure_supported_rule_family,
     get_rule_config_by_id,
     list_rule_config_versions,
@@ -178,6 +179,26 @@ async def get_rule_config_endpoint(
     if record is None:
         raise HTTPException(status_code=404, detail="规则不存在")
     return {"code": 200, "msg": "ok", "data": _serialize_rule_config_record(record)}
+
+
+@router.delete("/{rule_family}/{rule_id}", status_code=204)
+async def delete_rule_config_endpoint(
+    rule_family: str,
+    rule_id: int,
+    expected_optimistic_lock_version: int = Query(ge=0),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """硬删除当前项目的一条规则配置及其版本历史。"""
+    project_id = ctx.require_strict_project_member()
+    await delete_rule_config(
+        db,
+        project_id=project_id,
+        rule_family=rule_family,
+        rule_id=rule_id,
+        expected_optimistic_lock_version=expected_optimistic_lock_version,
+    )
+    return Response(status_code=204)
 
 
 @router.put("/{rule_family}/{rule_id}/draft")

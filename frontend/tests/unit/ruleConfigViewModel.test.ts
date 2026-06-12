@@ -102,6 +102,7 @@ function createBaseListApi() {
       total: 2,
     })),
     createRule: vi.fn().mockResolvedValue(response(draftRecord)),
+    deleteRule: vi.fn().mockResolvedValue(undefined),
   }
 }
 
@@ -215,6 +216,48 @@ describe('rule config view model', () => {
     })
   })
 
+  it('deletes a rule with current lock version and refreshes list', async () => {
+    const api = createListApi()
+    const state = createConfigLookupRuleListState(api)
+    await state.load()
+
+    const result = await state.deleteRule(publishedRecord)
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toBe('规则已删除')
+    expect(api.deleteRule).toHaveBeenCalledWith(12, 6)
+    expect(api.listRules).toHaveBeenCalledTimes(2)
+    expect(state.deletingRuleId.value).toBeNull()
+  })
+
+  it('shows conflict message when deleting with a stale lock version', async () => {
+    const error = new ApiRequestError('版本冲突', 409, {
+      code: 'RULE_CONFIG_VERSION_CONFLICT',
+      current_optimistic_lock_version: 9,
+    })
+    const api = createListApi({ deleteRule: vi.fn().mockRejectedValue(error) })
+    const state = createConfigLookupRuleListState(api)
+
+    const result = await state.deleteRule(publishedRecord)
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toBe('规则已被他人更新，请刷新后手动合并。')
+    expect(state.errorMessage.value).toBe('规则已被他人更新，请刷新后手动合并。')
+    expect(state.deletingRuleId.value).toBeNull()
+  })
+
+  it('shows backend error message when deleting fails', async () => {
+    const error = new ApiRequestError('规则不存在', 404, '规则不存在')
+    const api = createListApi({ deleteRule: vi.fn().mockRejectedValue(error) })
+    const state = createConfigLookupRuleListState(api)
+
+    const result = await state.deleteRule(publishedRecord)
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toBe('规则不存在')
+    expect(state.errorMessage.value).toBe('规则不存在')
+  })
+
   it('loads single rule detail, versions, markdown and baseVersion', async () => {
     const api = createDetailApi()
     const state = createConfigLookupRuleDetailState(12, api)
@@ -227,6 +270,10 @@ describe('rule config view model', () => {
     expect(state.contentMd.value).toBe('查询类型: 礼包')
     expect(state.baseVersion.value).toBe(6)
     expect(state.versionRows.value).toHaveLength(2)
+    expect(state.versionRows.value.map((row) => row.actions)).toEqual([
+      ['回滚'],
+      ['回滚'],
+    ])
   })
 
   it('uses sample markdown for empty rule content', async () => {

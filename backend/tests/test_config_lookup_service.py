@@ -81,10 +81,11 @@ def _parsed_config(*, file_name: str = "IAPConfig.xlsx") -> dict[str, Any]:
         "pages": [
             {
                 "name": "AbsolutePack",
-                "id_field": "INT_PackageId",
-                "name_field": "DESC",
+                "id_match_field": "INT_PackageId",
+                "text_match_fields": [{"label": "礼包名称", "field": "DESC"}],
+                "candidate_label_field": "DESC",
                 "output_fields": [
-                    {"label": "ID字段", "field": "INT_PackageId"},
+                    {"label": "礼包ID", "field": "INT_PackageId"},
                     {"label": "礼包名称", "field": "DESC"},
                     {"label": "国际服开启", "field": "STR_ServerCond_US"},
                     {
@@ -105,10 +106,11 @@ def _parsed_config(*, file_name: str = "IAPConfig.xlsx") -> dict[str, Any]:
             },
             {
                 "name": "Template",
-                "id_field": "INT_PackageId",
-                "name_field": "DESC",
+                "id_match_field": "INT_PackageId",
+                "text_match_fields": [{"label": "礼包名称", "field": "DESC"}],
+                "candidate_label_field": "DESC",
                 "output_fields": [
-                    {"label": "ID字段", "field": "INT_PackageId"},
+                    {"label": "礼包ID", "field": "INT_PackageId"},
                     {"label": "模板名称", "field": "DESC"},
                     {
                         "label": "价格",
@@ -232,37 +234,55 @@ def _write_lookup_workbooks(version_dir: Path, *, include_price_99: bool = True)
                 {
                     "INT_PackageId": 1001,
                     "DESC": "月卡",
+                    "STR_Func": "MoonCard",
                     "INT_PriceId": 30,
                     "STR_ServerCond_US": "US",
                     "STR_ABSwitch": "state:1",
+                    "INT_RevealAt": 1781204402,
                 },
                 {
                     "INT_PackageId": 2002,
                     "DESC": "高级礼包",
+                    "STR_Func": "PremiumGift",
                     "INT_PriceId": 99,
                     "STR_ServerCond_US": "US2",
                     "STR_ABSwitch": 0,
+                    "INT_RevealAt": 1781251200,
                 },
                 {
                     "INT_PackageId": 4004,
                     "DESC": "空配置礼包",
+                    "STR_Func": "",
                     "INT_PriceId": 30,
                     "STR_ServerCond_US": "",
                     "STR_ABSwitch": "",
+                    "INT_RevealAt": 0,
                 },
                 {
                     "INT_PackageId": 5005,
                     "DESC": "未知开关礼包",
+                    "STR_Func": "UnknownSwitch",
                     "INT_PriceId": 30,
                     "STR_ServerCond_US": "US5",
                     "STR_ABSwitch": "unknown:9",
+                    "INT_RevealAt": "invalid",
                 },
             ]
         ).to_excel(writer, sheet_name="AbsolutePack", index=False)
         pd.DataFrame(
             [
-                {"INT_PackageId": 1001, "DESC": "模板月卡", "INT_PriceId": 30},
-                {"INT_PackageId": 3003, "DESC": "成长礼包", "INT_PriceId": 88},
+                {
+                    "INT_PackageId": 1001,
+                    "DESC": "模板月卡",
+                    "STR_Func": "TemplateMoonCard",
+                    "INT_PriceId": 30,
+                },
+                {
+                    "INT_PackageId": 3003,
+                    "DESC": "成长礼包",
+                    "STR_Func": "GrowthGift",
+                    "INT_PriceId": 88,
+                },
             ]
         ).to_excel(writer, sheet_name="Template", index=False)
         pd.DataFrame(price_rows).to_excel(writer, sheet_name="Price", index=False)
@@ -446,7 +466,7 @@ async def test_single_page_id_hit_returns_ordered_fields_and_display_name(
     assert item.page == "AbsolutePack"
     assert item.id_value == "2002"
     assert [(field.label, field.value) for field in item.fields] == [
-        ("ID字段", "2002"),
+        ("礼包ID", "2002"),
         ("礼包名称", "高级礼包"),
         ("国际服开启", "US2"),
         ("绿色服开关", "绿色服关闭"),
@@ -499,6 +519,53 @@ async def test_enum_mapping_unmatched_value_outputs_raw_value(
 
     assert result.status == "hit"
     assert ("绿色服开关", "unknown:9") in [
+        (field.label, field.value) for field in result.results[0].fields
+    ]
+
+
+@pytest.mark.anyio
+async def test_timestamp_seconds_formatter_outputs_beijing_time(
+    test_project_id: int,
+    tmp_path: Path,
+) -> None:
+    parsed_config = _parsed_config()
+    parsed_config["pages"][0]["output_fields"].append(
+        {
+            "label": "公布时间",
+            "field": "INT_RevealAt",
+            "formatter": {"type": "timestamp_seconds", "timezone": "Asia/Shanghai"},
+        }
+    )
+    await _prepare_lookup_project(test_project_id, tmp_path, parsed_config=parsed_config)
+
+    result = await _lookup(test_project_id, lookup_input="1001")
+
+    assert result.status == "hit"
+    item = next(row for row in result.results if row.page == "AbsolutePack")
+    assert ("公布时间", "2026/06/12 03:00:02") in [
+        (field.label, field.value) for field in item.fields
+    ]
+
+
+@pytest.mark.anyio
+async def test_timestamp_seconds_formatter_treats_zero_as_unconfigured(
+    test_project_id: int,
+    tmp_path: Path,
+) -> None:
+    parsed_config = _parsed_config()
+    parsed_config["pages"][0]["output_fields"].append(
+        {
+            "label": "公布时间",
+            "field": "INT_RevealAt",
+            "formatter": {"type": "timestamp_seconds", "timezone": "Asia/Shanghai"},
+        }
+    )
+    await _prepare_lookup_project(test_project_id, tmp_path, parsed_config=parsed_config)
+
+    result = await _lookup(test_project_id, lookup_input="4004")
+
+    assert result.status == "hit"
+    assert ("公布时间", "未配置") in [
         (field.label, field.value) for field in result.results[0].fields
     ]
 
@@ -583,6 +650,49 @@ async def test_exact_name_hit_returns_detail_without_ai(
     assert len(result.results) == 1
     assert result.results[0].id_value == "2002"
     assert result.results[0].name_value == "高级礼包"
+    assert ai_matcher.calls == []
+
+
+@pytest.mark.anyio
+async def test_exact_secondary_text_match_field_returns_detail_with_primary_display_name(
+    test_project_id: int,
+    tmp_path: Path,
+) -> None:
+    parsed_config = _parsed_config()
+    parsed_config["pages"][0]["text_match_fields"].append(
+        {"label": "开关字段", "field": "STR_Func"}
+    )
+    await _prepare_lookup_project(test_project_id, tmp_path, parsed_config=parsed_config)
+    ai_matcher = FakeAiMatcher({})
+
+    result = await _lookup(test_project_id, lookup_input="PremiumGift", ai_matcher=ai_matcher)
+
+    assert result.status == "hit"
+    assert result.ai.used is False
+    assert len(result.results) == 1
+    assert result.results[0].id_value == "2002"
+    assert result.results[0].name_value == "高级礼包"
+    assert ai_matcher.calls == []
+
+
+@pytest.mark.anyio
+async def test_partial_secondary_text_match_field_returns_candidate_with_primary_display_name(
+    test_project_id: int,
+    tmp_path: Path,
+) -> None:
+    parsed_config = _parsed_config()
+    parsed_config["pages"][0]["text_match_fields"].append(
+        {"label": "开关字段", "field": "STR_Func"}
+    )
+    await _prepare_lookup_project(test_project_id, tmp_path, parsed_config=parsed_config)
+    ai_matcher = FakeAiMatcher({})
+
+    result = await _lookup(test_project_id, lookup_input="Premium", ai_matcher=ai_matcher)
+
+    assert result.status == "candidates"
+    assert [(candidate.id_value, candidate.name_value) for candidate in result.candidates] == [
+        ("2002", "高级礼包"),
+    ]
     assert ai_matcher.calls == []
 
 

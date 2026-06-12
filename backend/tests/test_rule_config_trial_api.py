@@ -29,8 +29,11 @@ CONTENT_MD = """
 配置文件: IAPConfig.xlsx
 
   - 分页名称: AbsolutePack
-  - 输出字段
+  - 匹配字段
     - ID字段: INT_PackageId
+    - 礼包名称: DESC
+  - 输出字段
+    - 礼包ID: INT_PackageId
     - 礼包名称:DESC
     - 价格:INT_PriceId
 """.strip()
@@ -49,10 +52,11 @@ def _parsed_config(
         "pages": [
             {
                 "name": "AbsolutePack",
-                "id_field": "INT_PackageId",
-                "name_field": "DESC",
+                "id_match_field": "INT_PackageId",
+                "text_match_fields": [{"label": "礼包名称", "field": "DESC"}],
+                "candidate_label_field": "DESC",
                 "output_fields": [
-                    {"label": "ID字段", "field": "INT_PackageId"},
+                    {"label": "礼包ID", "field": "INT_PackageId"},
                     {"label": "礼包名称", "field": "DESC"},
                     {"label": "价格", "field": "INT_PriceId"},
                 ],

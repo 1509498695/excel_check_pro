@@ -17,8 +17,11 @@ VALID_MARKDOWN = """
 配置文件: IAPConfig.xls
 
   - 分页名称: AbsolutePack
-  - 输出字段
+  - 匹配字段
     - ID字段: INT_PackageId
+    - 礼包名称: DESC
+  - 输出字段
+    - 礼包ID: INT_PackageId
     - 礼包名称:DESC
     - 国际服开启:STR_ServerCond_US
     - 绿色服开关:STR_ABSwitch
@@ -26,8 +29,11 @@ VALID_MARKDOWN = """
       - 1:绿色服开启
 
   - 分页名称: Template
-  - 输出字段
+  - 匹配字段
     - ID字段: INT_PackageId
+    - 礼包名称: DESC
+  - 输出字段
+    - 礼包ID: INT_PackageId
     - 礼包名称:DESC
     - 价格:INT_PriceId
       - 引用分页名称:Price
@@ -49,8 +55,11 @@ def test_parse_new_config_lookup_markdown() -> None:
     assert parsed["file"] == "IAPConfig.xls"
     assert "queries" not in parsed
     assert [page["name"] for page in parsed["pages"]] == ["AbsolutePack", "Template"]
-    assert parsed["pages"][0]["id_field"] == "INT_PackageId"
-    assert parsed["pages"][0]["name_field"] == "DESC"
+    assert parsed["pages"][0]["id_match_field"] == "INT_PackageId"
+    assert parsed["pages"][0]["text_match_fields"] == [
+        {"label": "礼包名称", "field": "DESC"},
+    ]
+    assert parsed["pages"][0]["candidate_label_field"] == "DESC"
 
 
 def test_parse_enum_value_map() -> None:
@@ -85,6 +94,71 @@ def test_parse_reference_expression() -> None:
             "display_expression": "Price.INT_Point/100",
         },
     }
+
+
+def test_parse_timestamp_seconds_formatter() -> None:
+    """输出字段可以声明秒级时间戳按北京时间格式化。"""
+    content = """
+查询类型: 世界杯比赛
+数据根: game_datas
+配置文件: world_cup.xls
+
+  - 分页名称: match
+  - 匹配字段
+    - ID字段: INT_MatchId
+    - 比赛名称: DESC
+  - 输出字段
+    - 比赛ID: INT_MatchId
+    - 比赛名称: DESC
+    - 公布时间: INT_RevealAt
+      - 格式: 时间戳秒
+      - 时区: Asia/Shanghai
+""".strip()
+
+    parsed = parse_config_lookup_markdown(content, allowed_query_roots={"game_datas"})
+
+    reveal_field = parsed["pages"][0]["output_fields"][2]
+    assert reveal_field == {
+        "label": "公布时间",
+        "field": "INT_RevealAt",
+        "formatter": {
+            "type": "timestamp_seconds",
+            "timezone": "Asia/Shanghai",
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    ("old_line", "new_line", "expected_error"),
+    [
+        ("格式: 时间戳秒", "格式: 时间戳毫秒", "格式 只支持 时间戳秒"),
+        ("时区: Asia/Shanghai", "时区: UTC", "时区 只支持 Asia/Shanghai"),
+    ],
+)
+def test_validate_reports_unsupported_formatter_options(
+    old_line: str,
+    new_line: str,
+    expected_error: str,
+) -> None:
+    content = """
+查询类型: 世界杯比赛
+数据根: game_datas
+配置文件: world_cup.xls
+
+  - 分页名称: match
+  - 匹配字段
+    - ID字段: INT_MatchId
+    - 比赛名称: DESC
+  - 输出字段
+    - 公布时间: INT_RevealAt
+      - 格式: 时间戳秒
+      - 时区: Asia/Shanghai
+""".strip().replace(old_line, new_line)
+
+    result = validate_config_lookup_markdown(content, allowed_query_roots={"game_datas"})
+
+    assert result.ok is False
+    assert expected_error in result.errors[0]
 
 
 def test_validate_returns_summary_for_valid_content() -> None:
@@ -141,30 +215,73 @@ def test_validate_reports_missing_page() -> None:
     assert "至少需要配置一个分页" in result.errors
 
 
-def test_validate_reports_missing_id_field() -> None:
+def test_validate_reports_missing_id_match_field() -> None:
     content = VALID_MARKDOWN.replace("    - ID字段: INT_PackageId\n", "", 1)
 
     result = validate_config_lookup_markdown(content, allowed_query_roots={"game_datas"})
 
     assert result.ok is False
-    assert "分页 AbsolutePack 必须配置 ID字段" in result.errors
+    assert "分页 AbsolutePack 的 匹配字段 必须配置 ID字段" in result.errors
 
 
-def test_validate_reports_missing_name_match_field() -> None:
+def test_validate_reports_missing_text_match_field() -> None:
     content = """
 查询类型: 礼包
 数据根: game_datas
 配置文件: IAPConfig.xls
 
   - 分页名称: AbsolutePack
-  - 输出字段
+  - 匹配字段
     - ID字段: INT_PackageId
+  - 输出字段
+    - 礼包ID: INT_PackageId
 """.strip()
 
     result = validate_config_lookup_markdown(content, allowed_query_roots={"game_datas"})
 
     assert result.ok is False
-    assert "分页 AbsolutePack 必须配置至少一个名称匹配字段" in result.errors
+    assert "分页 AbsolutePack 的 匹配字段 必须配置至少一个文本匹配字段" in result.errors
+
+
+def test_validate_reports_missing_match_fields_block() -> None:
+    content = VALID_MARKDOWN.replace(
+        "  - 匹配字段\n    - ID字段: INT_PackageId\n    - 礼包名称: DESC\n",
+        "",
+        1,
+    )
+
+    result = validate_config_lookup_markdown(content, allowed_query_roots={"game_datas"})
+
+    assert result.ok is False
+    assert "分页 AbsolutePack 必须配置 匹配字段" in result.errors
+
+
+def test_parse_multiple_text_match_fields() -> None:
+    content = """
+查询类型: 玩法开关
+数据根: game_datas
+配置文件: server_config.xls
+
+  - 分页名称: switch
+  - 匹配字段
+    - ID字段: INT_Id
+    - 开关名称: DES
+    - 开关字段: STR_Func
+  - 输出字段
+    - 开关ID: INT_Id
+    - 开关名称: DES
+    - 开关字段: STR_Func
+""".strip()
+
+    parsed = parse_config_lookup_markdown(content, allowed_query_roots={"game_datas"})
+
+    page = parsed["pages"][0]
+    assert page["id_match_field"] == "INT_Id"
+    assert page["text_match_fields"] == [
+        {"label": "开关名称", "field": "DES"},
+        {"label": "开关字段", "field": "STR_Func"},
+    ]
+    assert page["candidate_label_field"] == "DES"
 
 
 def test_rejects_multi_query_separator() -> None:

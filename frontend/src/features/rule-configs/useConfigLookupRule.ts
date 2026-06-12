@@ -2,6 +2,7 @@ import { computed, ref, unref, type ComputedRef, type Ref } from 'vue'
 
 import {
   apiCreateRuleConfig,
+  apiDeleteRuleConfig,
   apiGetRuleConfig,
   apiListRuleConfigs,
   apiListRuleConfigVersions,
@@ -35,8 +36,11 @@ export const CONFIG_LOOKUP_SAMPLE_MARKDOWN = `查询类型: 礼包
 配置文件: IAPConfig.xls
 
   - 分页名称: AbsolutePack
-  - 输出字段
+  - 匹配字段
     - ID字段: INT_PackageId
+    - 礼包名称: DESC
+  - 输出字段
+    - 礼包ID: INT_PackageId
     - 礼包名称:DESC
     - 国际服开启:STR_ServerCond_US
     - 国服开启:STR_ServerCond_CN
@@ -45,25 +49,19 @@ export const CONFIG_LOOKUP_SAMPLE_MARKDOWN = `查询类型: 礼包
       - 1:绿色服开启
 
   - 分页名称: Template
-
-  - 输出字段
-
+  - 匹配字段
     - ID字段: INT_PackageId
-
+    - 礼包名称: DESC
+  - 输出字段
+    - 礼包ID: INT_PackageId
     - 礼包名称:DESC
-
     - 价格:INT_PriceId
-
       - 引用分页名称:Price
       - 引用规则:Template.INT_PriceId=Price.INT_Id
       - 显示内容:Price.INT_Point/100
-
     - 限制次数:INT_Limit
-
     - 重置cd:INT_LimitCD
-
     - 重置类型:INT_Reset
-
       - 0:不重置
       - 1:每天重置
       - 2:每周重置
@@ -107,6 +105,7 @@ export interface VersionRow {
 export interface RuleConfigListApiClient {
   listRules: () => Promise<RuleConfigListResponse>
   createRule: (payload: RuleConfigCreateRequest) => Promise<RuleConfigRecordResponse>
+  deleteRule: (ruleId: number | string, baseVersion: number) => Promise<void>
 }
 
 export interface RuleConfigDetailApiClient {
@@ -127,10 +126,12 @@ export interface ConfigLookupRuleListState {
   rules: Ref<RuleConfigRecord[]>
   loading: Ref<boolean>
   creating: Ref<boolean>
+  deletingRuleId: Ref<number | null>
   errorMessage: Ref<string>
   kpiItems: ComputedRef<RuleConfigKpiItem[]>
   load: () => Promise<void>
   createRule: (input: CreateRuleInput) => Promise<CreateRuleResult>
+  deleteRule: (rule: RuleConfigRecord) => Promise<ActionResult>
 }
 
 export interface ConfigLookupRuleDetailState {
@@ -166,6 +167,8 @@ export interface ConfigLookupRuleDetailState {
 const defaultListApiClient: RuleConfigListApiClient = {
   listRules: () => apiListRuleConfigs(),
   createRule: (payload: RuleConfigCreateRequest) => apiCreateRuleConfig(payload),
+  deleteRule: (ruleId: number | string, baseVersion: number) =>
+    apiDeleteRuleConfig(ruleId, baseVersion),
 }
 
 const defaultDetailApiClient: RuleConfigDetailApiClient = {
@@ -191,6 +194,7 @@ export function createConfigLookupRuleListState(
   const rules = ref<RuleConfigRecord[]>([])
   const loading = ref(false)
   const creating = ref(false)
+  const deletingRuleId = ref<number | null>(null)
   const errorMessage = ref('')
 
   const kpiItems = computed(() => buildRuleConfigListKpis(rules.value))
@@ -231,14 +235,36 @@ export function createConfigLookupRuleListState(
     }
   }
 
+  async function deleteRule(rule: RuleConfigRecord): Promise<ActionResult> {
+    deletingRuleId.value = rule.rule_id
+    errorMessage.value = ''
+    try {
+      await apiClient.deleteRule(rule.rule_id, rule.optimistic_lock_version)
+      await load()
+      return { ok: true, message: '规则已删除' }
+    } catch (error) {
+      const conflictDetail = getVersionConflictDetail(error)
+      if (conflictDetail) {
+        errorMessage.value = '规则已被他人更新，请刷新后手动合并。'
+        return { ok: false, message: errorMessage.value }
+      }
+      errorMessage.value = getErrorMessage(error)
+      return { ok: false, message: errorMessage.value }
+    } finally {
+      deletingRuleId.value = null
+    }
+  }
+
   return {
     rules,
     loading,
     creating,
+    deletingRuleId,
     errorMessage,
     kpiItems,
     load,
     createRule,
+    deleteRule,
   }
 }
 
@@ -366,7 +392,7 @@ export function createConfigLookupRuleDetailState(
       })
       applyRecordResponse(response)
       await reloadVersions()
-      return { ok: true, message: `已回滚到 v${version} 并生成新草稿` }
+      return { ok: true, message: `已将 v${version} 复制到当前草稿，发布后生效` }
     } catch (error) {
       return handleOperationError(error)
     } finally {
@@ -643,8 +669,8 @@ function getVersionBadgeType(status: string): StatusBadgeType {
 }
 
 function buildVersionActions(version: RuleConfigVersion): string[] {
-  if (version.status === 'draft') return ['查看', '发布', '回滚', '对比']
-  return ['查看', '回滚', '对比']
+  void version
+  return ['回滚']
 }
 
 function getVersionConflictDetail(error: unknown): RuleConfigVersionConflictDetail | null {

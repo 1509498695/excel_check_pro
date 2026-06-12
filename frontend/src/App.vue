@@ -48,7 +48,7 @@ const navItems = computed(() => {
     },
     {
       to: '/rule-configs',
-      label: '规则配置',
+      label: '查询配置',
       routeName: 'rule-configs',
       show: true,
       icon: 'M4 6h16 M4 12h16 M4 18h16 M8 6v12',

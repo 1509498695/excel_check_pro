@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   apiCreateRuleConfig,
+  apiDeleteRuleConfig,
   apiGetRuleConfig,
   apiGetRuleConfigCredentialsStatus,
   apiListRuleConfigs,
@@ -63,6 +64,15 @@ describe('rule config api', () => {
     expect(apiFetchMock).toHaveBeenNthCalledWith(
       3,
       '/api/v1/rule-configs/config_lookup/credentials/status',
+    )
+  })
+
+  it('deletes a single rule with expected optimistic lock version', async () => {
+    await apiDeleteRuleConfig(12, 6)
+
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      '/api/v1/rule-configs/config_lookup/12?expected_optimistic_lock_version=6',
+      { method: 'DELETE' },
     )
   })
 

@@ -59,6 +59,19 @@ export async function apiGetRuleConfig(
   return apiFetch<RuleConfigRecordResponse>(ruleConfigRecordPath(ruleId, ruleFamily))
 }
 
+export async function apiDeleteRuleConfig(
+  ruleId: number | string,
+  baseVersion: number,
+  ruleFamily: RuleFamily | string = RULE_FAMILY_CONFIG_LOOKUP,
+): Promise<void> {
+  const params = new URLSearchParams({
+    expected_optimistic_lock_version: String(baseVersion),
+  })
+  return apiFetch<void>(`${ruleConfigRecordPath(ruleId, ruleFamily)}?${params.toString()}`, {
+    method: 'DELETE',
+  })
+}
+
 export async function apiListRuleConfigVersions(
   ruleId: number | string,
   ruleFamily: RuleFamily | string = RULE_FAMILY_CONFIG_LOOKUP,

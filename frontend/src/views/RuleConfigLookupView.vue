@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
 
 import AppCard from '../components/shell/AppCard.vue'
@@ -196,6 +196,19 @@ async function handleVersionAction(action: string, versionNumber: number): Promi
     ElMessage.info(`${action}功能暂未展开为独立面板`)
     return
   }
+  try {
+    await ElMessageBox.confirm(
+      `确认将发布历史 v${versionNumber} 复制到当前草稿？此操作不会立即影响机器人，发布后才会生效。`,
+      '回滚发布版本',
+      {
+        confirmButtonText: '确认回滚',
+        cancelButtonText: '取消',
+        type: 'warning',
+      },
+    )
+  } catch {
+    return
+  }
   const result = await ruleState.rollback(versionNumber)
   if (result.ok) {
     ElMessage.success(result.message)
@@ -233,7 +246,7 @@ function formatReferences(summary: RuleConfigSummary | undefined): string {
 
 <template>
   <div class="admin-dashboard-page rule-lookup-page flex h-full flex-col bg-canvas font-sans text-ink-700">
-    <PageHeader :breadcrumb="`主页 / 规则配置 / 配置表查询 / ${pageTitle}`" title="规则配置">
+    <PageHeader :breadcrumb="`主页 / 查询配置 / 配置表查询 / ${pageTitle}`" title="查询配置">
       <template #actions>
         <el-select v-model="projectId" class="rule-lookup-project-select" size="default">
           <el-option label="默认项目" value="default" />
@@ -299,13 +312,14 @@ function formatReferences(summary: RuleConfigSummary | undefined): string {
 
           <div class="rule-lookup-overview__facts">
             <div v-for="item in ruleOverview" :key="item.label" class="rule-lookup-overview__fact">
-              <span>{{ item.label }}</span>
-              <strong>{{ item.value }}</strong>
-              <StatusBadge
-                v-if="item.badge"
-                :type="item.badge.type"
-                :label="item.badge.label"
-              />
+              <span class="rule-lookup-overview__fact-label">{{ item.label }}</span>
+              <strong class="rule-lookup-overview__fact-value">{{ item.value }}</strong>
+              <div v-if="item.badge" class="rule-lookup-overview__fact-badge">
+                <StatusBadge
+                  :type="item.badge.type"
+                  :label="item.badge.label"
+                />
+              </div>
             </div>
           </div>
 
@@ -409,11 +423,11 @@ function formatReferences(summary: RuleConfigSummary | undefined): string {
         <div class="rule-lookup-card-header">
           <div class="rule-lookup-heading">
             <span class="rule-lookup-step">04</span>
-            <h2>版本历史</h2>
+            <h2>发布历史</h2>
           </div>
         </div>
 
-        <DataTable aria-label="版本历史">
+        <DataTable aria-label="发布历史">
           <template #head>
             <tr>
               <th class="w-[96px]">版本号</th>
@@ -452,7 +466,7 @@ function formatReferences(summary: RuleConfigSummary | undefined): string {
             </tr>
           </template>
         </DataTable>
-        <el-empty v-if="!loading && versionRows.length === 0" description="暂无版本历史" :image-size="72" />
+        <el-empty v-if="!loading && versionRows.length === 0" description="暂无发布历史" :image-size="72" />
       </AppCard>
 
       <div class="rule-lookup-bottom-grid">
@@ -597,11 +611,11 @@ function formatReferences(summary: RuleConfigSummary | undefined): string {
 
 .rule-lookup-overview {
   display: grid;
-  grid-template-columns: minmax(190px, 0.9fr) minmax(0, 2.2fr) minmax(220px, 0.8fr);
-  gap: 22px;
+  grid-template-columns: minmax(260px, 1fr) minmax(0, 2.4fr) minmax(260px, 0.8fr);
+  gap: 24px;
   align-items: center;
-  min-height: 120px;
-  padding: 22px 24px;
+  min-height: 136px;
+  padding: 24px 26px;
 }
 
 .rule-lookup-overview__main,
@@ -653,19 +667,24 @@ function formatReferences(summary: RuleConfigSummary | undefined): string {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 0;
+  align-items: stretch;
 }
 
 .rule-lookup-overview__fact {
+  display: flex;
+  min-height: 78px;
   min-width: 0;
+  flex-direction: column;
+  justify-content: center;
   border-right: 1px solid var(--color-border-light);
-  padding: 0 14px;
+  padding: 0 16px;
 }
 
 .rule-lookup-overview__fact:last-child {
   border-right: 0;
 }
 
-.rule-lookup-overview__fact span {
+.rule-lookup-overview__fact-label {
   display: block;
   overflow: hidden;
   color: #64748b;
@@ -675,15 +694,22 @@ function formatReferences(summary: RuleConfigSummary | undefined): string {
   white-space: nowrap;
 }
 
-.rule-lookup-overview__fact strong {
+.rule-lookup-overview__fact-value {
   display: block;
   overflow: hidden;
-  margin-top: 8px;
+  margin-top: 7px;
   color: var(--color-text-main);
   font-size: 14px;
   font-weight: 850;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.rule-lookup-overview__fact-badge {
+  display: flex;
+  min-height: 22px;
+  align-items: center;
+  margin-top: 8px;
 }
 
 .rule-lookup-live-state {
@@ -906,12 +932,13 @@ function formatReferences(summary: RuleConfigSummary | undefined): string {
 
 @media (max-width: 1366px) {
   .rule-lookup-overview {
-    gap: 14px;
-    padding: 20px;
+    grid-template-columns: minmax(250px, 1fr) minmax(0, 2.3fr) minmax(250px, 0.75fr);
+    gap: 18px;
+    padding: 22px;
   }
 
   .rule-lookup-overview__fact {
-    padding: 0 8px;
+    padding: 0 10px;
   }
 }
 
