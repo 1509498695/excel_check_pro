@@ -63,7 +63,8 @@ class ProjectAiMatcher(ConfigLookupAiMatcher):
                 api_key=api_key,
                 system_prompt=(
                     "你只负责给已有配置表名称候选排序打分。"
-                    "只能返回候选中的 key，不要创造新候选，不要解释。"
+                    "只能返回 JSON 对象，只能返回候选中的 key，"
+                    "不要创造新候选，不要解释。"
                 ),
                 user_prompt=json.dumps(payload, ensure_ascii=False),
                 json_schema={

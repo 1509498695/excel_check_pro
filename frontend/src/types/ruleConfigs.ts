@@ -37,8 +37,11 @@ export interface RuleConfigValidationResult {
 }
 
 export interface RuleConfigRecord {
+  id: number
+  rule_id: number
   project_id: number
   rule_family: RuleFamily | string
+  query_type: string
   content_md: string
   parsed_config_json: Record<string, unknown>
   status: RuleConfigStatus
@@ -55,8 +58,12 @@ export interface RuleConfigRecord {
 }
 
 export interface RuleConfigVersion {
+  id: number
+  rule_config_id: number
+  rule_id: number
   project_id: number
   rule_family: RuleFamily | string
+  query_type: string
   version: number
   content_md: string
   parsed_config_json: Record<string, unknown>
@@ -69,6 +76,11 @@ export interface RuleConfigVersion {
 
 export interface RuleConfigVersionsData {
   items: RuleConfigVersion[]
+  total: number
+}
+
+export interface RuleConfigListData {
+  items: RuleConfigRecord[]
   total: number
 }
 
@@ -92,10 +104,16 @@ export interface RuleConfigCredentialsStatus {
 }
 
 export type RuleConfigRecordResponse = ApiResponse<RuleConfigRecord>
+export type RuleConfigListResponse = ApiResponse<RuleConfigListData>
 export type RuleConfigVersionsResponse = ApiResponse<RuleConfigVersionsData>
 export type RuleConfigValidationResponse = ApiResponse<RuleConfigValidationResult>
 export type RuleConfigCredentialsStatusResponse = ApiResponse<RuleConfigCredentialsStatus>
 export type RuleConfigTrialResponse = ApiResponse<RuleConfigTrialResult>
+
+export interface RuleConfigCreateRequest {
+  contentMd: string
+  description?: string
+}
 
 export interface RuleConfigMutationRequest {
   contentMd: string

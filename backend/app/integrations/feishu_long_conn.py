@@ -80,6 +80,7 @@ _CONFIG_LOOKUP_STANDARD_PATTERN = re.compile(
 _CONFIG_LOOKUP_COMPACT_PATTERN = re.compile(
     r"^\s*(?P<query_type>.+?)查询\s+(?P<folder>\S+)\s+(?P<input>.+?)\s*$"
 )
+_LEADING_MENTION_PATTERN = re.compile(r"^\s*(?:@_user_[A-Za-z0-9_]+|@[^\s]+)\s+")
 
 ConnectionState = Literal["inactive", "active", "error", "reconnecting"]
 
@@ -163,13 +164,13 @@ class ConfigLookupBotCommand:
 def parse_config_lookup_command(text: str) -> ConfigLookupBotCommand | None:
     """解析配置表查询命令，保留查询内容中的空格。
 
-    旧下载 / 目录查询命令以 ``@_user_`` mention 开头，本解析器直接跳过，
-    让这些命令继续走原有分支。
+    群消息可以在命令前 @ 机器人；旧下载 / 目录查询命令由 dispatch 中的
+    旧解析器优先处理，这里只负责把剩余文本识别为配置表查询。
     """
     if not isinstance(text, str):
         return None
-    stripped = text.strip()
-    if not stripped or stripped.startswith("@_user_"):
+    stripped = _strip_leading_mentions(text)
+    if not stripped:
         return None
 
     for pattern in (_CONFIG_LOOKUP_STANDARD_PATTERN, _CONFIG_LOOKUP_COMPACT_PATTERN):
@@ -186,6 +187,16 @@ def parse_config_lookup_command(text: str) -> ConfigLookupBotCommand | None:
                 lookup_input=lookup_input,
             )
     return None
+
+
+def _strip_leading_mentions(text: str) -> str:
+    """去掉消息开头的一个或多个飞书 mention，保留后续命令文本。"""
+    stripped = text.strip()
+    while True:
+        match = _LEADING_MENTION_PATTERN.match(stripped)
+        if match is None:
+            return stripped
+        stripped = stripped[match.end() :].lstrip()
 
 
 def translate_execution_error(exc: BaseException) -> str:
@@ -600,15 +611,14 @@ def _format_config_lookup_result_block(index: int, item: Any) -> str:
 
 
 def _format_config_lookup_candidate_block(index: int, candidate: Any) -> str:
-    score_text = f"{round(float(candidate.score) * 100)}%"
-    return "\n".join(
-        [
-            f"{index}. 分页：{candidate.page}",
-            f"ID：{candidate.id_value or '-'}",
-            f"名称：{candidate.name_value or '-'}",
-            f"置信度：{score_text}",
-        ]
-    )
+    lines = [
+        f"{index}. ID：{candidate.id_value or '-'}",
+        f"名称：{candidate.name_value or '-'}",
+    ]
+    score = getattr(candidate, "score", None)
+    if isinstance(score, (int, float)) and score > 0:
+        lines.append(f"匹配度：{score:.0%}")
+    return "\n".join(lines)
 
 
 def _chunk_config_lookup_blocks(

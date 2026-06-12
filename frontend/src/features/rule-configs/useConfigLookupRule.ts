@@ -1,8 +1,9 @@
-import { computed, ref, type ComputedRef, type Ref } from 'vue'
+import { computed, ref, unref, type ComputedRef, type Ref } from 'vue'
 
 import {
+  apiCreateRuleConfig,
   apiGetRuleConfig,
-  apiGetRuleConfigCredentialsStatus,
+  apiListRuleConfigs,
   apiListRuleConfigVersions,
   apiPublishRuleConfig,
   apiRollbackRuleConfigVersion,
@@ -12,8 +13,8 @@ import {
 } from '../../api/ruleConfigs'
 import type { StatusBadgeType } from '../../components/shell/types'
 import type {
-  RuleConfigCredentialsStatus,
-  RuleConfigCredentialsStatusResponse,
+  RuleConfigCreateRequest,
+  RuleConfigListResponse,
   RuleConfigMutationRequest,
   RuleConfigRecord,
   RuleConfigRecordResponse,
@@ -27,47 +28,69 @@ import type {
   RuleConfigVersionConflictDetail,
   RuleConfigVersionsResponse,
 } from '../../types/ruleConfigs'
-import { RULE_FAMILY_CONFIG_LOOKUP } from '../../types/ruleConfigs'
 import { ApiRequestError } from '../../utils/apiFetch'
 
 export const CONFIG_LOOKUP_SAMPLE_MARKDOWN = `查询类型: 礼包
 数据根: game_datas
 配置文件: IAPConfig.xls
 
-分页:
-  - 名称: AbsolutePack
-    ID字段: INT_PackageId
-    名称字段: DESC
-    输出字段:
-      - INT_PackageId
-      - 字段: DESC
-        显示名: 礼包名称
+  - 分页名称: AbsolutePack
+  - 输出字段
+    - ID字段: INT_PackageId
+    - 礼包名称:DESC
+    - 国际服开启:STR_ServerCond_US
+    - 国服开启:STR_ServerCond_CN
+    - 绿色服开关:STR_ABSwitch
+      - 0:绿色服关闭
+      - 1:绿色服开启
 
-引用:
-  - 名称: price
-    配置文件: Price.xls
-    分页: Price
-    关联: INT_PriceId=INT_PriceId
-    输出字段:
-      - 字段: INT_Point
-        显示名: 价格点数`
+  - 分页名称: Template
 
-export interface RuleOverviewItem {
+  - 输出字段
+
+    - ID字段: INT_PackageId
+
+    - 礼包名称:DESC
+
+    - 价格:INT_PriceId
+
+      - 引用分页名称:Price
+      - 引用规则:Template.INT_PriceId=Price.INT_Id
+      - 显示内容:Price.INT_Point/100
+
+    - 限制次数:INT_Limit
+
+    - 重置cd:INT_LimitCD
+
+    - 重置类型:INT_Reset
+
+      - 0:不重置
+      - 1:每天重置
+      - 2:每周重置
+      - 3:每月重置
+      - 4:按LinmitCD重置`
+
+export interface RuleConfigKpiItem {
   label: string
   value: string
-  tone: 'default' | 'success' | 'warning' | 'danger'
+  statusLabel: string
+  statusType: StatusBadgeType
+  iconTone: 'primary' | 'success' | 'warning' | 'danger' | 'purple'
 }
 
-export interface RuleCatalogItem {
-  id: string
-  title: string
-  family: string
-  statusLabel: string
-  badgeType: StatusBadgeType
-  description: string
-  updatedAt: string
-  supported: boolean
-  futureLabel?: string
+export interface CreateRuleInput {
+  queryType: string
+  queryRoot: string
+  fileName: string
+}
+
+export interface ActionResult {
+  ok: boolean
+  message: string
+}
+
+export interface CreateRuleResult extends ActionResult {
+  ruleId?: number
 }
 
 export interface VersionRow {
@@ -81,35 +104,38 @@ export interface VersionRow {
   actions: string[]
 }
 
-export interface CredentialRow {
-  label: string
-  statusLabel: string
-  accountLabel: string
-  secretLabel: string
-  updatedAt: string
-  canManage: boolean
+export interface RuleConfigListApiClient {
+  listRules: () => Promise<RuleConfigListResponse>
+  createRule: (payload: RuleConfigCreateRequest) => Promise<RuleConfigRecordResponse>
 }
 
-export interface ActionResult {
-  ok: boolean
-  message: string
+export interface RuleConfigDetailApiClient {
+  getRule: (ruleId: number | string) => Promise<RuleConfigRecordResponse>
+  listVersions: (ruleId: number | string) => Promise<RuleConfigVersionsResponse>
+  validate: (ruleId: number | string, contentMd: string) => Promise<RuleConfigValidationResponse>
+  saveDraft: (ruleId: number | string, payload: RuleConfigMutationRequest) => Promise<RuleConfigRecordResponse>
+  publish: (ruleId: number | string, payload: RuleConfigMutationRequest) => Promise<RuleConfigRecordResponse>
+  rollback: (
+    ruleId: number | string,
+    version: number,
+    payload: Omit<RuleConfigMutationRequest, 'contentMd'>,
+  ) => Promise<RuleConfigRecordResponse>
+  trial: (ruleId: number | string, payload: RuleConfigTrialRequest) => Promise<RuleConfigTrialResponse>
 }
 
-export interface RuleConfigApiClient {
-  getCurrent: () => Promise<RuleConfigRecordResponse>
-  listVersions: () => Promise<RuleConfigVersionsResponse>
-  getCredentialsStatus: () => Promise<RuleConfigCredentialsStatusResponse>
-  validate: (contentMd: string) => Promise<RuleConfigValidationResponse>
-  saveDraft: (payload: RuleConfigMutationRequest) => Promise<RuleConfigRecordResponse>
-  publish: (payload: RuleConfigMutationRequest) => Promise<RuleConfigRecordResponse>
-  rollback: (version: number, payload: Omit<RuleConfigMutationRequest, 'contentMd'>) => Promise<RuleConfigRecordResponse>
-  trial: (payload: RuleConfigTrialRequest) => Promise<RuleConfigTrialResponse>
+export interface ConfigLookupRuleListState {
+  rules: Ref<RuleConfigRecord[]>
+  loading: Ref<boolean>
+  creating: Ref<boolean>
+  errorMessage: Ref<string>
+  kpiItems: ComputedRef<RuleConfigKpiItem[]>
+  load: () => Promise<void>
+  createRule: (input: CreateRuleInput) => Promise<CreateRuleResult>
 }
 
-export interface ConfigLookupRuleState {
-  record: Ref<RuleConfigRecord>
+export interface ConfigLookupRuleDetailState {
+  record: Ref<RuleConfigRecord | null>
   versions: Ref<RuleConfigVersion[]>
-  credentials: Ref<RuleConfigCredentialsStatus | null>
   contentMd: Ref<string>
   validation: Ref<RuleConfigValidationResult | null>
   loading: Ref<boolean>
@@ -121,14 +147,12 @@ export interface ConfigLookupRuleState {
   trialResult: Ref<RuleConfigTrialResult | null>
   trialErrorMessage: Ref<string>
   trialErrorLines: Ref<string[]>
-  fallbackActive: Ref<boolean>
   errorMessage: Ref<string>
   conflictMessage: Ref<string>
   baseVersion: ComputedRef<number>
   validationErrors: ComputedRef<string[]>
-  overviewItems: ComputedRef<RuleOverviewItem[]>
   versionRows: ComputedRef<VersionRow[]>
-  ruleItems: ComputedRef<RuleCatalogItem[]>
+  isQueryTypeLocked: ComputedRef<boolean>
   load: () => Promise<void>
   reloadVersions: () => Promise<void>
   validate: () => Promise<ActionResult>
@@ -139,61 +163,91 @@ export interface ConfigLookupRuleState {
   resetConflict: () => void
 }
 
-export const ruleCatalog: RuleCatalogItem[] = [
-  {
-    id: RULE_FAMILY_CONFIG_LOOKUP,
-    title: '配置表查询',
-    family: RULE_FAMILY_CONFIG_LOOKUP,
-    statusLabel: '未发布',
-    badgeType: 'neutral',
-    description: '用于通过飞书机器人按配置表查询命令读取数据，支持多分页查询与引用关联。',
-    updatedAt: '-',
-    supported: true,
-  },
-  {
-    id: 'project_check',
-    title: '项目校验规则',
-    family: 'project_check',
-    statusLabel: '未来扩展',
-    badgeType: 'warning',
-    description: '项目级固定校验规则配置，当前仅作为未来扩展入口展示。',
-    updatedAt: '-',
-    supported: false,
-    futureLabel: '未来扩展',
-  },
-  {
-    id: 'directory_query',
-    title: '目录查询规则',
-    family: 'directory_query',
-    statusLabel: '未来扩展',
-    badgeType: 'neutral',
-    description: '目录级文件查询规则配置，当前仅作为未来扩展入口展示。',
-    updatedAt: '-',
-    supported: false,
-    futureLabel: '未来扩展',
-  },
-]
-
-const defaultRuleConfigApiClient: RuleConfigApiClient = {
-  getCurrent: () => apiGetRuleConfig(),
-  listVersions: () => apiListRuleConfigVersions(),
-  getCredentialsStatus: () => apiGetRuleConfigCredentialsStatus(),
-  validate: (contentMd: string) => apiValidateRuleConfig(contentMd),
-  saveDraft: (payload: RuleConfigMutationRequest) => apiSaveRuleConfigDraft(payload),
-  publish: (payload: RuleConfigMutationRequest) => apiPublishRuleConfig(payload),
-  rollback: (version: number, payload: Omit<RuleConfigMutationRequest, 'contentMd'>) =>
-    apiRollbackRuleConfigVersion(version, payload),
-  trial: (payload: RuleConfigTrialRequest) => apiTrialRuleConfig(payload),
+const defaultListApiClient: RuleConfigListApiClient = {
+  listRules: () => apiListRuleConfigs(),
+  createRule: (payload: RuleConfigCreateRequest) => apiCreateRuleConfig(payload),
 }
 
-export function createConfigLookupRuleState(
-  apiClient: RuleConfigApiClient = defaultRuleConfigApiClient,
-  options: { allowDevFallback?: boolean } = {},
-): ConfigLookupRuleState {
-  const allowDevFallback = options.allowDevFallback ?? import.meta.env.DEV
-  const record = ref<RuleConfigRecord>(createEmptyRuleConfigRecord())
+const defaultDetailApiClient: RuleConfigDetailApiClient = {
+  getRule: (ruleId: number | string) => apiGetRuleConfig(ruleId),
+  listVersions: (ruleId: number | string) => apiListRuleConfigVersions(ruleId),
+  validate: (ruleId: number | string, contentMd: string) => apiValidateRuleConfig(ruleId, contentMd),
+  saveDraft: (ruleId: number | string, payload: RuleConfigMutationRequest) =>
+    apiSaveRuleConfigDraft(ruleId, payload),
+  publish: (ruleId: number | string, payload: RuleConfigMutationRequest) =>
+    apiPublishRuleConfig(ruleId, payload),
+  rollback: (
+    ruleId: number | string,
+    version: number,
+    payload: Omit<RuleConfigMutationRequest, 'contentMd'>,
+  ) => apiRollbackRuleConfigVersion(ruleId, version, payload),
+  trial: (ruleId: number | string, payload: RuleConfigTrialRequest) =>
+    apiTrialRuleConfig(ruleId, payload),
+}
+
+export function createConfigLookupRuleListState(
+  apiClient: RuleConfigListApiClient = defaultListApiClient,
+): ConfigLookupRuleListState {
+  const rules = ref<RuleConfigRecord[]>([])
+  const loading = ref(false)
+  const creating = ref(false)
+  const errorMessage = ref('')
+
+  const kpiItems = computed(() => buildRuleConfigListKpis(rules.value))
+
+  async function load(): Promise<void> {
+    loading.value = true
+    errorMessage.value = ''
+    try {
+      const response = await apiClient.listRules()
+      rules.value = response.data.items
+    } catch (error) {
+      errorMessage.value = getErrorMessage(error)
+      rules.value = []
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function createRule(input: CreateRuleInput): Promise<CreateRuleResult> {
+    creating.value = true
+    errorMessage.value = ''
+    try {
+      const response = await apiClient.createRule({
+        contentMd: buildCreateRuleMarkdown(input),
+        description: `创建${input.queryType.trim()}查询规则`,
+      })
+      await load()
+      return {
+        ok: true,
+        message: '规则草稿已创建',
+        ruleId: response.data.rule_id,
+      }
+    } catch (error) {
+      errorMessage.value = getErrorMessage(error)
+      return { ok: false, message: errorMessage.value }
+    } finally {
+      creating.value = false
+    }
+  }
+
+  return {
+    rules,
+    loading,
+    creating,
+    errorMessage,
+    kpiItems,
+    load,
+    createRule,
+  }
+}
+
+export function createConfigLookupRuleDetailState(
+  ruleId: number | string | Ref<number | string>,
+  apiClient: RuleConfigDetailApiClient = defaultDetailApiClient,
+): ConfigLookupRuleDetailState {
+  const record = ref<RuleConfigRecord | null>(null)
   const versions = ref<RuleConfigVersion[]>([])
-  const credentials = ref<RuleConfigCredentialsStatus | null>(null)
   const contentMd = ref(CONFIG_LOOKUP_SAMPLE_MARKDOWN)
   const validation = ref<RuleConfigValidationResult | null>(null)
   const loading = ref(false)
@@ -205,43 +259,37 @@ export function createConfigLookupRuleState(
   const trialResult = ref<RuleConfigTrialResult | null>(null)
   const trialErrorMessage = ref('')
   const trialErrorLines = ref<string[]>([])
-  const fallbackActive = ref(false)
   const errorMessage = ref('')
   const conflictMessage = ref('')
 
-  const baseVersion = computed(() => record.value.optimistic_lock_version)
+  const baseVersion = computed(() => record.value?.optimistic_lock_version ?? 0)
   const validationErrors = computed(() => validation.value?.errors ?? [])
-  const overviewItems = computed(() => buildRuleConfigOverview(record.value, versions.value))
   const versionRows = computed(() => buildVersionRows(versions.value))
-  const ruleItems = computed(() => buildRuleItems(record.value))
+  const isQueryTypeLocked = computed(() => Boolean(record.value?.published_version))
 
   async function load(): Promise<void> {
     loading.value = true
     errorMessage.value = ''
     conflictMessage.value = ''
+    const currentRuleId = unref(ruleId)
     try {
-      const [configResponse, versionsResponse, credentialsResponse] = await Promise.all([
-        apiClient.getCurrent(),
-        apiClient.listVersions(),
-        apiClient.getCredentialsStatus(),
+      const [recordResponse, versionsResponse] = await Promise.all([
+        apiClient.getRule(currentRuleId),
+        apiClient.listVersions(currentRuleId),
       ])
-      applyRecord(configResponse.data)
+      applyRecord(recordResponse.data)
       versions.value = versionsResponse.data.items
-      credentials.value = credentialsResponse.data
-      fallbackActive.value = false
     } catch (error) {
-      if (canUseDevFallback(error, allowDevFallback)) {
-        applyDevFallback()
-      } else {
-        errorMessage.value = getErrorMessage(error)
-      }
+      errorMessage.value = getErrorMessage(error)
+      record.value = null
+      versions.value = []
     } finally {
       loading.value = false
     }
   }
 
   async function reloadVersions(): Promise<void> {
-    const response = await apiClient.listVersions()
+    const response = await apiClient.listVersions(unref(ruleId))
     versions.value = response.data.items
   }
 
@@ -249,7 +297,7 @@ export function createConfigLookupRuleState(
     validating.value = true
     clearOperationState()
     try {
-      const response = await apiClient.validate(contentMd.value)
+      const response = await apiClient.validate(unref(ruleId), contentMd.value)
       validation.value = response.data
       return {
         ok: response.data.ok,
@@ -266,7 +314,11 @@ export function createConfigLookupRuleState(
     saving.value = true
     clearOperationState()
     try {
-      const response = await apiClient.saveDraft({
+      const queryTypeGuard = guardLockedQueryType()
+      if (queryTypeGuard) {
+        return queryTypeGuard
+      }
+      const response = await apiClient.saveDraft(unref(ruleId), {
         contentMd: contentMd.value,
         baseVersion: baseVersion.value,
         description: '保存草稿',
@@ -285,7 +337,11 @@ export function createConfigLookupRuleState(
     publishing.value = true
     clearOperationState()
     try {
-      const response = await apiClient.publish({
+      const queryTypeGuard = guardLockedQueryType()
+      if (queryTypeGuard) {
+        return queryTypeGuard
+      }
+      const response = await apiClient.publish(unref(ruleId), {
         contentMd: contentMd.value,
         baseVersion: baseVersion.value,
         description: '发布规则',
@@ -304,7 +360,7 @@ export function createConfigLookupRuleState(
     rollingBack.value = true
     clearOperationState()
     try {
-      const response = await apiClient.rollback(version, {
+      const response = await apiClient.rollback(unref(ruleId), version, {
         baseVersion: baseVersion.value,
         description: `回滚到 v${version}`,
       })
@@ -324,7 +380,7 @@ export function createConfigLookupRuleState(
     trialErrorMessage.value = ''
     trialErrorLines.value = []
     try {
-      const response = await apiClient.trial({
+      const response = await apiClient.trial(unref(ruleId), {
         ...payload,
         contentMd: payload.useCurrentDraft ? contentMd.value : undefined,
       })
@@ -341,11 +397,7 @@ export function createConfigLookupRuleState(
         trialErrorLines.value = validationDetail.errors
         return { ok: false, message: trialErrorMessage.value }
       }
-      if (error instanceof ApiRequestError && (error.status === 404 || error.status === 405)) {
-        trialErrorMessage.value = '试查接口不可用，请确认后端已更新'
-      } else {
-        trialErrorMessage.value = getErrorMessage(error)
-      }
+      trialErrorMessage.value = getErrorMessage(error)
       return { ok: false, message: trialErrorMessage.value }
     } finally {
       trialLoading.value = false
@@ -364,16 +416,6 @@ export function createConfigLookupRuleState(
     contentMd.value = nextRecord.content_md.trim() ? nextRecord.content_md : CONFIG_LOOKUP_SAMPLE_MARKDOWN
   }
 
-  function applyDevFallback(): void {
-    record.value = createEmptyRuleConfigRecord()
-    versions.value = []
-    credentials.value = createEmptyCredentialsStatus()
-    contentMd.value = CONFIG_LOOKUP_SAMPLE_MARKDOWN
-    validation.value = null
-    fallbackActive.value = true
-    errorMessage.value = ''
-  }
-
   function clearOperationState(): void {
     conflictMessage.value = ''
     errorMessage.value = ''
@@ -383,10 +425,28 @@ export function createConfigLookupRuleState(
     conflictMessage.value = ''
   }
 
+  function guardLockedQueryType(): ActionResult | null {
+    if (!isQueryTypeLocked.value || !record.value) {
+      return null
+    }
+    const nextQueryType = extractQueryTypeFromMarkdown(contentMd.value)
+    if (!nextQueryType || nextQueryType === record.value.query_type) {
+      return null
+    }
+    const message = '已发布过的查询类型不允许直接改名'
+    validation.value = {
+      ok: false,
+      parsed_config_json: {},
+      errors: [message],
+      summary: createSummaryFallback(undefined),
+    }
+    return { ok: false, message }
+  }
+
   function handleOperationError(error: unknown): ActionResult {
     const conflictDetail = getVersionConflictDetail(error)
     if (conflictDetail) {
-      conflictMessage.value = `规则已被他人更新，请刷新后手动合并。当前版本：${conflictDetail.current_optimistic_lock_version}`
+      conflictMessage.value = '规则已被他人更新，请刷新后手动合并。'
       return { ok: false, message: conflictMessage.value }
     }
 
@@ -398,7 +458,7 @@ export function createConfigLookupRuleState(
         errors: validationDetail.errors,
         summary: createSummaryFallback(validationDetail.summary),
       }
-      return { ok: false, message: '规则结构校验失败' }
+      return { ok: false, message: validationDetail.msg || '规则结构校验失败' }
     }
 
     errorMessage.value = getErrorMessage(error)
@@ -408,7 +468,6 @@ export function createConfigLookupRuleState(
   return {
     record,
     versions,
-    credentials,
     contentMd,
     validation,
     loading,
@@ -420,14 +479,12 @@ export function createConfigLookupRuleState(
     trialResult,
     trialErrorMessage,
     trialErrorLines,
-    fallbackActive,
     errorMessage,
     conflictMessage,
     baseVersion,
     validationErrors,
-    overviewItems,
     versionRows,
-    ruleItems,
+    isQueryTypeLocked,
     load,
     reloadVersions,
     validate,
@@ -439,41 +496,64 @@ export function createConfigLookupRuleState(
   }
 }
 
-export function buildRuleConfigOverview(
-  record: RuleConfigRecord,
-  versions: RuleConfigVersion[],
-): RuleOverviewItem[] {
-  const publishedCount = record.status === 'published' && record.published_version !== null ? 1 : 0
-  const hasDraft =
-    record.status === 'draft' ||
-    (record.status !== 'empty' &&
-      record.draft_version > (record.published_version ?? 0))
-  const recentPublishedAt =
-    record.published_at ??
-    versions.find((version) => version.status === 'published')?.created_at ??
-    '-'
-
-  return [
-    { label: '全部规则', value: '3', tone: 'default' },
-    { label: '已发布', value: String(publishedCount), tone: 'success' },
-    { label: '草稿中', value: hasDraft ? '1' : '0', tone: 'warning' },
-    { label: '校验失败', value: '0', tone: 'danger' },
-    { label: '最近发布', value: formatDateTime(recentPublishedAt), tone: 'default' },
-  ]
+export function buildCreateRuleMarkdown(input: CreateRuleInput): string {
+  const queryType = input.queryType.trim() || '新查询'
+  const queryRoot = input.queryRoot.trim() || 'game_datas'
+  const fileName = input.fileName.trim() || 'IAPConfig.xls'
+  return CONFIG_LOOKUP_SAMPLE_MARKDOWN
+    .replace(/^查询类型: .+$/m, `查询类型: ${queryType}`)
+    .replace(/^数据根: .+$/m, `数据根: ${queryRoot}`)
+    .replace(/^配置文件: .+$/m, `配置文件: ${fileName}`)
 }
 
-export function buildRuleItems(record: RuleConfigRecord): RuleCatalogItem[] {
-  return ruleCatalog.map((rule) => {
-    if (rule.id !== RULE_FAMILY_CONFIG_LOOKUP) {
-      return rule
-    }
-    return {
-      ...rule,
-      statusLabel: getRecordStatusLabel(record),
-      badgeType: getRecordBadgeType(record),
-      updatedAt: formatDateTime(record.updated_at),
-    }
-  })
+export function buildRuleConfigListKpis(records: RuleConfigRecord[]): RuleConfigKpiItem[] {
+  const published = records.filter((record) => record.status === 'published').length
+  const drafts = records.filter((record) => isDraftRecord(record)).length
+  const failed = records.filter((record) => record.status === 'validation_failed').length
+  const recentPublished =
+    records
+      .map((record) => record.published_at)
+      .filter((value): value is string => Boolean(value))
+      .sort()
+      .at(-1) ?? ''
+
+  return [
+    {
+      label: '全部查询规则',
+      value: String(records.length),
+      statusLabel: '查询类型',
+      statusType: 'neutral',
+      iconTone: 'primary',
+    },
+    {
+      label: '已发布',
+      value: String(published),
+      statusLabel: published > 0 ? '已发布' : '未发布',
+      statusType: published > 0 ? 'success' : 'neutral',
+      iconTone: 'success',
+    },
+    {
+      label: '草稿中',
+      value: String(drafts),
+      statusLabel: drafts > 0 ? '有草稿' : '无草稿',
+      statusType: drafts > 0 ? 'warning' : 'success',
+      iconTone: 'warning',
+    },
+    {
+      label: '校验失败',
+      value: String(failed),
+      statusLabel: failed > 0 ? '需处理' : '无失败',
+      statusType: failed > 0 ? 'danger' : 'success',
+      iconTone: 'danger',
+    },
+    {
+      label: '最近发布',
+      value: recentPublished ? formatDateTime(recentPublished) : '-',
+      statusLabel: recentPublished ? '已记录' : '未发布',
+      statusType: recentPublished ? 'success' : 'neutral',
+      iconTone: 'purple',
+    },
+  ]
 }
 
 export function buildVersionRows(versions: RuleConfigVersion[]): VersionRow[] {
@@ -489,79 +569,33 @@ export function buildVersionRows(versions: RuleConfigVersion[]): VersionRow[] {
   }))
 }
 
-export function buildCredentialRows(
-  credentials: RuleConfigCredentialsStatus,
-  canManage: boolean,
-): CredentialRow[] {
-  return [
-    {
-      label: 'SVN 凭据',
-      statusLabel: credentials.svn.configured ? '已连接' : '未配置',
-      accountLabel: `账号：${credentials.svn.account_masked || '-'}`,
-      secretLabel: credentials.svn.configured ? '密码：已脱敏' : '密码：未配置',
-      updatedAt: formatDateTime(credentials.svn.updated_at),
-      canManage,
-    },
-    {
-      label: 'AI 凭据',
-      statusLabel: credentials.ai.configured ? '已连接' : '未配置',
-      accountLabel: `供应商：${credentials.ai.provider || '-'} / 模型：${credentials.ai.model || '-'}`,
-      secretLabel: `密钥：${credentials.ai.masked_api_key || credentials.ai.credential_masked || (credentials.ai.configured ? '已脱敏' : '未配置')} / 测试：${getAiTestStatusLabel(credentials.ai.last_test_status)}`,
-      updatedAt: formatDateTime(credentials.ai.last_test_at ?? credentials.ai.updated_at),
-      canManage,
-    },
-  ]
+export function getRuleConfigStatusLabel(status: string): string {
+  if (status === 'published') return '已发布'
+  if (status === 'draft') return '草稿中'
+  if (status === 'validation_failed') return '校验失败'
+  if (status === 'archived') return '已归档'
+  if (status === 'empty') return '未发布'
+  return status || '-'
 }
 
-function getAiTestStatusLabel(status: string | undefined): string {
-  if (status === 'success') return '成功'
-  if (status === 'failed') return '失败'
-  return '未测试'
+export function getRuleConfigBadgeType(status: string): StatusBadgeType {
+  if (status === 'published') return 'success'
+  if (status === 'draft') return 'warning'
+  if (status === 'validation_failed') return 'danger'
+  return 'neutral'
 }
 
-export function canOpenRuleDetail(rule: RuleCatalogItem): boolean {
-  return rule.supported && rule.family === RULE_FAMILY_CONFIG_LOOKUP
+export function getRuleQueryRoot(record: RuleConfigRecord | null): string {
+  return getParsedString(record, 'query_root')
 }
 
-export function createEmptyRuleConfigRecord(): RuleConfigRecord {
-  return {
-    project_id: 0,
-    rule_family: RULE_FAMILY_CONFIG_LOOKUP,
-    content_md: '',
-    parsed_config_json: {},
-    status: 'empty',
-    draft_version: 0,
-    published_version: null,
-    created_by: null,
-    updated_by: null,
-    published_by: null,
-    published_at: null,
-    optimistic_lock_version: 0,
-    created_at: null,
-    updated_at: null,
-  }
+export function getRuleFileName(record: RuleConfigRecord | null): string {
+  return getParsedString(record, 'file')
 }
 
-export function createEmptyCredentialsStatus(): RuleConfigCredentialsStatus {
-  return {
-    svn: {
-      configured: false,
-      account_masked: '',
-      updated_at: null,
-    },
-    ai: {
-      configured: false,
-      enabled: false,
-      provider: '',
-      base_url: '',
-      model: '',
-      credential_masked: '',
-      masked_api_key: '',
-      last_test_status: '',
-      last_test_at: null,
-      updated_at: null,
-    },
-  }
+export function getRulePageCount(record: RuleConfigRecord | null): number {
+  const pages = record?.parsed_config_json?.pages
+  return Array.isArray(pages) ? pages.length : 0
 }
 
 export function formatDateTime(value: string | null | undefined): string {
@@ -576,49 +610,41 @@ export function formatDateTime(value: string | null | undefined): string {
   return time ? `${date} ${time}` : date
 }
 
-function getRecordStatusLabel(record: RuleConfigRecord): string {
-  if (record.status === 'published') return '已发布'
-  if (record.status === 'draft') return '草稿'
-  return '未发布'
+function isDraftRecord(record: RuleConfigRecord): boolean {
+  return (
+    record.status === 'draft' ||
+    (record.status !== 'empty' && record.draft_version > (record.published_version ?? 0))
+  )
 }
 
-function getRecordBadgeType(record: RuleConfigRecord): StatusBadgeType {
-  if (record.status === 'published') return 'success'
-  if (record.status === 'draft') return 'warning'
-  return 'neutral'
+function getParsedString(record: RuleConfigRecord | null, key: string): string {
+  const value = record?.parsed_config_json?.[key]
+  return typeof value === 'string' && value.trim() ? value : '-'
+}
+
+function extractQueryTypeFromMarkdown(contentMd: string): string {
+  const match = contentMd.match(/^查询类型\s*[:：]\s*(.+)$/m)
+  return match?.[1]?.trim() ?? ''
 }
 
 function getVersionStatusLabel(status: string): string {
   if (status === 'published') return '已发布'
   if (status === 'draft') return '草稿'
   if (status === 'archived') return '已归档'
+  if (status === 'validation_failed') return '校验失败'
   return status || '-'
 }
 
 function getVersionBadgeType(status: string): StatusBadgeType {
   if (status === 'published') return 'success'
   if (status === 'draft') return 'warning'
+  if (status === 'validation_failed') return 'danger'
   return 'neutral'
 }
 
 function buildVersionActions(version: RuleConfigVersion): string[] {
-  if (version.status === 'draft') {
-    return ['查看', '发布', '对比']
-  }
-  if (version.status === 'published') {
-    return ['查看', '对比']
-  }
+  if (version.status === 'draft') return ['查看', '发布', '回滚', '对比']
   return ['查看', '回滚', '对比']
-}
-
-function canUseDevFallback(error: unknown, allowDevFallback: boolean): boolean {
-  if (!allowDevFallback) {
-    return false
-  }
-  if (error instanceof ApiRequestError) {
-    return error.status === 404 || error.status === 405
-  }
-  return error instanceof TypeError
 }
 
 function getVersionConflictDetail(error: unknown): RuleConfigVersionConflictDetail | null {

@@ -83,6 +83,7 @@ def test_migrate_empty_sqlite_database_creates_current_schema(tmp_path: Path) ->
     assert {
         "project_id",
         "rule_family",
+        "query_type",
         "content_md",
         "parsed_config_json",
         "status",
@@ -95,8 +96,10 @@ def test_migrate_empty_sqlite_database_creates_current_schema(tmp_path: Path) ->
         "optimistic_lock_version",
     }.issubset(_column_names(inspector, "rule_configs"))
     assert {
+        "rule_config_id",
         "project_id",
         "rule_family",
+        "query_type",
         "version",
         "content_md",
         "parsed_config_json",
@@ -106,8 +109,15 @@ def test_migrate_empty_sqlite_database_creates_current_schema(tmp_path: Path) ->
         "description",
         "created_at",
     }.issubset(_column_names(inspector, "rule_config_versions"))
-    assert "uq_rule_configs_project_family" in _index_names(inspector, "rule_configs")
-    assert "uq_rule_config_versions_project_family_version" in _index_names(
+    assert "uq_rule_configs_project_family_query_type" in _index_names(
+        inspector,
+        "rule_configs",
+    )
+    assert "uq_rule_config_versions_rule_config_version" in _index_names(
+        inspector,
+        "rule_config_versions",
+    )
+    assert "ix_rule_config_versions_rule_config_id" in _index_names(
         inspector,
         "rule_config_versions",
     )
@@ -187,7 +197,7 @@ def test_migrate_empty_sqlite_database_creates_current_schema(tmp_path: Path) ->
         inspector,
         "project_ai_credentials",
     )
-    assert _alembic_version(db_path) == "0008_drop_ai_provider_credentials"
+    assert _alembic_version(db_path) == "0009_rule_config_per_query_type"
 
 
 def test_migrate_legacy_sqlite_database_adds_missing_columns_and_indexes(
@@ -349,4 +359,4 @@ def test_migration_can_run_twice_without_duplicate_columns(tmp_path: Path) -> No
     assert "status" in _column_names(inspector, "execution_runs")
     assert "project_query_roots" in set(inspector.get_table_names())
     assert "feishu_bot_bound_chats" in set(inspector.get_table_names())
-    assert _alembic_version(db_path) == "0008_drop_ai_provider_credentials"
+    assert _alembic_version(db_path) == "0009_rule_config_per_query_type"

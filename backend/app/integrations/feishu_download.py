@@ -15,13 +15,18 @@ from backend.app.loaders.svn_manager import update_svn_working_copy
 DOWNLOAD_COMMAND = "下载"
 QUERY_COMMAND = "查询"
 DEFAULT_DOWNLOAD_SUFFIXES = [".xls", ".xlsx", ".csv", ".json", ".xml", ".txt"]
+_MENTION_PATTERN = r"(?:@_user_[A-Za-z0-9_]+|@[^\s]+)"
+_LEADING_MENTIONS_PATTERN = rf"{_MENTION_PATTERN}(?:\s+{_MENTION_PATTERN})*"
 _DOWNLOAD_COMMAND_PATTERN = re.compile(
-    r"^\s*@_user_[A-Za-z0-9_]+(?:\s+@_user_[A-Za-z0-9_]+)*\s+下载(?:\s+(?P<path>.+))?\s*$"
+    rf"^\s*{_LEADING_MENTIONS_PATTERN}\s+下载(?:\s+(?P<path>.+))?\s*$"
 )
 _QUERY_COMMAND_PATTERN = re.compile(
-    r"^\s*@_user_[A-Za-z0-9_]+(?:\s+@_user_[A-Za-z0-9_]+)*\s+查询(?:\s+(?P<args>.*))?\s*$"
+    rf"^\s*{_LEADING_MENTIONS_PATTERN}\s+查询(?:\s+(?P<args>.*))?\s*$"
 )
 _REMOTE_SVN_SCHEMES = {"http", "https", "svn"}
+SVN_WORKING_COPY_REQUIRED_MESSAGE = (
+    "SVN 下载根目录必须配置为本机 SVN 工作副本目录（目录下或父级需存在 .svn）"
+)
 
 
 @dataclass(frozen=True)
@@ -389,7 +394,7 @@ def _update_svn_query_directory(
 def _find_svn_working_copy_root(start: Path) -> Path:
     start_dir = _nearest_existing_directory(start)
     if start_dir is None:
-        raise ValueError("未找到目标文件所属的 SVN 工作副本，请检查后台 SVN 下载根目录配置。")
+        raise ValueError(SVN_WORKING_COPY_REQUIRED_MESSAGE)
 
     current = start_dir.resolve(strict=False)
     while True:
@@ -399,7 +404,7 @@ def _find_svn_working_copy_root(start: Path) -> Path:
         if parent == current:
             break
         current = parent
-    raise ValueError("未找到目标文件所属的 SVN 工作副本，请检查后台 SVN 下载根目录配置。")
+    raise ValueError(SVN_WORKING_COPY_REQUIRED_MESSAGE)
 
 
 def _nearest_existing_directory(path: Path) -> Path | None:

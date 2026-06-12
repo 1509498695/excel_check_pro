@@ -35,7 +35,10 @@ export function preloadRouteComponent(path: string): void {
     return
   }
 
-  if (normalizedPath === '/rule-configs/config_lookup') {
+  if (
+    normalizedPath === '/rule-configs/config_lookup' ||
+    normalizedPath.startsWith('/rule-configs/config_lookup/')
+  ) {
     void viewLoaders.ruleConfigLookup()
     return
   }

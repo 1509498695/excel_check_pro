@@ -2,25 +2,29 @@ import { describe, expect, it, vi } from 'vitest'
 
 import {
   CONFIG_LOOKUP_SAMPLE_MARKDOWN,
-  buildCredentialRows,
-  buildRuleConfigOverview,
-  canOpenRuleDetail,
-  createConfigLookupRuleState,
-  ruleCatalog,
+  buildCreateRuleMarkdown,
+  createConfigLookupRuleDetailState,
+  createConfigLookupRuleListState,
 } from '../../src/features/rule-configs/useConfigLookupRule'
 import type {
-  RuleConfigCredentialsStatus,
   RuleConfigRecord,
   RuleConfigVersion,
 } from '../../src/types/ruleConfigs'
 import { ApiRequestError } from '../../src/utils/apiFetch'
 
-const record: RuleConfigRecord = {
+const publishedRecord: RuleConfigRecord = {
+  id: 12,
+  rule_id: 12,
   project_id: 1,
   rule_family: 'config_lookup',
+  query_type: '礼包',
   content_md: '查询类型: 礼包',
   parsed_config_json: {
-    queries: [{ query_type: '礼包', query_root: 'game_datas', pages: [{ name: 'AbsolutePack' }] }],
+    rule_family: 'config_lookup',
+    query_type: '礼包',
+    query_root: 'game_datas',
+    file: 'IAPConfig.xls',
+    pages: [{ name: 'AbsolutePack', id_field: 'INT_PackageId', name_field: 'DESC' }],
   },
   status: 'published',
   draft_version: 2,
@@ -34,13 +38,31 @@ const record: RuleConfigRecord = {
   updated_at: '2024-05-27T02:32:18',
 }
 
+const draftRecord: RuleConfigRecord = {
+  ...publishedRecord,
+  id: 13,
+  rule_id: 13,
+  query_type: '玩法开关',
+  content_md: '查询类型: 玩法开关',
+  status: 'draft',
+  draft_version: 1,
+  published_version: null,
+  published_by: null,
+  published_at: null,
+  optimistic_lock_version: 1,
+}
+
 const versions: RuleConfigVersion[] = [
   {
+    id: 20,
+    rule_config_id: 12,
+    rule_id: 12,
     project_id: 1,
     rule_family: 'config_lookup',
+    query_type: '礼包',
     version: 2,
     content_md: '查询类型: 礼包',
-    parsed_config_json: record.parsed_config_json,
+    parsed_config_json: publishedRecord.parsed_config_json,
     status: 'published',
     action: 'publish',
     operator: 2,
@@ -48,11 +70,15 @@ const versions: RuleConfigVersion[] = [
     created_at: '2024-05-27T02:32:18',
   },
   {
+    id: 19,
+    rule_config_id: 12,
+    rule_id: 12,
     project_id: 1,
     rule_family: 'config_lookup',
+    query_type: '礼包',
     version: 1,
     content_md: '查询类型: 礼包',
-    parsed_config_json: record.parsed_config_json,
+    parsed_config_json: publishedRecord.parsed_config_json,
     status: 'draft',
     action: 'save_draft',
     operator: 1,
@@ -61,40 +87,35 @@ const versions: RuleConfigVersion[] = [
   },
 ]
 
-const credentials: RuleConfigCredentialsStatus = {
-  svn: {
-    configured: true,
-    account_masked: 's******n',
-    updated_at: '2024-05-27T01:20:11',
-  },
-  ai: {
-    configured: true,
-    provider: 'openai',
-    model: 'gpt-compatible',
-    masked_api_key: 'sk-********',
-    credential_masked: 'sk-legacy',
-    last_test_status: 'success',
-    last_test_at: '2024-05-27T01:21:11',
-    updated_at: '2024-05-27T01:20:11',
-  },
-}
-
 function response<T>(data: T) {
   return { code: 200, msg: 'ok', data }
 }
 
-function createApi(overrides: Partial<ReturnType<typeof createBaseApi>> = {}) {
-  return { ...createBaseApi(), ...overrides }
+function createListApi(overrides: Partial<ReturnType<typeof createBaseListApi>> = {}) {
+  return { ...createBaseListApi(), ...overrides }
 }
 
-function createBaseApi() {
+function createBaseListApi() {
   return {
-    getCurrent: vi.fn().mockResolvedValue(response(record)),
+    listRules: vi.fn().mockResolvedValue(response({
+      items: [publishedRecord, draftRecord],
+      total: 2,
+    })),
+    createRule: vi.fn().mockResolvedValue(response(draftRecord)),
+  }
+}
+
+function createDetailApi(overrides: Partial<ReturnType<typeof createBaseDetailApi>> = {}) {
+  return { ...createBaseDetailApi(), ...overrides }
+}
+
+function createBaseDetailApi() {
+  return {
+    getRule: vi.fn().mockResolvedValue(response(publishedRecord)),
     listVersions: vi.fn().mockResolvedValue(response({ items: versions, total: versions.length })),
-    getCredentialsStatus: vi.fn().mockResolvedValue(response(credentials)),
     validate: vi.fn().mockResolvedValue(response({
       ok: true,
-      parsed_config_json: record.parsed_config_json,
+      parsed_config_json: publishedRecord.parsed_config_json,
       errors: [],
       summary: {
         query_count: 1,
@@ -105,14 +126,14 @@ function createBaseApi() {
         references: [],
       },
     })),
-    saveDraft: vi.fn().mockResolvedValue(response({ ...record, status: 'draft', optimistic_lock_version: 7 })),
+    saveDraft: vi.fn().mockResolvedValue(response({ ...publishedRecord, status: 'draft', optimistic_lock_version: 7 })),
     publish: vi.fn().mockResolvedValue(response({
-      ...record,
+      ...publishedRecord,
       status: 'published',
       optimistic_lock_version: 8,
       validation: {
         ok: true,
-        parsed_config_json: record.parsed_config_json,
+        parsed_config_json: publishedRecord.parsed_config_json,
         errors: [],
         summary: {
           query_count: 1,
@@ -124,7 +145,7 @@ function createBaseApi() {
         },
       },
     })),
-    rollback: vi.fn().mockResolvedValue(response({ ...record, status: 'draft', optimistic_lock_version: 9 })),
+    rollback: vi.fn().mockResolvedValue(response({ ...publishedRecord, status: 'draft', optimistic_lock_version: 9 })),
     trial: vi.fn().mockResolvedValue(response({
       status: 'hit',
       message: '查询命中',
@@ -135,7 +156,7 @@ function createBaseApi() {
           id_value: '1001',
           name_value: '月卡',
           fields: [
-            { field: 'INT_PackageId', label: 'INT_PackageId', value: '1001' },
+            { field: 'INT_PackageId', label: 'ID字段', value: '1001' },
             { field: 'DESC', label: '礼包名称', value: '月卡' },
           ],
           warnings: [],
@@ -155,59 +176,92 @@ function createBaseApi() {
 }
 
 describe('rule config view model', () => {
-  it('loads current config, versions, credentials, markdown and baseVersion', async () => {
-    const api = createApi()
-    const state = createConfigLookupRuleState(api, { allowDevFallback: false })
+  it('loads query rule list and builds KPI values from records', async () => {
+    const api = createListApi()
+    const state = createConfigLookupRuleListState(api)
 
     await state.load()
 
-    expect(api.getCurrent).toHaveBeenCalled()
-    expect(api.listVersions).toHaveBeenCalled()
-    expect(api.getCredentialsStatus).toHaveBeenCalled()
-    expect(state.record.value.optimistic_lock_version).toBe(6)
-    expect(state.baseVersion.value).toBe(6)
-    expect(state.contentMd.value).toBe('查询类型: 礼包')
-    expect(state.versions.value).toHaveLength(2)
-    expect(state.credentials.value?.svn.account_masked).toBe('s******n')
+    expect(api.listRules).toHaveBeenCalled()
+    expect(state.rules.value.map((rule) => rule.query_type)).toEqual(['礼包', '玩法开关'])
+    expect(state.kpiItems.value.map((item) => item.value)).toEqual([
+      '2',
+      '1',
+      '1',
+      '0',
+      '2024/05/27 02:32:18',
+    ])
   })
 
-  it('uses sample markdown for empty records', async () => {
-    const api = createApi({
-      getCurrent: vi.fn().mockResolvedValue(response({
-        ...record,
-        content_md: '',
-        status: 'empty',
-        optimistic_lock_version: 0,
-      })),
+  it('creates a rule from query type, query root and file name', async () => {
+    const api = createListApi()
+    const state = createConfigLookupRuleListState(api)
+
+    const result = await state.createRule({
+      queryType: '礼包',
+      queryRoot: 'game_datas',
+      fileName: 'IAPConfig.xls',
     })
-    const state = createConfigLookupRuleState(api, { allowDevFallback: false })
+
+    expect(result.ok).toBe(true)
+    expect(result.ruleId).toBe(13)
+    expect(api.createRule).toHaveBeenCalledWith({
+      contentMd: buildCreateRuleMarkdown({
+        queryType: '礼包',
+        queryRoot: 'game_datas',
+        fileName: 'IAPConfig.xls',
+      }),
+      description: '创建礼包查询规则',
+    })
+  })
+
+  it('loads single rule detail, versions, markdown and baseVersion', async () => {
+    const api = createDetailApi()
+    const state = createConfigLookupRuleDetailState(12, api)
+
+    await state.load()
+
+    expect(api.getRule).toHaveBeenCalledWith(12)
+    expect(api.listVersions).toHaveBeenCalledWith(12)
+    expect(state.record.value?.rule_id).toBe(12)
+    expect(state.contentMd.value).toBe('查询类型: 礼包')
+    expect(state.baseVersion.value).toBe(6)
+    expect(state.versionRows.value).toHaveLength(2)
+  })
+
+  it('uses sample markdown for empty rule content', async () => {
+    const api = createDetailApi({
+      getRule: vi.fn().mockResolvedValue(response({ ...publishedRecord, content_md: '' })),
+    })
+    const state = createConfigLookupRuleDetailState(12, api)
 
     await state.load()
 
     expect(state.contentMd.value).toContain(CONFIG_LOOKUP_SAMPLE_MARKDOWN.split('\n')[0])
   })
 
-  it('builds rule overview from current config and version history', () => {
-    const overview = buildRuleConfigOverview(record, versions)
+  it('marks published rules as query type locked and draft rules as editable', async () => {
+    const publishedState = createConfigLookupRuleDetailState(12, createDetailApi())
+    await publishedState.load()
 
-    expect(overview.map((item) => item.value)).toEqual([
-      '3',
-      '1',
-      '0',
-      '0',
-      '2024/05/27 02:32:18',
-    ])
+    const draftState = createConfigLookupRuleDetailState(13, createDetailApi({
+      getRule: vi.fn().mockResolvedValue(response(draftRecord)),
+    }))
+    await draftState.load()
+
+    expect(publishedState.isQueryTypeLocked.value).toBe(true)
+    expect(draftState.isQueryTypeLocked.value).toBe(false)
   })
 
   it('saves draft with current baseVersion and updates state', async () => {
-    const api = createApi()
-    const state = createConfigLookupRuleState(api, { allowDevFallback: false })
+    const api = createDetailApi()
+    const state = createConfigLookupRuleDetailState(12, api)
     await state.load()
 
     const result = await state.saveDraft()
 
     expect(result.ok).toBe(true)
-    expect(api.saveDraft).toHaveBeenCalledWith({
+    expect(api.saveDraft).toHaveBeenCalledWith(12, {
       contentMd: '查询类型: 礼包',
       baseVersion: 6,
       description: '保存草稿',
@@ -215,9 +269,23 @@ describe('rule config view model', () => {
     expect(state.baseVersion.value).toBe(7)
   })
 
+  it('prevents changing query type for rules that have been published', async () => {
+    const api = createDetailApi()
+    const state = createConfigLookupRuleDetailState(12, api)
+    await state.load()
+    state.contentMd.value = '查询类型: 新礼包'
+
+    const result = await state.saveDraft()
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toBe('已发布过的查询类型不允许直接改名')
+    expect(state.validationErrors.value).toEqual(['已发布过的查询类型不允许直接改名'])
+    expect(api.saveDraft).not.toHaveBeenCalled()
+  })
+
   it('publishes successfully and returns immediate-effect message', async () => {
-    const api = createApi()
-    const state = createConfigLookupRuleState(api, { allowDevFallback: false })
+    const api = createDetailApi()
+    const state = createConfigLookupRuleDetailState(12, api)
     await state.load()
 
     const result = await state.publish()
@@ -226,7 +294,7 @@ describe('rule config view model', () => {
       ok: true,
       message: '发布后已立即生效，无需重启机器人。',
     })
-    expect(api.publish).toHaveBeenCalledWith({
+    expect(api.publish).toHaveBeenCalledWith(12, {
       contentMd: '查询类型: 礼包',
       baseVersion: 6,
       description: '发布规则',
@@ -240,8 +308,8 @@ describe('rule config view model', () => {
       errors: ['缺少必填字段：数据根'],
       summary: {},
     })
-    const api = createApi({ publish: vi.fn().mockRejectedValue(error) })
-    const state = createConfigLookupRuleState(api, { allowDevFallback: false })
+    const api = createDetailApi({ publish: vi.fn().mockRejectedValue(error) })
+    const state = createConfigLookupRuleDetailState(12, api)
     await state.load()
 
     const result = await state.publish()
@@ -256,27 +324,27 @@ describe('rule config view model', () => {
       code: 'RULE_CONFIG_VERSION_CONFLICT',
       current_optimistic_lock_version: 9,
     })
-    const api = createApi({ saveDraft: vi.fn().mockRejectedValue(error) })
-    const state = createConfigLookupRuleState(api, { allowDevFallback: false })
+    const api = createDetailApi({ saveDraft: vi.fn().mockRejectedValue(error) })
+    const state = createConfigLookupRuleDetailState(12, api)
     await state.load()
     state.contentMd.value = '本地未保存内容'
 
     const result = await state.saveDraft()
 
     expect(result.ok).toBe(false)
-    expect(state.conflictMessage.value).toContain('规则已被他人更新')
+    expect(state.conflictMessage.value).toBe('规则已被他人更新，请刷新后手动合并。')
     expect(state.contentMd.value).toBe('本地未保存内容')
   })
 
   it('rolls back to a version and refreshes version history', async () => {
-    const api = createApi()
-    const state = createConfigLookupRuleState(api, { allowDevFallback: false })
+    const api = createDetailApi()
+    const state = createConfigLookupRuleDetailState(12, api)
     await state.load()
 
     const result = await state.rollback(1)
 
     expect(result.ok).toBe(true)
-    expect(api.rollback).toHaveBeenCalledWith(1, {
+    expect(api.rollback).toHaveBeenCalledWith(12, 1, {
       baseVersion: 6,
       description: '回滚到 v1',
     })
@@ -285,8 +353,8 @@ describe('rule config view model', () => {
   })
 
   it('runs trial with current draft content without changing record state', async () => {
-    const api = createApi()
-    const state = createConfigLookupRuleState(api, { allowDevFallback: false })
+    const api = createDetailApi()
+    const state = createConfigLookupRuleDetailState(12, api)
     await state.load()
     state.contentMd.value = '本地草稿内容'
 
@@ -298,7 +366,7 @@ describe('rule config view model', () => {
     })
 
     expect(result.ok).toBe(true)
-    expect(api.trial).toHaveBeenCalledWith({
+    expect(api.trial).toHaveBeenCalledWith(12, {
       queryType: '礼包',
       versionedConfigFolder: '/datas_qa88',
       lookupInput: '1001',
@@ -306,13 +374,12 @@ describe('rule config view model', () => {
       contentMd: '本地草稿内容',
     })
     expect(state.trialResult.value?.status).toBe('hit')
-    expect(state.trialErrorMessage.value).toBe('')
     expect(state.contentMd.value).toBe('本地草稿内容')
     expect(state.baseVersion.value).toBe(6)
   })
 
   it('stores trial candidates returned by AI matching', async () => {
-    const api = createApi({
+    const api = createDetailApi({
       trial: vi.fn().mockResolvedValue(response({
         status: 'candidates',
         message: '找到多个可能匹配的候选，请选择后查看详情',
@@ -330,7 +397,7 @@ describe('rule config view model', () => {
         },
       })),
     })
-    const state = createConfigLookupRuleState(api, { allowDevFallback: false })
+    const state = createConfigLookupRuleDetailState(12, api)
     await state.load()
 
     const result = await state.runTrial({
@@ -346,7 +413,7 @@ describe('rule config view model', () => {
   })
 
   it('shows trial business errors without changing editor state', async () => {
-    const api = createApi({
+    const api = createDetailApi({
       trial: vi.fn().mockResolvedValue(response({
         status: 'not_found',
         message: '未找到版本配置目录：/datas_missing，请确认目录是否存在于数据根 game_datas 下',
@@ -355,7 +422,7 @@ describe('rule config view model', () => {
         ai: { used: false },
       })),
     })
-    const state = createConfigLookupRuleState(api, { allowDevFallback: false })
+    const state = createConfigLookupRuleDetailState(12, api)
     await state.load()
     state.contentMd.value = '本地草稿内容'
 
@@ -373,7 +440,6 @@ describe('rule config view model', () => {
     )
     expect(state.trialErrorLines.value).toEqual([])
     expect(state.contentMd.value).toBe('本地草稿内容')
-    expect(state.baseVersion.value).toBe(6)
   })
 
   it('keeps trial validation errors separate from editor validation state', async () => {
@@ -382,8 +448,8 @@ describe('rule config view model', () => {
       errors: ['缺少必填字段：数据根'],
       summary: {},
     })
-    const api = createApi({ trial: vi.fn().mockRejectedValue(error) })
-    const state = createConfigLookupRuleState(api, { allowDevFallback: false })
+    const api = createDetailApi({ trial: vi.fn().mockRejectedValue(error) })
+    const state = createConfigLookupRuleDetailState(12, api)
     await state.load()
     state.contentMd.value = '本地草稿内容'
 
@@ -399,31 +465,5 @@ describe('rule config view model', () => {
     expect(state.trialErrorLines.value).toEqual(['缺少必填字段：数据根'])
     expect(state.validationErrors.value).toEqual([])
     expect(state.contentMd.value).toBe('本地草稿内容')
-  })
-
-  it('shows only masked credential status for non-admins', () => {
-    const rows = buildCredentialRows(credentials, false)
-
-    expect(rows).toEqual([
-      expect.objectContaining({
-        label: 'SVN 凭据',
-        accountLabel: '账号：s******n',
-        secretLabel: '密码：已脱敏',
-        canManage: false,
-      }),
-      expect.objectContaining({
-        label: 'AI 凭据',
-        accountLabel: '供应商：openai / 模型：gpt-compatible',
-        secretLabel: '密钥：sk-******** / 测试：成功',
-        canManage: false,
-      }),
-    ])
-  })
-
-  it('keeps future rule families from entering edit mode', () => {
-    const projectCheck = ruleCatalog.find((rule) => rule.id === 'project_check')
-
-    expect(projectCheck).toBeTruthy()
-    expect(canOpenRuleDetail(projectCheck!)).toBe(false)
   })
 })

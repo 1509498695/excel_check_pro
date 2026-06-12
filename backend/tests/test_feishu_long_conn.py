@@ -312,6 +312,39 @@ def test_parse_config_lookup_command_standard_format() -> None:
     assert command.lookup_input == "26051802"
 
 
+def test_parse_config_lookup_command_strips_feishu_mentions() -> None:
+    command = feishu_long_conn.parse_config_lookup_command(
+        "@_user_1 礼包 查询 /datas_qa88 26051802"
+    )
+
+    assert command is not None
+    assert command.query_type == "礼包"
+    assert command.versioned_config_folder == "/datas_qa88"
+    assert command.lookup_input == "26051802"
+
+
+def test_parse_config_lookup_command_strips_display_mentions() -> None:
+    command = feishu_long_conn.parse_config_lookup_command(
+        "@配配 礼包 查询 /datas_qa88 26060405"
+    )
+
+    assert command is not None
+    assert command.query_type == "礼包"
+    assert command.versioned_config_folder == "/datas_qa88"
+    assert command.lookup_input == "26060405"
+
+
+def test_parse_config_lookup_command_strips_display_mentions_for_compact_alias() -> None:
+    command = feishu_long_conn.parse_config_lookup_command(
+        "@配配 礼包查询 /datas_qa88 26060405"
+    )
+
+    assert command is not None
+    assert command.query_type == "礼包"
+    assert command.versioned_config_folder == "/datas_qa88"
+    assert command.lookup_input == "26060405"
+
+
 def test_parse_config_lookup_command_compact_alias() -> None:
     command = feishu_long_conn.parse_config_lookup_command("礼包查询 /datas_qa88 26051802")
 
@@ -332,6 +365,8 @@ def test_parse_config_lookup_command_does_not_match_legacy_commands() -> None:
     assert feishu_long_conn.parse_config_lookup_command("项目校验") is None
     assert feishu_long_conn.parse_config_lookup_command("@_user_1 下载 configs/a.xlsx") is None
     assert feishu_long_conn.parse_config_lookup_command("@_user_1 查询 configs ab") is None
+    assert feishu_long_conn.parse_config_lookup_command("@配配 下载 configs/a.xlsx") is None
+    assert feishu_long_conn.parse_config_lookup_command("@配配 查询 configs ab") is None
 
 
 def _lookup_hit_response(count: int = 1) -> ConfigLookupResponse:
@@ -464,7 +499,9 @@ def test_format_config_lookup_messages_renders_candidates() -> None:
 
     assert len(messages) == 1
     assert "配置表查询候选（第 1/1 段）" in messages[0]
+    assert "ID：1001" in messages[0]
     assert "月卡" in messages[0]
+    assert "分页：" not in messages[0]
     assert "82%" in messages[0]
 
 
@@ -956,7 +993,7 @@ async def test_dispatch_config_lookup_allows_any_sender_when_allowlist_empty(
     )
 
     event = make_event(
-        text="礼包 查询 /datas_qa88 26051802",
+        text="@_user_1 礼包 查询 /datas_qa88 26051802",
         open_id="ou_not_in_any_allowlist",
     )
     async with async_session_factory() as session:
@@ -995,7 +1032,7 @@ async def test_dispatch_config_lookup_sends_hit_results_to_bound_project(
         _lookup,
     )
 
-    event = make_event(text="礼包查询 /datas_qa88 26051802")
+    event = make_event(text="@配配 礼包 查询 /datas_qa88 26060405")
     async with async_session_factory() as session:
         await dispatch_message_event(session, test_project_id, [], event)
 
@@ -1003,7 +1040,7 @@ async def test_dispatch_config_lookup_sends_hit_results_to_bound_project(
         "project_id": test_project_id,
         "query_type": "礼包",
         "versioned_config_folder": "/datas_qa88",
-        "lookup_input": "26051802",
+        "lookup_input": "26060405",
     }
     texts = [item["text"] for item in stub_dispatch_dependencies["text"]]
     assert len(texts) == 1
@@ -1149,7 +1186,7 @@ async def test_dispatch_download_command_takes_priority_over_config_lookup_parse
         )
         await session.commit()
 
-    event = make_event(text="@_user_1 下载 configs/query.xlsx")
+    event = make_event(text="@配配 下载 configs/query.xlsx")
     async with async_session_factory() as session:
         await dispatch_message_event(session, test_project_id, [], event)
 
@@ -1197,7 +1234,8 @@ async def test_dispatch_legacy_commands_do_not_call_config_lookup(
     )
 
     events = [
-        make_event(text="@_user_1 查询 configs ab"),
+        make_event(text="@配配 查询"),
+        make_event(text="@配配 查询 configs ab"),
         make_event(text="项目校验"),
     ]
     async with async_session_factory() as session:

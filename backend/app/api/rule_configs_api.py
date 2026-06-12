@@ -26,18 +26,29 @@ from backend.app.rule_configs.service import (
     RULE_CONFIG_VALIDATION_FAILED,
     RuleConfigMutation,
     RuleConfigValidationError,
+    create_rule_config,
     ensure_supported_rule_family,
-    get_current_rule_config,
+    get_rule_config_by_id,
     list_rule_config_versions,
+    list_rule_configs,
     publish_rule_config,
     rollback_rule_config_version,
     save_rule_config_draft,
-    validate_rule_config_content,
+    validate_rule_config_content_for_record,
 )
 from backend.app.security.crypto import decrypt_secret
 
 
 router = APIRouter(prefix="/rule-configs", tags=["rule-configs"])
+
+
+class RuleConfigCreateRequest(BaseModel):
+    """创建单条规则草稿请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    content_md: str = Field(min_length=1, max_length=200_000)
+    description: str = Field(default="", max_length=500)
 
 
 class RuleConfigMutationRequest(BaseModel):
@@ -72,7 +83,7 @@ class RuleConfigTrialRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    query_type: str = Field(min_length=1, max_length=100)
+    query_type: str | None = Field(default=None, max_length=100)
     versioned_config_folder: str = Field(min_length=1, max_length=500)
     lookup_input: str = Field(min_length=1, max_length=500)
     use_current_draft: bool = False
@@ -80,204 +91,52 @@ class RuleConfigTrialRequest(BaseModel):
 
 
 @router.get("/{rule_family}")
-async def get_rule_config(
+async def list_rule_configs_endpoint(
     rule_family: str,
     ctx: CurrentUserContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """获取当前项目当前规则配置。"""
+    """获取当前项目指定规则族下的查询规则列表。"""
     project_id = ctx.require_strict_project_member()
-    record = await get_current_rule_config(
-        db,
-        project_id=project_id,
-        rule_family=rule_family,
-    )
-    return {
-        "code": 200,
-        "msg": "ok",
-        "data": _serialize_rule_config_record(
-            record,
-            project_id=project_id,
-            rule_family=rule_family,
-        ),
-    }
-
-
-@router.post("/{rule_family}/validate")
-async def validate_rule_config_endpoint(
-    rule_family: str,
-    payload: RuleConfigValidateRequest,
-    ctx: CurrentUserContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """校验规则配置结构，不保存、不发布。"""
-    project_id = ctx.require_strict_project_member()
-    validation = await validate_rule_config_content(
-        db,
-        project_id=project_id,
-        rule_family=rule_family,
-        content_md=payload.content_md,
-    )
-    return {
-        "code": 200,
-        "msg": "ok",
-        "data": _serialize_validation_result(validation),
-    }
-
-
-@router.post("/{rule_family}/trial")
-async def trial_rule_config_endpoint(
-    rule_family: str,
-    payload: RuleConfigTrialRequest,
-    ctx: CurrentUserContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """执行配置表查询试查，不保存草稿、不发布、不写版本历史。"""
-    project_id = ctx.require_strict_project_member()
-    ensure_supported_rule_family(rule_family)
-    validation: RuleConfigValidationResult | None = None
-    parsed_config_override: dict[str, Any] | None = None
-
-    if payload.use_current_draft:
-        content_md = (payload.content_md or "").strip()
-        if not content_md:
-            raise HTTPException(status_code=400, detail="使用当前草稿试查时 content_md 不能为空")
-        validation = await validate_rule_config_content(
-            db,
-            project_id=project_id,
-            rule_family=rule_family,
-            content_md=content_md,
-        )
-        if not validation.ok:
-            raise _validation_failed_exception(validation)
-        parsed_config_override = validation.parsed_config_json
-
-    result = await lookup_config_table(
-        db,
-        ConfigLookupRequest(
-            project_id=project_id,
-            query_type=payload.query_type,
-            versioned_config_folder=payload.versioned_config_folder,
-            lookup_input=payload.lookup_input,
-        ),
-        parsed_config_override=parsed_config_override,
-    )
-    return {
-        "code": 200,
-        "msg": "ok",
-        "data": _serialize_trial_result(result, validation=validation),
-    }
-
-
-@router.put("/{rule_family}/draft")
-async def save_rule_config_draft_endpoint(
-    rule_family: str,
-    payload: RuleConfigMutationRequest,
-    ctx: CurrentUserContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """保存规则配置草稿。"""
-    project_id = ctx.require_strict_project_member()
-    try:
-        result = await save_rule_config_draft(
-            db,
-            project_id=project_id,
-            user_id=ctx.user_id,
-            rule_family=rule_family,
-            mutation=RuleConfigMutation(
-                content_md=payload.content_md,
-                expected_optimistic_lock_version=payload.expected_optimistic_lock_version,
-                description=payload.description,
-            ),
-        )
-    except RuleConfigValidationError as exc:
-        raise _validation_failed_exception(exc.validation) from exc
-    return {
-        "code": 200,
-        "msg": "ok",
-        "data": _serialize_rule_config_record(
-            result.record,
-            validation=result.validation,
-        ),
-    }
-
-
-@router.post("/{rule_family}/publish")
-async def publish_rule_config_endpoint(
-    rule_family: str,
-    payload: RuleConfigMutationRequest,
-    ctx: CurrentUserContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """发布规则配置。"""
-    project_id = ctx.require_strict_project_member()
-    try:
-        result = await publish_rule_config(
-            db,
-            project_id=project_id,
-            user_id=ctx.user_id,
-            rule_family=rule_family,
-            mutation=RuleConfigMutation(
-                content_md=payload.content_md,
-                expected_optimistic_lock_version=payload.expected_optimistic_lock_version,
-                description=payload.description,
-            ),
-        )
-    except RuleConfigValidationError as exc:
-        raise _validation_failed_exception(exc.validation) from exc
-    return {
-        "code": 200,
-        "msg": "ok",
-        "data": _serialize_rule_config_record(
-            result.record,
-            validation=result.validation,
-        ),
-    }
-
-
-@router.get("/{rule_family}/versions")
-async def list_rule_config_versions_endpoint(
-    rule_family: str,
-    ctx: CurrentUserContext = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> dict[str, Any]:
-    """获取版本历史。"""
-    project_id = ctx.require_strict_project_member()
-    versions = await list_rule_config_versions(
-        db,
-        project_id=project_id,
-        rule_family=rule_family,
-    )
+    records = await list_rule_configs(db, project_id=project_id, rule_family=rule_family)
     return {
         "code": 200,
         "msg": "ok",
         "data": {
-            "items": [_serialize_rule_config_version(row) for row in versions],
-            "total": len(versions),
+            "items": [_serialize_rule_config_record(record) for record in records],
+            "total": len(records),
         },
     }
 
 
-@router.post("/{rule_family}/versions/{version}/rollback")
-async def rollback_rule_config_version_endpoint(
+@router.post("/{rule_family}")
+async def create_rule_config_endpoint(
     rule_family: str,
-    version: int,
-    payload: RuleConfigRollbackRequest,
+    payload: RuleConfigCreateRequest,
     ctx: CurrentUserContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """回滚到历史版本，生成新的草稿版本。"""
+    """创建当前项目的一条查询规则草稿。"""
     project_id = ctx.require_strict_project_member()
-    record = await rollback_rule_config_version(
-        db,
-        project_id=project_id,
-        user_id=ctx.user_id,
-        rule_family=rule_family,
-        version=version,
-        expected_optimistic_lock_version=payload.expected_optimistic_lock_version,
-        description=payload.description,
-    )
-    return {"code": 200, "msg": "ok", "data": _serialize_rule_config_record(record)}
+    try:
+        result = await create_rule_config(
+            db,
+            project_id=project_id,
+            user_id=ctx.user_id,
+            rule_family=rule_family,
+            content_md=payload.content_md,
+            description=payload.description,
+        )
+    except RuleConfigValidationError as exc:
+        raise _validation_failed_exception(exc.validation) from exc
+    return {
+        "code": 200,
+        "msg": "ok",
+        "data": _serialize_rule_config_record(
+            result.record,
+            validation=result.validation,
+        ),
+    }
 
 
 @router.get("/{rule_family}/credentials/status")
@@ -298,6 +157,233 @@ async def get_rule_config_credentials_status(
             "svn": _serialize_svn_credential_status(svn_credential),
             "ai": _serialize_ai_credential_status(ai_credential),
         },
+    }
+
+
+@router.get("/{rule_family}/{rule_id}")
+async def get_rule_config_endpoint(
+    rule_family: str,
+    rule_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """获取当前项目的一条规则配置。"""
+    project_id = ctx.require_strict_project_member()
+    record = await get_rule_config_by_id(
+        db,
+        project_id=project_id,
+        rule_family=rule_family,
+        rule_id=rule_id,
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="规则不存在")
+    return {"code": 200, "msg": "ok", "data": _serialize_rule_config_record(record)}
+
+
+@router.put("/{rule_family}/{rule_id}/draft")
+async def save_rule_config_draft_endpoint(
+    rule_family: str,
+    rule_id: int,
+    payload: RuleConfigMutationRequest,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """保存单条规则配置草稿。"""
+    project_id = ctx.require_strict_project_member()
+    try:
+        result = await save_rule_config_draft(
+            db,
+            project_id=project_id,
+            user_id=ctx.user_id,
+            rule_family=rule_family,
+            rule_id=rule_id,
+            mutation=RuleConfigMutation(
+                content_md=payload.content_md,
+                expected_optimistic_lock_version=payload.expected_optimistic_lock_version,
+                description=payload.description,
+            ),
+        )
+    except RuleConfigValidationError as exc:
+        raise _validation_failed_exception(exc.validation) from exc
+    return {
+        "code": 200,
+        "msg": "ok",
+        "data": _serialize_rule_config_record(
+            result.record,
+            validation=result.validation,
+        ),
+    }
+
+
+@router.post("/{rule_family}/{rule_id}/publish")
+async def publish_rule_config_endpoint(
+    rule_family: str,
+    rule_id: int,
+    payload: RuleConfigMutationRequest,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """发布单条规则配置。"""
+    project_id = ctx.require_strict_project_member()
+    try:
+        result = await publish_rule_config(
+            db,
+            project_id=project_id,
+            user_id=ctx.user_id,
+            rule_family=rule_family,
+            rule_id=rule_id,
+            mutation=RuleConfigMutation(
+                content_md=payload.content_md,
+                expected_optimistic_lock_version=payload.expected_optimistic_lock_version,
+                description=payload.description,
+            ),
+        )
+    except RuleConfigValidationError as exc:
+        raise _validation_failed_exception(exc.validation) from exc
+    return {
+        "code": 200,
+        "msg": "ok",
+        "data": _serialize_rule_config_record(
+            result.record,
+            validation=result.validation,
+        ),
+    }
+
+
+@router.post("/{rule_family}/{rule_id}/validate")
+async def validate_rule_config_endpoint(
+    rule_family: str,
+    rule_id: int,
+    payload: RuleConfigValidateRequest,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """校验单条规则配置结构，不保存、不发布。"""
+    project_id = ctx.require_strict_project_member()
+    validation = await validate_rule_config_content_for_record(
+        db,
+        project_id=project_id,
+        rule_family=rule_family,
+        rule_id=rule_id,
+        content_md=payload.content_md,
+    )
+    return {
+        "code": 200,
+        "msg": "ok",
+        "data": _serialize_validation_result(validation),
+    }
+
+
+@router.get("/{rule_family}/{rule_id}/versions")
+async def list_rule_config_versions_endpoint(
+    rule_family: str,
+    rule_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """获取单条规则版本历史。"""
+    project_id = ctx.require_strict_project_member()
+    versions = await list_rule_config_versions(
+        db,
+        project_id=project_id,
+        rule_family=rule_family,
+        rule_id=rule_id,
+    )
+    return {
+        "code": 200,
+        "msg": "ok",
+        "data": {
+            "items": [_serialize_rule_config_version(row) for row in versions],
+            "total": len(versions),
+        },
+    }
+
+
+@router.post("/{rule_family}/{rule_id}/versions/{version}/rollback")
+async def rollback_rule_config_version_endpoint(
+    rule_family: str,
+    rule_id: int,
+    version: int,
+    payload: RuleConfigRollbackRequest,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """回滚到历史版本，生成新的草稿版本。"""
+    project_id = ctx.require_strict_project_member()
+    try:
+        record = await rollback_rule_config_version(
+            db,
+            project_id=project_id,
+            user_id=ctx.user_id,
+            rule_family=rule_family,
+            rule_id=rule_id,
+            version=version,
+            expected_optimistic_lock_version=payload.expected_optimistic_lock_version,
+            description=payload.description,
+        )
+    except RuleConfigValidationError as exc:
+        raise _validation_failed_exception(exc.validation) from exc
+    return {"code": 200, "msg": "ok", "data": _serialize_rule_config_record(record)}
+
+
+@router.post("/{rule_family}/{rule_id}/trial")
+async def trial_rule_config_endpoint(
+    rule_family: str,
+    rule_id: int,
+    payload: RuleConfigTrialRequest,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """执行配置表查询试查，不保存草稿、不发布、不写版本历史。"""
+    project_id = ctx.require_strict_project_member()
+    record = await get_rule_config_by_id(
+        db,
+        project_id=project_id,
+        rule_family=rule_family,
+        rule_id=rule_id,
+    )
+    if record is None:
+        raise HTTPException(status_code=404, detail="规则不存在")
+
+    validation: RuleConfigValidationResult | None = None
+    parsed_config_override: dict[str, Any] | None = None
+    effective_query_type = record.query_type
+
+    if payload.use_current_draft:
+        content_md = (payload.content_md or "").strip()
+        if not content_md:
+            raise HTTPException(status_code=400, detail="使用当前草稿试查时 content_md 不能为空")
+        validation = await validate_rule_config_content_for_record(
+            db,
+            project_id=project_id,
+            rule_family=rule_family,
+            rule_id=rule_id,
+            content_md=content_md,
+        )
+        if not validation.ok:
+            raise _validation_failed_exception(validation)
+        parsed_config_override = validation.parsed_config_json
+        effective_query_type = str(
+            validation.parsed_config_json.get("query_type") or record.query_type
+        )
+
+    if payload.query_type and payload.query_type != effective_query_type:
+        raise HTTPException(status_code=400, detail="试查查询类型必须与当前规则一致")
+
+    result = await lookup_config_table(
+        db,
+        ConfigLookupRequest(
+            project_id=project_id,
+            query_type=effective_query_type,
+            versioned_config_folder=payload.versioned_config_folder,
+            lookup_input=payload.lookup_input,
+        ),
+        parsed_config_override=parsed_config_override,
+    )
+    return {
+        "code": 200,
+        "msg": "ok",
+        "data": _serialize_trial_result(result, validation=validation),
     }
 
 
@@ -376,39 +462,16 @@ def _serialize_ai_credential_status(
 
 
 def _serialize_rule_config_record(
-    record: RuleConfigRecord | None,
+    record: RuleConfigRecord,
     *,
-    project_id: int | None = None,
-    rule_family: str | None = None,
     validation: RuleConfigValidationResult | None = None,
 ) -> dict[str, Any]:
-    if record is None:
-        if project_id is None or rule_family is None:
-            raise ValueError("empty skeleton requires project_id and rule_family")
-        ensure_supported_rule_family(rule_family)
-        data = {
-            "project_id": project_id,
-            "rule_family": rule_family,
-            "content_md": "",
-            "parsed_config_json": {},
-            "status": "empty",
-            "draft_version": 0,
-            "published_version": None,
-            "created_by": None,
-            "updated_by": None,
-            "published_by": None,
-            "published_at": None,
-            "optimistic_lock_version": 0,
-            "created_at": None,
-            "updated_at": None,
-        }
-        if validation is not None:
-            data["validation"] = _serialize_validation_result(validation)
-        return data
-
     data = {
+        "id": record.id,
+        "rule_id": record.id,
         "project_id": record.project_id,
         "rule_family": record.rule_family,
+        "query_type": record.query_type,
         "content_md": record.content_md,
         "parsed_config_json": _parse_json_object(record.parsed_config_json),
         "status": record.status,
@@ -429,8 +492,12 @@ def _serialize_rule_config_record(
 
 def _serialize_rule_config_version(row: RuleConfigVersionRecord) -> dict[str, Any]:
     return {
+        "id": row.id,
+        "rule_config_id": row.rule_config_id,
+        "rule_id": row.rule_config_id,
         "project_id": row.project_id,
         "rule_family": row.rule_family,
+        "query_type": row.query_type,
         "version": row.version,
         "content_md": row.content_md,
         "parsed_config_json": _parse_json_object(row.parsed_config_json),

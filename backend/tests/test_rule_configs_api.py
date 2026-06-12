@@ -1,4 +1,4 @@
-"""规则配置存储与版本 API 测试。"""
+"""规则配置按 rule_id 管理的 API 测试。"""
 
 from __future__ import annotations
 
@@ -11,11 +11,10 @@ from sqlalchemy import select
 from backend.app.auth.service import create_access_token, hash_password
 from backend.app.database import async_session_factory
 from backend.app.models import (
-    ProjectAiCredentialRecord,
     Project,
+    ProjectAiCredentialRecord,
     ProjectQueryRootRecord,
     ProjectSvnCredentialRecord,
-    RuleConfigRecord,
     User,
     UserProjectRole,
 )
@@ -23,17 +22,16 @@ from backend.app.security.crypto import encrypt_secret
 from backend.run import app
 
 
-CONTENT_MD = """
-查询类型: 礼包
+def content_md(query_type: str = "礼包") -> str:
+    return f"""
+查询类型: {query_type}
 数据根: game_datas
 配置文件: IAPConfig.xls
 
-分页:
-  - 名称: AbsolutePack
-    ID字段: INT_PackageId
-    名称字段: DESC
-    输出字段:
-      - INT_PackageId
+  - 分页名称: AbsolutePack
+  - 输出字段
+    - ID字段: INT_PackageId
+    - 礼包名称:DESC
 """.strip()
 
 
@@ -113,91 +111,290 @@ def _client(headers: dict[str, str]) -> AsyncClient:
     )
 
 
+async def _create_rule(
+    client: AsyncClient,
+    query_type: str = "礼包",
+    *,
+    description: str = "创建草稿",
+) -> dict:
+    response = await client.post(
+        "/api/v1/rule-configs/config_lookup",
+        json={"content_md": content_md(query_type), "description": description},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
 @pytest.mark.anyio
-async def test_project_member_can_save_draft(test_project_id: int) -> None:
-    """普通项目成员可以保存 config_lookup 草稿。"""
+async def test_create_query_rule_success(test_project_id: int) -> None:
+    """项目成员可以创建一条 config_lookup 查询规则草稿。"""
     await _seed_query_root(test_project_id)
     headers = await _create_user_headers(test_project_id)
 
     async with _client(headers) as client:
-        response = await client.put(
-            "/api/v1/rule-configs/config_lookup/draft",
-            json={
-                "content_md": CONTENT_MD,
-                "expected_optimistic_lock_version": 0,
-                "description": "初始草稿",
-            },
-        )
+        data = await _create_rule(client)
 
-    assert response.status_code == 200, response.text
-    data = response.json()["data"]
+    assert data["rule_id"] == data["id"]
     assert data["rule_family"] == "config_lookup"
+    assert data["query_type"] == "礼包"
     assert data["status"] == "draft"
     assert data["draft_version"] == 1
     assert data["published_version"] is None
     assert data["optimistic_lock_version"] == 1
-    assert data["parsed_config_json"]["queries"][0]["query_type"] == "礼包"
+    assert data["parsed_config_json"]["query_type"] == "礼包"
 
 
 @pytest.mark.anyio
-async def test_project_member_can_publish(test_project_id: int) -> None:
-    """普通项目成员可以直接发布结构合法的 Markdown。"""
+async def test_same_project_duplicate_query_type_fails(test_project_id: int) -> None:
+    """同项目同规则族内 query_type 唯一。"""
     await _seed_query_root(test_project_id)
     headers = await _create_user_headers(test_project_id)
 
     async with _client(headers) as client:
-        response = await client.post(
-            "/api/v1/rule-configs/config_lookup/publish",
+        await _create_rule(client, "礼包")
+        duplicate = await client.post(
+            "/api/v1/rule-configs/config_lookup",
+            json={"content_md": content_md("礼包")},
+        )
+
+    assert duplicate.status_code == 400
+    detail = duplicate.json()["detail"]
+    assert detail["code"] == "RULE_CONFIG_VALIDATION_FAILED"
+    assert "查询类型已存在：礼包" in detail["errors"]
+
+
+@pytest.mark.anyio
+async def test_different_projects_can_reuse_query_type(test_project_id: int) -> None:
+    """不同项目可以使用同名 query_type。"""
+    await _seed_query_root(test_project_id)
+    first_headers = await _create_user_headers(test_project_id)
+    other_project_id = await _create_project()
+    await _seed_query_root(other_project_id)
+    second_headers = await _create_user_headers(other_project_id)
+
+    async with _client(first_headers) as first_client:
+        first = await _create_rule(first_client, "礼包")
+    async with _client(second_headers) as second_client:
+        second = await _create_rule(second_client, "礼包")
+
+    assert first["project_id"] == test_project_id
+    assert second["project_id"] == other_project_id
+    assert first["query_type"] == second["query_type"] == "礼包"
+
+
+@pytest.mark.anyio
+async def test_unpublished_draft_can_rename_query_type(test_project_id: int) -> None:
+    """未发布草稿允许通过 Markdown 修改查询类型。"""
+    await _seed_query_root(test_project_id)
+    headers = await _create_user_headers(test_project_id)
+
+    async with _client(headers) as client:
+        created = await _create_rule(client, "礼包")
+        response = await client.put(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}/draft",
             json={
-                "content_md": CONTENT_MD,
-                "expected_optimistic_lock_version": 0,
-                "description": "发布 v1",
+                "content_md": content_md("玩法开关"),
+                "expected_optimistic_lock_version": created["optimistic_lock_version"],
             },
         )
 
     assert response.status_code == 200, response.text
     data = response.json()["data"]
-    assert data["status"] == "published"
-    assert data["draft_version"] == 1
-    assert data["published_version"] == 1
-    assert data["published_at"] is not None
+    assert data["query_type"] == "玩法开关"
+    assert data["draft_version"] == 2
 
 
 @pytest.mark.anyio
-async def test_validate_endpoint_returns_structured_result(test_project_id: int) -> None:
-    """结构校验接口只校验不保存，并返回前端可用摘要。"""
+async def test_published_query_type_cannot_be_renamed(test_project_id: int) -> None:
+    """已发布过的查询类型不允许直接改名。"""
     await _seed_query_root(test_project_id)
     headers = await _create_user_headers(test_project_id)
 
     async with _client(headers) as client:
-        response = await client.post(
-            "/api/v1/rule-configs/config_lookup/validate",
-            json={"content_md": CONTENT_MD},
+        created = await _create_rule(client, "礼包")
+        published = await client.post(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}/publish",
+            json={
+                "content_md": content_md("礼包"),
+                "expected_optimistic_lock_version": created["optimistic_lock_version"],
+            },
         )
-        current = await client.get("/api/v1/rule-configs/config_lookup")
+        renamed = await client.put(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}/draft",
+            json={
+                "content_md": content_md("玩法开关"),
+                "expected_optimistic_lock_version": published.json()["data"][
+                    "optimistic_lock_version"
+                ],
+            },
+        )
+
+    assert published.status_code == 200, published.text
+    assert renamed.status_code == 400
+    detail = renamed.json()["detail"]
+    assert detail["code"] == "RULE_CONFIG_VALIDATION_FAILED"
+    assert "已发布过的查询类型不允许直接改名" in detail["errors"]
+
+
+@pytest.mark.anyio
+async def test_save_draft_version_conflict_returns_409(test_project_id: int) -> None:
+    """保存草稿时旧 lock 不允许静默覆盖。"""
+    await _seed_query_root(test_project_id)
+    headers = await _create_user_headers(test_project_id)
+
+    async with _client(headers) as client:
+        created = await _create_rule(client)
+        response = await client.put(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}/draft",
+            json={
+                "content_md": content_md("礼包"),
+                "expected_optimistic_lock_version": 0,
+            },
+        )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "RULE_CONFIG_VERSION_CONFLICT"
+    assert detail["current_optimistic_lock_version"] == 1
+
+
+@pytest.mark.anyio
+async def test_publish_version_conflict_returns_409(test_project_id: int) -> None:
+    """发布时旧 lock 不允许静默覆盖。"""
+    await _seed_query_root(test_project_id)
+    headers = await _create_user_headers(test_project_id)
+
+    async with _client(headers) as client:
+        created = await _create_rule(client)
+        response = await client.post(
+            f"/api/v1/rule-configs/config_lookup/{created['rule_id']}/publish",
+            json={
+                "content_md": content_md("礼包"),
+                "expected_optimistic_lock_version": 0,
+            },
+        )
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["code"] == "RULE_CONFIG_VERSION_CONFLICT"
+    assert detail["current_optimistic_lock_version"] == 1
+
+
+@pytest.mark.anyio
+async def test_rollback_only_affects_current_rule_id(test_project_id: int) -> None:
+    """回滚按 rule_id 产生新草稿版本，不影响其它查询规则。"""
+    await _seed_query_root(test_project_id)
+    headers = await _create_user_headers(test_project_id)
+
+    async with _client(headers) as client:
+        gift = await _create_rule(client, "礼包")
+        activity = await _create_rule(client, "活动")
+        gift_published = await client.post(
+            f"/api/v1/rule-configs/config_lookup/{gift['rule_id']}/publish",
+            json={
+                "content_md": content_md("礼包"),
+                "expected_optimistic_lock_version": gift["optimistic_lock_version"],
+            },
+        )
+        gift_draft = await client.put(
+            f"/api/v1/rule-configs/config_lookup/{gift['rule_id']}/draft",
+            json={
+                "content_md": content_md("礼包"),
+                "expected_optimistic_lock_version": gift_published.json()["data"][
+                    "optimistic_lock_version"
+                ],
+                "description": "修改草稿",
+            },
+        )
+        rollback = await client.post(
+            f"/api/v1/rule-configs/config_lookup/{gift['rule_id']}/versions/1/rollback",
+            json={
+                "expected_optimistic_lock_version": gift_draft.json()["data"][
+                    "optimistic_lock_version"
+                ],
+                "description": "回滚到 v1",
+            },
+        )
+        activity_detail = await client.get(
+            f"/api/v1/rule-configs/config_lookup/{activity['rule_id']}"
+        )
+        gift_history = await client.get(
+            f"/api/v1/rule-configs/config_lookup/{gift['rule_id']}/versions"
+        )
+        activity_history = await client.get(
+            f"/api/v1/rule-configs/config_lookup/{activity['rule_id']}/versions"
+        )
+
+    assert rollback.status_code == 200, rollback.text
+    assert rollback.json()["data"]["draft_version"] == 4
+    assert rollback.json()["data"]["published_version"] == 2
+    assert activity_detail.json()["data"]["draft_version"] == 1
+    assert [row["action"] for row in gift_history.json()["data"]["items"]] == [
+        "rollback",
+        "save_draft",
+        "publish",
+        "save_draft",
+    ]
+    assert len(activity_history.json()["data"]["items"]) == 1
+
+
+@pytest.mark.anyio
+async def test_list_returns_only_current_project_rules(test_project_id: int) -> None:
+    """列表接口只返回当前 token 项目的查询规则。"""
+    await _seed_query_root(test_project_id)
+    headers = await _create_user_headers(test_project_id)
+    other_project_id = await _create_project()
+    await _seed_query_root(other_project_id)
+    other_headers = await _create_user_headers(other_project_id)
+
+    async with _client(headers) as client:
+        await _create_rule(client, "礼包")
+        await _create_rule(client, "玩法开关")
+        response = await client.get("/api/v1/rule-configs/config_lookup")
+    async with _client(other_headers) as other_client:
+        await _create_rule(other_client, "活动")
+
+    data = response.json()["data"]
+    assert response.status_code == 200
+    assert data["total"] == 2
+    assert {item["query_type"] for item in data["items"]} == {"礼包", "玩法开关"}
+    assert all(item["project_id"] == test_project_id for item in data["items"])
+
+
+@pytest.mark.anyio
+async def test_validate_endpoint_is_rule_scoped(test_project_id: int) -> None:
+    """结构校验按 rule_id 校验改名和唯一性，但不保存。"""
+    await _seed_query_root(test_project_id)
+    headers = await _create_user_headers(test_project_id)
+
+    async with _client(headers) as client:
+        gift = await _create_rule(client, "礼包")
+        await _create_rule(client, "玩法开关")
+        response = await client.post(
+            f"/api/v1/rule-configs/config_lookup/{gift['rule_id']}/validate",
+            json={"content_md": content_md("玩法开关")},
+        )
+        detail = await client.get(
+            f"/api/v1/rule-configs/config_lookup/{gift['rule_id']}"
+        )
 
     assert response.status_code == 200, response.text
     data = response.json()["data"]
-    assert data["ok"] is True
-    assert data["errors"] == []
-    assert data["parsed_config_json"]["queries"][0]["query_type"] == "礼包"
-    assert data["summary"]["query_types"] == ["礼包"]
-    assert current.json()["data"]["status"] == "empty"
+    assert data["ok"] is False
+    assert "查询类型已存在：玩法开关" in data["errors"]
+    assert detail.json()["data"]["query_type"] == "礼包"
 
 
 @pytest.mark.anyio
 async def test_validation_failure_returns_error_list(test_project_id: int) -> None:
-    """保存草稿时结构校验失败返回明确错误码和中文错误列表。"""
+    """创建规则时结构校验失败返回明确错误码和中文错误列表。"""
     await _seed_query_root(test_project_id)
     headers = await _create_user_headers(test_project_id)
 
     async with _client(headers) as client:
-        response = await client.put(
-            "/api/v1/rule-configs/config_lookup/draft",
-            json={
-                "content_md": CONTENT_MD.replace("数据根: game_datas\n", ""),
-                "expected_optimistic_lock_version": 0,
-            },
+        response = await client.post(
+            "/api/v1/rule-configs/config_lookup",
+            json={"content_md": content_md("礼包").replace("数据根: game_datas\n", "")},
         )
 
     assert response.status_code == 400
@@ -208,17 +405,14 @@ async def test_validation_failure_returns_error_list(test_project_id: int) -> No
 
 
 @pytest.mark.anyio
-async def test_missing_query_root_alias_blocks_publish(test_project_id: int) -> None:
-    """未配置项目 query_roots alias 时不能保存或发布。"""
+async def test_missing_query_root_alias_blocks_create(test_project_id: int) -> None:
+    """未配置项目 query_roots alias 时不能创建规则。"""
     headers = await _create_user_headers(test_project_id)
 
     async with _client(headers) as client:
         response = await client.post(
-            "/api/v1/rule-configs/config_lookup/publish",
-            json={
-                "content_md": CONTENT_MD,
-                "expected_optimistic_lock_version": 0,
-            },
+            "/api/v1/rule-configs/config_lookup",
+            json={"content_md": content_md("礼包")},
         )
 
     assert response.status_code == 400
@@ -247,131 +441,8 @@ async def test_non_project_member_cannot_access(test_project_id: int) -> None:
 
 
 @pytest.mark.anyio
-async def test_version_conflict_returns_409(test_project_id: int) -> None:
-    """保存草稿时旧 lock 不允许静默覆盖。"""
-    await _seed_query_root(test_project_id)
-    headers = await _create_user_headers(test_project_id)
-
-    async with _client(headers) as client:
-        first = await client.put(
-            "/api/v1/rule-configs/config_lookup/draft",
-            json={"content_md": CONTENT_MD, "expected_optimistic_lock_version": 0},
-        )
-        conflict = await client.put(
-            "/api/v1/rule-configs/config_lookup/draft",
-            json={
-                "content_md": CONTENT_MD.replace("数据根: game_datas\n", ""),
-                "expected_optimistic_lock_version": 0,
-            },
-        )
-
-    assert first.status_code == 200
-    assert conflict.status_code == 409
-    detail = conflict.json()["detail"]
-    assert detail["code"] == "RULE_CONFIG_VERSION_CONFLICT"
-    assert detail["current_optimistic_lock_version"] == 1
-
-
-@pytest.mark.anyio
-async def test_rollback_creates_new_draft_version_without_changing_published_version(
-    test_project_id: int,
-) -> None:
-    """回滚产生新版本，但不静默替换已发布版本。"""
-    await _seed_query_root(test_project_id)
-    headers = await _create_user_headers(test_project_id)
-
-    async with _client(headers) as client:
-        published = await client.post(
-            "/api/v1/rule-configs/config_lookup/publish",
-            json={"content_md": CONTENT_MD, "expected_optimistic_lock_version": 0},
-        )
-        changed_content = CONTENT_MD.replace("礼包", "活动")
-        draft = await client.put(
-            "/api/v1/rule-configs/config_lookup/draft",
-            json={
-                "content_md": changed_content,
-                "expected_optimistic_lock_version": published.json()["data"]["optimistic_lock_version"],
-            },
-        )
-        rollback = await client.post(
-            "/api/v1/rule-configs/config_lookup/versions/1/rollback",
-            json={
-                "expected_optimistic_lock_version": draft.json()["data"]["optimistic_lock_version"],
-                "description": "回滚到 v1",
-            },
-        )
-        history = await client.get("/api/v1/rule-configs/config_lookup/versions")
-
-    assert rollback.status_code == 200, rollback.text
-    data = rollback.json()["data"]
-    assert data["draft_version"] == 3
-    assert data["published_version"] == 1
-    assert data["status"] == "draft"
-    assert history.json()["data"]["items"][0]["action"] == "rollback"
-
-
-@pytest.mark.anyio
-async def test_different_projects_have_independent_config_lookup(test_project_id: int) -> None:
-    """不同项目可以各自拥有 config_lookup 当前文档。"""
-    await _seed_query_root(test_project_id)
-    first_headers = await _create_user_headers(test_project_id)
-    other_project_id = await _create_project()
-    await _seed_query_root(other_project_id)
-    second_headers = await _create_user_headers(other_project_id)
-
-    async with _client(first_headers) as first_client:
-        first = await first_client.put(
-            "/api/v1/rule-configs/config_lookup/draft",
-            json={"content_md": CONTENT_MD, "expected_optimistic_lock_version": 0},
-        )
-    async with _client(second_headers) as second_client:
-        second = await second_client.put(
-            "/api/v1/rule-configs/config_lookup/draft",
-            json={
-                "content_md": CONTENT_MD.replace("礼包", "玩法开关"),
-                "expected_optimistic_lock_version": 0,
-            },
-        )
-
-    assert first.status_code == 200
-    assert second.status_code == 200
-    assert first.json()["data"]["project_id"] == test_project_id
-    assert second.json()["data"]["project_id"] == other_project_id
-
-
-@pytest.mark.anyio
-async def test_same_project_has_single_current_config_lookup_record(test_project_id: int) -> None:
-    """同项目同 rule_family 只维护一条当前记录。"""
-    await _seed_query_root(test_project_id)
-    headers = await _create_user_headers(test_project_id)
-
-    async with _client(headers) as client:
-        first = await client.put(
-            "/api/v1/rule-configs/config_lookup/draft",
-            json={"content_md": CONTENT_MD, "expected_optimistic_lock_version": 0},
-        )
-        second = await client.put(
-            "/api/v1/rule-configs/config_lookup/draft",
-            json={
-                "content_md": CONTENT_MD.replace("礼包", "活动"),
-                "expected_optimistic_lock_version": first.json()["data"]["optimistic_lock_version"],
-            },
-        )
-
-    assert second.status_code == 200
-    async with async_session_factory() as session:
-        result = await session.execute(
-            select(RuleConfigRecord).where(
-                RuleConfigRecord.project_id == test_project_id,
-                RuleConfigRecord.rule_family == "config_lookup",
-            )
-        )
-        assert len(result.scalars().all()) == 1
-
-
-@pytest.mark.anyio
 async def test_only_config_lookup_rule_family_is_allowed(test_project_id: int) -> None:
-    """第一阶段拒绝其它 rule_family。"""
+    """当前拒绝其它 rule_family。"""
     headers = await _create_user_headers(test_project_id)
 
     async with _client(headers) as client:

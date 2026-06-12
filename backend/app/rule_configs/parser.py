@@ -1,35 +1,17 @@
-"""配置表查询规则 Markdown 解析器。
-
-第一阶段只解析固定中文配置项并做结构校验，不读取 SVN 或 Excel。
-"""
+"""config_lookup 中文 Markdown 解析与结构校验。"""
 
 from __future__ import annotations
 
-from collections.abc import Collection
-from dataclasses import dataclass
 import re
-from pathlib import PurePosixPath
+from dataclasses import dataclass
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
-
-
-class RuleConfigParseError(ValueError):
-    """规则配置 Markdown 无法解析或结构不合法。"""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        errors: list[str] | None = None,
-        summary: dict[str, Any] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.errors = errors or [message]
-        self.summary = summary or {}
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
 class RuleConfigValidationResult:
-    """配置表查询规则结构校验结果。"""
+    """规则配置结构校验结果。"""
 
     ok: bool
     parsed_config_json: dict[str, Any]
@@ -37,403 +19,367 @@ class RuleConfigValidationResult:
     summary: dict[str, Any]
 
 
-_SUPPORTED_TOP_KEYS = {"查询类型", "数据根", "配置文件", "分页", "引用"}
-_SUPPORTED_ITEM_KEYS = {
-    "名称",
-    "ID字段",
-    "名称字段",
-    "输出字段",
-    "字段",
-    "显示名",
-    "配置文件",
-    "分页",
-    "关联",
-}
-_FORBIDDEN_ENGLISH_KEYS = {
-    "query_root",
+class RuleConfigParseError(ValueError):
+    """规则配置 Markdown 结构错误。"""
+
+
+_TOP_KEYS = {"查询类型", "数据根", "配置文件"}
+_PAGE_KEYS = {"分页名称", "输出字段"}
+_REFERENCE_KEYS = {"引用分页名称", "引用规则", "显示内容"}
+_OLD_KEYS = {"分页", "名称", "名称字段", "引用", "字段", "显示名"}
+_ENGLISH_KEYS = {
     "query_type",
+    "query_root",
+    "file",
+    "pages",
+    "page",
+    "name",
+    "id_field",
+    "name_field",
+    "output_fields",
+    "field",
+    "display_name",
+    "references",
+    "reference",
+    "join",
     "type",
     "value",
-    "file",
-    "sheet",
-    "fields",
-    "output_fields",
 }
-_KEY_VALUE_RE = re.compile(r"^(?P<indent>\s*)(?P<dash>-\s*)?(?P<key>[^:：]+)[:：]\s*(?P<value>.*)$")
-_PLAIN_LIST_RE = re.compile(r"^(?P<indent>\s*)-\s*(?P<value>[^:：]+?)\s*$")
-_QUERY_ROOT_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
-_URL_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
-_DRIVE_RE = re.compile(r"^[A-Za-z]:")
-_JOIN_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=[A-Za-z_][A-Za-z0-9_]*$")
+_KEY_VALUE_RE = re.compile(r"^([^:：]+)[:：](.*)$")
+_BULLET_RE = re.compile(r"^(?P<indent>\s*)-\s*(?P<body>.+?)\s*$")
+_JOIN_RE = re.compile(r"^([^.=\s]+)\.([^.=\s]+)=([^.=\s]+)\.([^.=\s]+)$")
+_DISPLAY_EXPR_RE = re.compile(r"^([^./\s]+)\.([^./\s]+)(?:/(\d+(?:\.\d+)?))?$")
 
 
 def validate_config_lookup_markdown(
     content_md: str,
     *,
-    allowed_query_roots: Collection[str] | None = None,
+    allowed_query_roots: set[str],
 ) -> RuleConfigValidationResult:
-    """校验 config_lookup 中文 Markdown，返回结构化结果。"""
+    """校验 config_lookup 新语法 Markdown，返回结构化结果。"""
     try:
-        parsed_config = _parse_config_lookup_markdown(content_md)
+        parsed_config = parse_config_lookup_markdown(
+            content_md,
+            allowed_query_roots=allowed_query_roots,
+        )
     except RuleConfigParseError as exc:
         return RuleConfigValidationResult(
             ok=False,
             parsed_config_json={},
-            errors=exc.errors,
-            summary=exc.summary,
+            errors=[str(exc)],
+            summary={},
         )
-
-    summary = build_config_lookup_summary(parsed_config)
-    errors = _validate_allowed_query_roots(
-        parsed_config,
-        allowed_query_roots=allowed_query_roots,
-    )
     return RuleConfigValidationResult(
-        ok=not errors,
+        ok=True,
         parsed_config_json=parsed_config,
-        errors=errors,
-        summary=summary,
+        errors=[],
+        summary=build_config_lookup_summary(parsed_config),
     )
 
 
 def parse_config_lookup_markdown(
     content_md: str,
     *,
-    allowed_query_roots: Collection[str] | None = None,
+    allowed_query_roots: set[str],
 ) -> dict[str, Any]:
-    """解析 config_lookup 中文 Markdown，返回确定性的内部 JSON。"""
-    result = validate_config_lookup_markdown(
-        content_md,
-        allowed_query_roots=allowed_query_roots,
-    )
-    if not result.ok:
-        raise RuleConfigParseError(
-            result.errors[0] if result.errors else "规则结构校验失败",
-            errors=result.errors,
-            summary=result.summary,
-        )
-    return result.parsed_config_json
+    """解析 config_lookup 新语法 Markdown，返回确定性的内部 JSON。"""
+    lines = _normalize_lines(content_md)
+    if any(line.strip() == "---" for line in lines):
+        raise RuleConfigParseError("单条查询规则不允许使用 --- 多查询类型分隔符")
+
+    raw_pages, top_values = _collect_blocks(lines)
+    query_type = _require_top_value(top_values, "查询类型")
+    query_root = _require_top_value(top_values, "数据根")
+    file_name = _require_top_value(top_values, "配置文件")
+    if query_root not in allowed_query_roots:
+        raise RuleConfigParseError(f"数据根 alias 不存在：{query_root}")
+    _validate_safe_relative_path(file_name, field_label="配置文件")
+    if not raw_pages:
+        raise RuleConfigParseError("至少需要配置一个分页")
+
+    pages = [_parse_page(page) for page in raw_pages]
+    return {
+        "rule_family": "config_lookup",
+        "query_type": query_type,
+        "query_root": query_root,
+        "file": file_name,
+        "pages": pages,
+    }
 
 
 def build_config_lookup_summary(parsed_config: dict[str, Any]) -> dict[str, Any]:
-    """为前端结构校验结果生成摘要。"""
-    queries = parsed_config.get("queries")
-    if not isinstance(queries, list):
-        queries = []
-
-    query_types: list[str] = []
-    query_roots: list[str] = []
-    primary_files: list[str] = []
-    pages: list[dict[str, Any]] = []
+    """生成前端结构校验展示摘要。"""
+    pages = parsed_config.get("pages")
+    page_items = pages if isinstance(pages, list) else []
+    page_names = [
+        str(page.get("name") or "")
+        for page in page_items
+        if isinstance(page, dict) and page.get("name")
+    ]
     references: list[dict[str, str]] = []
-
-    for raw_query in queries:
-        if not isinstance(raw_query, dict):
+    for page in page_items:
+        if not isinstance(page, dict):
             continue
-        query_type = str(raw_query.get("query_type") or "")
-        query_root = str(raw_query.get("query_root") or "")
-        primary_file = str(raw_query.get("file") or "")
-        if query_type:
-            query_types.append(query_type)
-        if query_root and query_root not in query_roots:
-            query_roots.append(query_root)
-        if primary_file and primary_file not in primary_files:
-            primary_files.append(primary_file)
-
-        raw_pages = raw_query.get("pages")
-        page_names = [
-            str(page.get("name"))
-            for page in raw_pages
-            if isinstance(page, dict) and page.get("name")
-        ] if isinstance(raw_pages, list) else []
-        pages.append({"query_type": query_type, "names": page_names})
-
-        raw_references = raw_query.get("references")
-        if isinstance(raw_references, list):
-            for reference in raw_references:
-                if not isinstance(reference, dict):
-                    continue
+        for field in _list_output_fields(page):
+            reference = field.get("reference")
+            if isinstance(reference, dict):
                 references.append(
                     {
-                        "query_type": query_type,
-                        "name": str(reference.get("name") or ""),
-                        "file": str(reference.get("file") or ""),
-                        "page": str(reference.get("page") or ""),
+                        "page": str(page.get("name") or ""),
+                        "label": str(field.get("label") or ""),
+                        "reference_page": str(reference.get("page") or ""),
+                        "join": str(reference.get("join") or ""),
+                        "display_expression": str(reference.get("display_expression") or ""),
                     }
                 )
-
     return {
-        "query_count": len(query_types),
-        "query_types": query_types,
-        "query_roots": query_roots,
-        "primary_files": primary_files,
-        "pages": pages,
+        "query_type": parsed_config.get("query_type") or "",
+        "query_types": [parsed_config.get("query_type") or ""],
+        "query_root": parsed_config.get("query_root") or "",
+        "query_roots": [parsed_config.get("query_root") or ""],
+        "primary_file": parsed_config.get("file") or "",
+        "primary_files": [parsed_config.get("file") or ""],
+        "pages": [{"query_type": parsed_config.get("query_type") or "", "names": page_names}],
         "references": references,
     }
 
 
-def _parse_config_lookup_markdown(content_md: str) -> dict[str, Any]:
-    blocks = _split_definition_blocks(content_md)
-    if not blocks:
-        raise RuleConfigParseError("规则内容不能为空")
-
-    queries = [_parse_definition_block(block) for block in blocks]
-    seen_query_types: set[str] = set()
-    for query in queries:
-        query_type = query["query_type"]
-        if query_type in seen_query_types:
-            raise RuleConfigParseError(f"查询类型重复：{query_type}")
-        seen_query_types.add(query_type)
-
-    return {"rule_family": "config_lookup", "queries": queries}
+def _normalize_lines(content_md: str) -> list[str]:
+    return content_md.replace("\r\n", "\n").replace("\r", "\n").split("\n")
 
 
-def _split_definition_blocks(content_md: str) -> list[list[str]]:
-    blocks: list[list[str]] = []
-    current: list[str] = []
-    for raw_line in content_md.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
-        line = raw_line.rstrip()
-        if line.strip() == "---":
-            if current:
-                blocks.append(current)
-                current = []
+def _collect_blocks(lines: list[str]) -> tuple[list[list[tuple[int, int, str]]], dict[str, str]]:
+    top_values: dict[str, str] = {}
+    pages: list[list[tuple[int, int, str]]] = []
+    current_page: list[tuple[int, int, str]] | None = None
+    seen_output_fields = False
+
+    for line_no, raw_line in enumerate(lines, start=1):
+        if not raw_line.strip():
             continue
-        if not line.strip():
-            current.append(line)
-            continue
-        current.append(line)
-    if current:
-        blocks.append(current)
-    return [block for block in blocks if any(line.strip() for line in block)]
-
-
-def _parse_definition_block(lines: list[str]) -> dict[str, Any]:
-    query: dict[str, Any] = {
-        "query_type": "",
-        "query_root": "",
-        "file": "",
-        "pages": [],
-        "references": [],
-    }
-    section: str | None = None
-    current_item: dict[str, Any] | None = None
-    output_owner: dict[str, Any] | None = None
-    last_output_field: dict[str, str | None] | None = None
-
-    for line_no, line in enumerate(lines, start=1):
-        if not line.strip():
+        bullet = _BULLET_RE.match(raw_line)
+        if bullet is None:
+            key, value = _parse_key_value(raw_line.strip(), line_no=line_no)
+            _reject_invalid_key(key, line_no=line_no)
+            if key not in _TOP_KEYS:
+                raise RuleConfigParseError(f"第 {line_no} 行不支持的顶层配置项：{key}")
+            if key in top_values:
+                raise RuleConfigParseError(f"第 {line_no} 行重复配置项：{key}")
+            top_values[key] = value
             continue
 
-        key_match = _KEY_VALUE_RE.match(line)
-        plain_match = _PLAIN_LIST_RE.match(line)
-        if key_match is None and plain_match is None:
-            raise RuleConfigParseError(f"第 {line_no} 行无法解析：{line.strip()}")
+        indent = len(bullet.group("indent"))
+        body = bullet.group("body").strip()
+        key, value = _parse_optional_key_value(body, line_no=line_no)
+        _reject_invalid_key(key, line_no=line_no)
 
-        if plain_match is not None and key_match is None:
-            if output_owner is None:
-                raise RuleConfigParseError(f"第 {line_no} 行列表项不在输出字段中")
-            _append_output_field(output_owner, plain_match.group("value").strip(), None)
-            last_output_field = output_owner["output_fields"][-1]
+        if key == "分页名称":
+            current_page = [(line_no, indent, body)]
+            pages.append(current_page)
+            seen_output_fields = False
             continue
-
-        if key_match is None:
-            raise RuleConfigParseError(f"第 {line_no} 行无法解析")
-
-        indent = len(key_match.group("indent"))
-        has_dash = bool(key_match.group("dash"))
-        key = key_match.group("key").strip()
-        value = key_match.group("value").strip()
-
-        _ensure_supported_key(key, line_no, indent)
-
-        if indent == 0 and not has_dash:
-            current_item = None
-            output_owner = None
-            last_output_field = None
-            if key == "查询类型":
-                query["query_type"] = _require_value(key, value, line_no)
-            elif key == "数据根":
-                query["query_root"] = _normalize_query_root(_require_value(key, value, line_no))
-            elif key == "配置文件":
-                query["file"] = _normalize_safe_path(_require_value(key, value, line_no), key, line_no)
-            elif key == "分页":
-                section = "pages"
-            elif key == "引用":
-                section = "references"
+        if current_page is None:
+            raise RuleConfigParseError(f"第 {line_no} 行分页字段必须出现在 分页名称 之后")
+        if indent <= 2 and key in _PAGE_KEYS:
+            if key == "输出字段":
+                if value:
+                    raise RuleConfigParseError(f"第 {line_no} 行 输出字段 不应带值")
+                seen_output_fields = True
+            current_page.append((line_no, indent, body))
             continue
+        if not seen_output_fields:
+            raise RuleConfigParseError(f"第 {line_no} 行输出字段必须出现在 输出字段 之后")
+        current_page.append((line_no, indent, body))
 
-        if section not in {"pages", "references"}:
-            raise RuleConfigParseError(f"第 {line_no} 行必须位于分页或引用配置下")
+    return pages, top_values
 
-        if has_dash:
-            if key == "字段":
-                if output_owner is None:
-                    raise RuleConfigParseError(f"第 {line_no} 行字段必须位于输出字段下")
-                _append_output_field(output_owner, _require_value(key, value, line_no), None)
-                last_output_field = output_owner["output_fields"][-1]
-                continue
-            if key != "名称":
-                raise RuleConfigParseError(f"第 {line_no} 行列表项必须以名称或字段开始")
-            current_item = _new_section_item(section, _require_value(key, value, line_no))
-            query["pages" if section == "pages" else "references"].append(current_item)
-            output_owner = None
-            last_output_field = None
+
+def _parse_page(raw_page: list[tuple[int, int, str]]) -> dict[str, Any]:
+    name = ""
+    output_fields_seen = False
+    fields: list[dict[str, Any]] = []
+    current_field: dict[str, Any] | None = None
+    current_field_indent = 0
+
+    for line_no, indent, body in raw_page:
+        key, value = _parse_optional_key_value(body, line_no=line_no)
+        _reject_invalid_key(key, line_no=line_no)
+        if key == "分页名称":
+            if name:
+                raise RuleConfigParseError(f"第 {line_no} 行重复配置 分页名称")
+            if not value:
+                raise RuleConfigParseError(f"第 {line_no} 行 分页名称 不能为空")
+            name = value
             continue
-
-        if key == "显示名":
-            if last_output_field is None:
-                raise RuleConfigParseError(f"第 {line_no} 行显示名必须跟随字段配置")
-            last_output_field["display_name"] = _require_value(key, value, line_no)
-            continue
-
-        if current_item is None:
-            raise RuleConfigParseError(f"第 {line_no} 行缺少所属条目")
-
         if key == "输出字段":
-            current_item.setdefault("output_fields", [])
-            output_owner = current_item
-            last_output_field = None
+            if output_fields_seen:
+                raise RuleConfigParseError(f"第 {line_no} 行重复配置 输出字段")
+            output_fields_seen = True
+            continue
+        is_field_child = current_field is not None and indent > current_field_indent
+        if is_field_child and key in _REFERENCE_KEYS:
+            if current_field is None:
+                raise RuleConfigParseError(f"第 {line_no} 行引用配置必须跟在输出字段之后")
+            reference = current_field.setdefault("reference", {})
+            reference[key] = value
+            continue
+        if is_field_child and _looks_like_value_map_key(key):
+            value_map = current_field.setdefault("value_map", {})
+            value_map[key] = value
             continue
 
-        output_owner = None
-        last_output_field = None
-        _assign_item_key(current_item, key, value, line_no)
+        if not output_fields_seen:
+            raise RuleConfigParseError(f"第 {line_no} 行输出字段必须出现在 输出字段 之后")
+        field = _parse_output_field(key, value, line_no=line_no)
+        fields.append(field)
+        current_field = field
+        current_field_indent = indent
 
-    _validate_query(query)
-    return query
+    if not name:
+        raise RuleConfigParseError("每个分页必须配置 分页名称")
+    if not output_fields_seen or not fields:
+        raise RuleConfigParseError(f"分页 {name} 必须配置 输出字段")
 
+    id_fields = [field for field in fields if field.get("kind") == "id"]
+    if not id_fields:
+        raise RuleConfigParseError(f"分页 {name} 必须配置 ID字段")
+    name_candidates = [field for field in fields if field.get("kind") != "id"]
+    if not name_candidates:
+        raise RuleConfigParseError(f"分页 {name} 必须配置至少一个名称匹配字段")
 
-def _ensure_supported_key(key: str, line_no: int, indent: int) -> None:
-    normalized = key.strip()
-    if normalized in _FORBIDDEN_ENGLISH_KEYS or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", normalized):
-        raise RuleConfigParseError(f"第 {line_no} 行不支持英文配置项：{normalized}")
-    allowed = _SUPPORTED_TOP_KEYS if indent == 0 else _SUPPORTED_ITEM_KEYS
-    if normalized not in allowed:
-        raise RuleConfigParseError(f"第 {line_no} 行存在未知配置项：{normalized}")
+    for field in fields:
+        _normalize_field_reference(
+            field,
+            current_page_name=name,
+            line_no=int(field.get("_line_no") or 0),
+        )
 
-
-def _require_value(key: str, value: str, line_no: int) -> str:
-    if not value.strip():
-        raise RuleConfigParseError(f"第 {line_no} 行 {key} 不能为空")
-    return value.strip()
-
-
-def _normalize_query_root(value: str) -> str:
-    if not _QUERY_ROOT_RE.fullmatch(value):
-        raise RuleConfigParseError(f"数据根 alias 不合法：{value}")
-    return value
-
-
-def _normalize_safe_path(value: str, key: str, line_no: int) -> str:
-    normalized = value.strip().replace("\\", "/")
-    if not normalized:
-        raise RuleConfigParseError(f"第 {line_no} 行 {key} 不能为空")
-    if _URL_RE.match(normalized):
-        raise RuleConfigParseError(f"第 {line_no} 行 {key} 不能使用 URL")
-    if _DRIVE_RE.match(normalized) or normalized.startswith("/"):
-        raise RuleConfigParseError(f"第 {line_no} 行 {key} 不能使用绝对路径")
-    parts = PurePosixPath(normalized).parts
-    if any(part in {"..", ""} for part in parts):
-        raise RuleConfigParseError(f"第 {line_no} 行 {key} 不能包含父目录逃逸")
-    return normalized
-
-
-def _new_section_item(section: str, name: str) -> dict[str, Any]:
-    if section == "pages":
-        return {
-            "name": name,
-            "id_field": "",
-            "name_field": "",
-            "output_fields": [],
-        }
     return {
         "name": name,
-        "file": "",
-        "page": "",
-        "join": "",
-        "output_fields": [],
+        "id_field": id_fields[0]["field"],
+        "name_field": name_candidates[0]["field"],
+        "output_fields": [_strip_field_kind(field) for field in fields],
     }
 
 
-def _assign_item_key(item: dict[str, Any], key: str, value: str, line_no: int) -> None:
-    required_value = _require_value(key, value, line_no)
-    if key == "ID字段":
-        item["id_field"] = required_value
-    elif key == "名称字段":
-        item["name_field"] = required_value
-    elif key == "配置文件":
-        item["file"] = _normalize_safe_path(required_value, key, line_no)
-    elif key == "分页":
-        item["page"] = required_value
-    elif key == "关联":
-        item["join"] = _normalize_join(required_value, line_no)
-    elif key == "名称":
-        item["name"] = required_value
-    else:
-        raise RuleConfigParseError(f"第 {line_no} 行配置项位置不正确：{key}")
+def _parse_output_field(key: str, value: str, *, line_no: int) -> dict[str, Any]:
+    if not value:
+        raise RuleConfigParseError(f"第 {line_no} 行输出字段缺少字段名：{key}")
+    field = {
+        "label": key,
+        "field": value,
+        "kind": "id" if key == "ID字段" else "field",
+        "_line_no": line_no,
+    }
+    return field
 
 
-def _append_output_field(owner: dict[str, Any], field: str, display_name: str | None) -> None:
-    owner.setdefault("output_fields", [])
-    owner["output_fields"].append({"field": field, "display_name": display_name})
+def _normalize_field_reference(
+    field: dict[str, Any],
+    *,
+    current_page_name: str,
+    line_no: int,
+) -> None:
+    raw_reference = field.get("reference")
+    if not isinstance(raw_reference, dict):
+        return
+    ref_page = str(raw_reference.get("引用分页名称") or "").strip()
+    join = str(raw_reference.get("引用规则") or "").strip()
+    display_expression = str(raw_reference.get("显示内容") or "").strip()
+    if not ref_page:
+        raise RuleConfigParseError(f"第 {line_no} 行引用字段缺少 引用分页名称")
+    if not join:
+        raise RuleConfigParseError(f"第 {line_no} 行引用字段缺少 引用规则")
+    if not display_expression:
+        raise RuleConfigParseError(f"第 {line_no} 行引用字段缺少 显示内容")
+
+    join_match = _JOIN_RE.match(join)
+    if join_match is None:
+        raise RuleConfigParseError("引用规则必须是 Page.Field=Page.Field")
+    left_page, _left_field, right_page, _right_field = join_match.groups()
+    if left_page != current_page_name:
+        raise RuleConfigParseError("引用规则左侧分页必须等于当前分页名称")
+    if right_page != ref_page:
+        raise RuleConfigParseError("引用规则右侧分页必须等于引用分页名称")
+
+    expr_match = _DISPLAY_EXPR_RE.match(display_expression)
+    if expr_match is None:
+        raise RuleConfigParseError("显示内容只支持 Page.Field 或 Page.Field/数字")
+    expr_page, _expr_field, _divisor = expr_match.groups()
+    if expr_page != ref_page:
+        raise RuleConfigParseError("显示内容分页必须等于引用分页名称")
+
+    field["reference"] = {
+        "page": ref_page,
+        "join": join,
+        "display_expression": display_expression,
+    }
 
 
-def _normalize_join(value: str, line_no: int) -> str:
-    if not _JOIN_RE.fullmatch(value):
-        raise RuleConfigParseError(f"第 {line_no} 行关联格式必须是 A=B")
+def _strip_field_kind(field: dict[str, Any]) -> dict[str, Any]:
+    cleaned = {key: value for key, value in field.items() if key not in {"kind", "_line_no"}}
+    if "value_map" in cleaned and not cleaned["value_map"]:
+        cleaned.pop("value_map")
+    return cleaned
+
+
+def _parse_key_value(body: str, *, line_no: int) -> tuple[str, str]:
+    match = _KEY_VALUE_RE.match(body)
+    if match is None:
+        raise RuleConfigParseError(f"第 {line_no} 行必须使用 中文配置项: 值")
+    key = match.group(1).strip()
+    value = match.group(2).strip()
+    if not key:
+        raise RuleConfigParseError(f"第 {line_no} 行配置项不能为空")
+    return key, value
+
+
+def _parse_optional_key_value(body: str, *, line_no: int) -> tuple[str, str]:
+    match = _KEY_VALUE_RE.match(body)
+    if match is None:
+        key = body.strip()
+        if not key:
+            raise RuleConfigParseError(f"第 {line_no} 行配置项不能为空")
+        return key, ""
+    return _parse_key_value(body, line_no=line_no)
+
+
+def _reject_invalid_key(key: str, *, line_no: int) -> None:
+    normalized = key.strip()
+    if normalized in _OLD_KEYS:
+        raise RuleConfigParseError(f"第 {line_no} 行旧语法字段不再支持：{normalized}")
+    if normalized.lower() in _ENGLISH_KEYS:
+        raise RuleConfigParseError(f"第 {line_no} 行不支持英文配置项：{normalized}")
+
+
+def _looks_like_value_map_key(key: str) -> bool:
+    return key not in _REFERENCE_KEYS and key not in _PAGE_KEYS and key != "分页名称"
+
+
+def _validate_safe_relative_path(value: str, *, field_label: str) -> None:
+    if not value:
+        raise RuleConfigParseError(f"缺少必填字段：{field_label}")
+    parsed = urlparse(value)
+    if parsed.scheme or parsed.netloc:
+        raise RuleConfigParseError(f"{field_label} 必须是相对路径，不能是 URL")
+    if PureWindowsPath(value).drive:
+        raise RuleConfigParseError(f"{field_label} 必须是相对路径，不能包含盘符")
+    posix = PurePosixPath(value.replace("\\", "/"))
+    if posix.is_absolute() or PureWindowsPath(value).is_absolute():
+        raise RuleConfigParseError(f"{field_label} 必须是相对路径，不能是绝对路径")
+    if ".." in posix.parts:
+        raise RuleConfigParseError(f"{field_label} 必须是相对路径，不能包含 ..")
+
+
+def _require_top_value(top_values: dict[str, str], key: str) -> str:
+    value = top_values.get(key, "").strip()
+    if not value:
+        raise RuleConfigParseError(f"缺少必填字段：{key}")
     return value
 
 
-def _validate_query(query: dict[str, Any]) -> None:
-    for key, label in (
-        ("query_type", "查询类型"),
-        ("query_root", "数据根"),
-        ("file", "配置文件"),
-    ):
-        if not query[key]:
-            raise RuleConfigParseError(f"缺少必填字段：{label}")
-    if not query["pages"]:
-        raise RuleConfigParseError("分页不能为空")
-
-    page_names: set[str] = set()
-    for page in query["pages"]:
-        if not page["name"]:
-            raise RuleConfigParseError("分页名称不能为空")
-        if page["name"] in page_names:
-            raise RuleConfigParseError(f"分页名称重复：{page['name']}")
-        page_names.add(page["name"])
-        if not page["id_field"]:
-            raise RuleConfigParseError(f"分页 {page['name']} 缺少 ID字段")
-        if not page["name_field"]:
-            raise RuleConfigParseError(f"分页 {page['name']} 缺少 名称字段")
-        if not page["output_fields"]:
-            raise RuleConfigParseError(f"分页 {page['name']} 输出字段不能为空")
-
-    reference_names: set[str] = set()
-    for reference in query["references"]:
-        if reference["name"] in reference_names:
-            raise RuleConfigParseError(f"引用名称重复：{reference['name']}")
-        reference_names.add(reference["name"])
-        for key, label in (("file", "配置文件"), ("page", "分页"), ("join", "关联")):
-            if not reference[key]:
-                raise RuleConfigParseError(f"引用 {reference['name']} 缺少 {label}")
-        if not reference["output_fields"]:
-            raise RuleConfigParseError(f"引用 {reference['name']} 输出字段不能为空")
-
-
-def _validate_allowed_query_roots(
-    parsed_config: dict[str, Any],
-    *,
-    allowed_query_roots: Collection[str] | None,
-) -> list[str]:
-    if allowed_query_roots is None:
+def _list_output_fields(page: dict[str, Any]) -> list[dict[str, Any]]:
+    output_fields = page.get("output_fields")
+    if not isinstance(output_fields, list):
         return []
-    allowed = set(allowed_query_roots)
-    errors: list[str] = []
-    for query in parsed_config.get("queries", []):
-        if not isinstance(query, dict):
-            continue
-        query_root = str(query.get("query_root") or "")
-        if query_root and query_root not in allowed:
-            errors.append(f"数据根 alias 不存在：{query_root}")
-    return errors
+    return [field for field in output_fields if isinstance(field, dict)]

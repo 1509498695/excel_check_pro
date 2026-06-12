@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { Plus, Search } from '@element-plus/icons-vue'
 
@@ -10,44 +10,34 @@ import PageHeader from '../components/shell/PageHeader.vue'
 import PrimaryButton from '../components/shell/PrimaryButton.vue'
 import SecondaryButton from '../components/shell/SecondaryButton.vue'
 import StatusBadge from '../components/shell/StatusBadge.vue'
-import { useAuthStore } from '../store/auth'
 import type { StatusBadgeType } from '../components/shell/types'
 import {
-  CONFIG_LOOKUP_SAMPLE_MARKDOWN,
-  buildCredentialRows,
-  createConfigLookupRuleState,
-  createEmptyCredentialsStatus,
+  buildCreateRuleMarkdown,
+  createConfigLookupRuleDetailState,
   formatDateTime,
-  type VersionRow,
+  getRuleConfigBadgeType,
+  getRuleConfigStatusLabel,
+  getRuleFileName,
+  getRuleQueryRoot,
 } from '../features/rule-configs/useConfigLookupRule'
+import type { RuleConfigSummary } from '../types/ruleConfigs'
 
-interface RuleOverviewItem {
-  label: string
-  value: string
-  badge?: { label: string; type: StatusBadgeType }
-}
-
-interface ValidationItem {
-  label: string
-  type: 'success' | 'warning'
-}
-
+const route = useRoute()
 const router = useRouter()
-const auth = useAuthStore()
 const projectId = ref('default')
 const keyword = ref('')
 const useDraftTrial = ref(true)
-const trialForm = ref({
-  queryType: '礼包',
-  versionFolder: '/datas_qa88',
-  queryText: '1001',
+
+const routeRuleId = computed(() => {
+  const raw = route.params.ruleId
+  return Array.isArray(raw) ? (raw[0] ?? '') : (raw ?? '')
 })
-const ruleState = createConfigLookupRuleState()
+
+const ruleState = createConfigLookupRuleDetailState(routeRuleId)
 const {
   record,
   contentMd,
   validation,
-  credentials,
   loading,
   saving,
   validating,
@@ -57,276 +47,193 @@ const {
   trialResult,
   trialErrorMessage,
   trialErrorLines,
-  fallbackActive,
   errorMessage,
   conflictMessage,
-  validationErrors,
   versionRows,
-  load,
-  validate: validateRuleConfig,
-  saveDraft,
-  publish,
-  rollback,
-  runTrial,
+  isQueryTypeLocked,
 } = ruleState
 
-const ruleOverview = computed<RuleOverviewItem[]>(() => [
+const trialForm = ref({
+  queryType: '',
+  versionFolder: '/datas_qa88',
+  queryText: '',
+})
+
+const pageTitle = computed(() => record.value?.query_type || '配置表查询')
+const canOperate = computed(() => Boolean(record.value))
+
+const ruleOverview = computed(() => [
   {
-    label: '规则分组',
-    value: '配置表查询（config_lookup）',
-    badge: { label: getRecordStatusLabel(), type: getRecordBadgeType() },
+    label: '查询类型',
+    value: record.value?.query_type || '-',
+    badge: {
+      label: getRuleConfigStatusLabel(record.value?.status ?? ''),
+      type: getRuleConfigBadgeType(record.value?.status ?? ''),
+    },
   },
-  {
-    label: '当前版本',
-    value: record.value.draft_version > 0 ? `v${record.value.draft_version}` : '-',
-  },
-  {
-    label: '已发布版本',
-    value: record.value.published_version ? `v${record.value.published_version}` : '-',
-  },
-  {
-    label: '最后更新人',
-    value: record.value.updated_by === null ? '-' : `用户 #${record.value.updated_by}`,
-  },
-  {
-    label: '发布时间',
-    value: formatDateTime(record.value.published_at),
-  },
+  { label: '数据根', value: getRuleQueryRoot(record.value) },
+  { label: '配置文件', value: getRuleFileName(record.value) },
+  { label: '当前版本', value: `v${record.value?.draft_version ?? 0}` },
+  { label: '发布时间', value: formatDateTime(record.value?.published_at) },
 ])
 
-const hasDraftUpdate = computed(() => {
-  return record.value.status !== 'empty' && record.value.draft_version > (record.value.published_version ?? 0)
-})
-
-const validationItems = computed<ValidationItem[]>(() => {
-  if (validationErrors.value.length > 0) {
-    return validationErrors.value.map((label) => ({ label, type: 'warning' }))
+const validationItems = computed(() => {
+  if (!validation.value) {
+    return [{ label: '尚未执行结构校验', type: 'warning' as const }]
   }
-  if (validation.value?.ok) {
-    return [
-      { label: '中文配置项合法', type: 'success' },
-      { label: '必填字段完整', type: 'success' },
-      { label: 'query_root 引用有效', type: 'success' },
-      { label: '路径字段安全', type: 'success' },
-    ]
+  if (!validation.value.ok) {
+    return validation.value.errors.map((label) => ({ label, type: 'danger' as const }))
   }
-  return [{ label: '尚未执行结构校验', type: 'warning' }]
-})
-
-const parseSummaryItems = computed(() => {
-  if (validation.value?.summary) {
-    const summary = validation.value.summary
-    return [
-      { label: '查询类型', value: summary.query_types.join('、') || '-' },
-      { label: '数据根', value: summary.query_roots.join('、') || '-' },
-      { label: '主配置文件', value: summary.primary_files.join('、') || '-' },
-      {
-        label: '分页设置',
-        value: summary.pages.flatMap((page) => page.names).join('、') || '-',
-      },
-      {
-        label: '引用配置',
-        value: summary.references
-          .map((reference) => `${reference.name} -> ${reference.file} / ${reference.page}`)
-          .join('、') || '-',
-      },
-    ]
-  }
-  const summary = buildSummaryFromParsedConfig()
   return [
-    { label: '查询类型', value: summary.queryTypes || '-' },
-    { label: '数据根', value: summary.queryRoots || '-' },
-    { label: '主配置文件', value: summary.primaryFiles || '-' },
-    { label: '分页设置', value: summary.pages || '-' },
-    { label: '引用配置', value: summary.references || '-' },
+    { label: '中文配置项合法', type: 'success' as const },
+    { label: '必填字段完整', type: 'success' as const },
+    { label: '数据根引用有效', type: 'success' as const },
+    { label: '路径字段安全', type: 'success' as const },
   ]
 })
 
-const credentialRows = computed(() => {
-  return buildCredentialRows(credentials.value ?? createEmptyCredentialsStatus(), auth.isProjectAdmin)
+const parseSummaryItems = computed(() => {
+  const summary = validation.value?.summary
+  return [
+    { label: '查询类型', value: firstValue(summary?.query_types) || record.value?.query_type || '-' },
+    { label: '数据根', value: firstValue(summary?.query_roots) || getRuleQueryRoot(record.value) },
+    { label: '主配置文件', value: firstValue(summary?.primary_files) || getRuleFileName(record.value) },
+    { label: '分页设置', value: formatPages(summary, record.value?.parsed_config_json) },
+    { label: '引用配置', value: formatReferences(summary) },
+  ]
 })
 
-const trialBadge = computed(() => {
-  if (trialErrorMessage.value) {
-    return { type: 'danger' as StatusBadgeType, label: '试查失败' }
-  }
-  if (!trialResult.value) {
-    return { type: 'neutral' as StatusBadgeType, label: '未试查' }
-  }
-  if (trialResult.value.status === 'hit') {
-    return {
-      type: 'success' as StatusBadgeType,
-      label: `命中 ${trialResult.value.results.length} 条`,
-    }
-  }
-  if (trialResult.value.status === 'candidates') {
-    return {
-      type: 'warning' as StatusBadgeType,
-      label: `候选 ${trialResult.value.candidates.length} 条`,
-    }
-  }
-  if (trialResult.value.status === 'ai_unavailable') {
-    return { type: 'warning' as StatusBadgeType, label: 'AI 不可用' }
-  }
-  return { type: 'neutral' as StatusBadgeType, label: '未命中' }
+const trialStatusType = computed<StatusBadgeType>(() => {
+  if (!trialResult.value) return 'neutral'
+  if (trialResult.value.status === 'hit' || trialResult.value.status === 'candidates') return 'success'
+  if (trialResult.value.status === 'ai_unavailable') return 'warning'
+  return 'danger'
 })
+
+onMounted(() => {
+  void loadRule()
+})
+
+watch(routeRuleId, () => {
+  void loadRule()
+})
+
+watch(
+  () => record.value?.query_type,
+  (queryType) => {
+    trialForm.value.queryType = queryType || ''
+    if (!trialForm.value.queryText) {
+      trialForm.value.queryText = '1001'
+    }
+  },
+  { immediate: true },
+)
+
+async function loadRule(): Promise<void> {
+  await ruleState.load()
+}
 
 function backToRuleConfigs(): void {
   router.push({ name: 'rule-configs' })
 }
 
-function showStaticNotice(label: string): void {
-  ElMessage.info(`${label}将在后续阶段接入`)
+function insertSampleTemplate(): void {
+  contentMd.value = buildCreateRuleMarkdown({
+    queryType: record.value?.query_type || '礼包',
+    queryRoot: getRuleQueryRoot(record.value) === '-' ? 'game_datas' : getRuleQueryRoot(record.value),
+    fileName: getRuleFileName(record.value) === '-' ? 'IAPConfig.xls' : getRuleFileName(record.value),
+  })
+  ElMessage.success('已插入单条查询规则示例模板')
 }
 
 function showOnlyConfigLookupNotice(): void {
-  ElMessage.info('当前仅支持配置表查询规则')
-}
-
-async function handleTrial(): Promise<void> {
-  const queryType = trialForm.value.queryType.trim()
-  const versionedConfigFolder = trialForm.value.versionFolder.trim()
-  const lookupInput = trialForm.value.queryText.trim()
-  if (!queryType || !versionedConfigFolder || !lookupInput) {
-    ElMessage.warning('请填写查询类型、版本目录和查询内容')
-    return
-  }
-  const result = await runTrial({
-    queryType,
-    versionedConfigFolder,
-    lookupInput,
-    useCurrentDraft: useDraftTrial.value,
-  })
-  if (result.ok) {
-    ElMessage.success(result.message)
-  } else if (result.message) {
-    ElMessage.warning(result.message)
-  }
-}
-
-function insertSampleTemplate(): void {
-  contentMd.value = CONFIG_LOOKUP_SAMPLE_MARKDOWN
-  ElMessage.success('已插入示例模板')
+  ElMessage.info('请在规则列表页新建配置表查询规则')
 }
 
 async function handleValidate(): Promise<void> {
-  const result = await validateRuleConfig()
+  const result = await ruleState.validate()
   if (result.ok) {
     ElMessage.success(result.message)
   } else {
-    ElMessage.warning(result.message)
+    ElMessage.error(result.message)
   }
 }
 
 async function handleSaveDraft(): Promise<void> {
-  const result = await saveDraft()
+  const result = await ruleState.saveDraft()
   if (result.ok) {
     ElMessage.success(result.message)
-  } else if (result.message) {
-    ElMessage.warning(result.message)
+  } else {
+    ElMessage.error(result.message)
   }
 }
 
 async function handlePublish(): Promise<void> {
-  const result = await publish()
+  const result = await ruleState.publish()
   if (result.ok) {
     ElMessage.success(result.message)
-  } else if (result.message) {
-    ElMessage.warning(result.message)
+  } else {
+    ElMessage.error(result.message)
   }
 }
 
-async function handleRollback(version: number): Promise<void> {
-  const result = await rollback(version)
+async function handleTrial(): Promise<void> {
+  const result = await ruleState.runTrial({
+    queryType: trialForm.value.queryType,
+    versionedConfigFolder: trialForm.value.versionFolder,
+    lookupInput: trialForm.value.queryText,
+    useCurrentDraft: useDraftTrial.value,
+  })
+  if (result.ok) {
+    ElMessage.success(result.message || '试查完成')
+  } else {
+    ElMessage.error(result.message)
+  }
+}
+
+async function handleVersionAction(action: string, versionNumber: number): Promise<void> {
+  if (action !== '回滚') {
+    ElMessage.info(`${action}功能暂未展开为独立面板`)
+    return
+  }
+  const result = await ruleState.rollback(versionNumber)
   if (result.ok) {
     ElMessage.success(result.message)
-  } else if (result.message) {
-    ElMessage.warning(result.message)
+  } else {
+    ElMessage.error(result.message)
   }
 }
 
-function handleVersionAction(action: string, row: VersionRow): void {
-  if (action === '发布') {
-    void handlePublish()
-    return
-  }
-  if (action === '回滚') {
-    void handleRollback(row.versionNumber)
-    return
-  }
-  showStaticNotice(action)
+function firstValue(values: string[] | undefined): string {
+  return values?.find((value) => value.trim()) ?? ''
 }
 
-function getRecordStatusLabel(): string {
-  if (record.value.status === 'published') return '已发布'
-  if (record.value.status === 'draft') return '草稿'
-  return '未发布'
+function formatPages(
+  summary: RuleConfigSummary | undefined,
+  parsedConfig: Record<string, unknown> | undefined,
+): string {
+  const summaryNames = summary?.pages.flatMap((page) => page.names) ?? []
+  if (summaryNames.length > 0) {
+    return summaryNames.join('、')
+  }
+  const pages = parsedConfig?.pages
+  if (!Array.isArray(pages)) return '-'
+  const names = pages
+    .map((page) => (page && typeof page === 'object' ? (page as { name?: unknown }).name : ''))
+    .filter((name): name is string => typeof name === 'string' && Boolean(name.trim()))
+  return names.length > 0 ? names.join('、') : '-'
 }
 
-function getRecordBadgeType(): StatusBadgeType {
-  if (record.value.status === 'published') return 'success'
-  if (record.value.status === 'draft') return 'warning'
-  return 'neutral'
+function formatReferences(summary: RuleConfigSummary | undefined): string {
+  const references = summary?.references ?? []
+  if (references.length === 0) return '-'
+  return references.map((item) => `${item.name} -> ${item.file} / ${item.page}`).join('、')
 }
-
-function buildSummaryFromParsedConfig(): {
-  queryTypes: string
-  queryRoots: string
-  primaryFiles: string
-  pages: string
-  references: string
-} {
-  const queries = record.value.parsed_config_json.queries
-  if (!Array.isArray(queries)) {
-    return { queryTypes: '', queryRoots: '', primaryFiles: '', pages: '', references: '' }
-  }
-  const queryTypes: string[] = []
-  const queryRoots: string[] = []
-  const primaryFiles: string[] = []
-  const pages: string[] = []
-  const references: string[] = []
-  for (const query of queries) {
-    if (!query || typeof query !== 'object') continue
-    const payload = query as Record<string, unknown>
-    queryTypes.push(String(payload.query_type ?? ''))
-    queryRoots.push(String(payload.query_root ?? ''))
-    primaryFiles.push(String(payload.file ?? ''))
-    if (Array.isArray(payload.pages)) {
-      pages.push(
-        ...payload.pages
-          .filter((page): page is Record<string, unknown> => !!page && typeof page === 'object')
-          .map((page) => String(page.name ?? '')),
-      )
-    }
-    if (Array.isArray(payload.references)) {
-      references.push(
-        ...payload.references
-          .filter((reference): reference is Record<string, unknown> => {
-            return !!reference && typeof reference === 'object'
-          })
-          .map((reference) => {
-            return `${String(reference.name ?? '')} -> ${String(reference.file ?? '')} / ${String(reference.page ?? '')}`
-          }),
-      )
-    }
-  }
-  return {
-    queryTypes: queryTypes.filter(Boolean).join('、'),
-    queryRoots: queryRoots.filter(Boolean).join('、'),
-    primaryFiles: primaryFiles.filter(Boolean).join('、'),
-    pages: pages.filter(Boolean).join('、'),
-    references: references.filter(Boolean).join('、'),
-  }
-}
-
-onMounted(() => {
-  void load()
-})
 </script>
 
 <template>
   <div class="admin-dashboard-page rule-lookup-page flex h-full flex-col bg-canvas font-sans text-ink-700">
-    <PageHeader breadcrumb="主页 / 规则配置 / 配置表查询" title="规则配置">
+    <PageHeader :breadcrumb="`主页 / 规则配置 / 配置表查询 / ${pageTitle}`" title="规则配置">
       <template #actions>
         <el-select v-model="projectId" class="rule-lookup-project-select" size="default">
           <el-option label="默认项目" value="default" />
@@ -349,51 +256,44 @@ onMounted(() => {
       </template>
     </PageHeader>
 
-    <div
-      v-loading="loading"
-      class="admin-dashboard-content rule-lookup-content flex flex-1 flex-col overflow-y-auto px-8 py-8"
-    >
+    <div class="admin-dashboard-content rule-lookup-content flex flex-1 flex-col overflow-y-auto px-8 py-8">
       <el-alert
-        v-if="fallbackActive"
-        title="当前使用开发 fallback，后端规则配置接口不可用。"
-        type="warning"
+        v-if="errorMessage"
+        :title="errorMessage"
+        type="error"
         show-icon
         :closable="false"
-      />
+        class="rule-lookup-page-alert"
+      >
+        <template #default>
+          <SecondaryButton size="sm" @click="loadRule">重新加载</SecondaryButton>
+          <SecondaryButton size="sm" @click="backToRuleConfigs">返回规则列表</SecondaryButton>
+        </template>
+      </el-alert>
+
       <el-alert
         v-if="conflictMessage"
         :title="conflictMessage"
         type="warning"
         show-icon
-        :closable="false"
-      >
-        <template #default>
-          <SecondaryButton size="sm" @click="load">刷新规则配置</SecondaryButton>
-        </template>
-      </el-alert>
-      <AppCard
-        v-if="errorMessage"
-        as="section"
-        padding="none"
-        class="admin-dashboard-card rule-lookup-alert-card"
-      >
-        <div class="rule-lookup-alert-card__body">
-          <span>{{ errorMessage }}</span>
-          <SecondaryButton size="sm" @click="load">重新加载</SecondaryButton>
-        </div>
-      </AppCard>
+        :closable="true"
+        class="rule-lookup-page-alert"
+        @close="ruleState.resetConflict"
+      />
 
       <AppCard as="section" padding="none" class="admin-dashboard-card rule-lookup-overview-card">
-        <div class="rule-lookup-overview">
+        <div v-loading="loading" class="rule-lookup-overview">
           <div class="rule-lookup-overview__main">
             <span class="rule-lookup-step">01</span>
             <div class="min-w-0">
               <div class="rule-lookup-overview__title-row">
-                <h2>规则概览</h2>
-                <StatusBadge :type="getRecordBadgeType()" :label="getRecordStatusLabel()" />
-                <StatusBadge v-if="hasDraftUpdate" type="warning" label="草稿有更新" />
+                <h2>{{ pageTitle }} 查询规则</h2>
+                <StatusBadge
+                  :type="getRuleConfigBadgeType(record?.status ?? '')"
+                  :label="getRuleConfigStatusLabel(record?.status ?? '')"
+                />
               </div>
-              <p>配置表查询规则发布后立即生效，草稿变更可保存后继续发布。</p>
+              <p>本页只编辑一条查询类型规则。发布后飞书机器人立即读取已发布版本。</p>
             </div>
           </div>
 
@@ -423,20 +323,37 @@ onMounted(() => {
               <h2>Markdown 规则编辑</h2>
             </div>
             <div class="rule-lookup-card-actions">
-              <SecondaryButton size="sm" @click="insertSampleTemplate">
+              <SecondaryButton size="sm" :disabled="!canOperate" @click="insertSampleTemplate">
                 插入示例模板
               </SecondaryButton>
-              <SecondaryButton size="sm" :loading="validating" @click="handleValidate">
+              <SecondaryButton size="sm" :disabled="!canOperate" :loading="validating" @click="handleValidate">
                 结构校验
               </SecondaryButton>
-              <SecondaryButton size="sm" :loading="saving" @click="handleSaveDraft">
+              <SecondaryButton size="sm" :disabled="!canOperate" :loading="saving" @click="handleSaveDraft">
                 保存草稿
               </SecondaryButton>
-              <PrimaryButton size="sm" :loading="publishing" @click="handlePublish">
+              <PrimaryButton size="sm" :disabled="!canOperate" :loading="publishing" @click="handlePublish">
                 发布
               </PrimaryButton>
             </div>
           </div>
+
+          <el-alert
+            v-if="isQueryTypeLocked"
+            title="已发布过的规则不允许直接修改查询类型；如需新查询类型，请返回列表新建规则。"
+            type="info"
+            show-icon
+            :closable="false"
+            class="rule-lookup-editor-notice"
+          />
+          <el-alert
+            v-else
+            title="未发布草稿允许修改查询类型，但同项目内查询类型必须唯一。"
+            type="info"
+            show-icon
+            :closable="false"
+            class="rule-lookup-editor-notice"
+          />
 
           <div class="rule-lookup-code-editor" aria-label="Markdown 规则编辑">
             <el-input
@@ -464,7 +381,10 @@ onMounted(() => {
               :key="item.label"
               class="rule-lookup-validation-item"
             >
-              <span class="rule-lookup-check" :class="`rule-lookup-check--${item.type}`">
+              <span
+                class="rule-lookup-check"
+                :class="item.type === 'success' ? 'rule-lookup-check--success' : item.type === 'danger' ? 'rule-lookup-check--danger' : 'rule-lookup-check--warning'"
+              >
                 {{ item.type === 'success' ? '✓' : '!' }}
               </span>
               <span>{{ item.label }}</span>
@@ -523,7 +443,7 @@ onMounted(() => {
                     type="button"
                     class="ec-action-link"
                     :disabled="rollingBack && action === '回滚'"
-                    @click="handleVersionAction(action, row)"
+                    @click="handleVersionAction(action, row.versionNumber)"
                   >
                     {{ action }}
                   </button>
@@ -532,54 +452,17 @@ onMounted(() => {
             </tr>
           </template>
         </DataTable>
+        <el-empty v-if="!loading && versionRows.length === 0" description="暂无版本历史" :image-size="72" />
       </AppCard>
 
       <div class="rule-lookup-bottom-grid">
-        <AppCard as="section" padding="none" class="admin-dashboard-card rule-lookup-credential-card">
-          <div class="rule-lookup-card-header">
-            <div class="rule-lookup-heading">
-              <span class="rule-lookup-step">05</span>
-              <h2>项目凭据状态</h2>
-            </div>
-          </div>
-          <p class="rule-lookup-muted">
-            普通成员仅可查看凭据连接状态，无法查看或修改完整凭据信息。
-          </p>
-
-          <div class="rule-lookup-credential-list">
-            <div
-              v-for="row in credentialRows"
-              :key="row.label"
-              class="rule-lookup-credential-row"
-            >
-              <div>
-                <div class="rule-lookup-credential-row__title">
-                  <strong>{{ row.label }}</strong>
-                  <StatusBadge type="success" :label="row.statusLabel" />
-                </div>
-                <p>{{ row.accountLabel }}</p>
-                <p>{{ row.secretLabel }}</p>
-                <p>最后更新：{{ row.updatedAt }}</p>
-              </div>
-              <div v-if="row.canManage" class="rule-lookup-credential-actions">
-                <SecondaryButton size="sm" @click="showStaticNotice(`${row.label}更新凭据`)">
-                  更新凭据
-                </SecondaryButton>
-                <SecondaryButton size="sm" @click="showStaticNotice(`${row.label}连接测试`)">
-                  连接测试
-                </SecondaryButton>
-              </div>
-            </div>
-          </div>
-        </AppCard>
-
         <AppCard as="section" padding="none" class="admin-dashboard-card rule-lookup-trial-card">
           <div class="rule-lookup-card-header">
             <div class="rule-lookup-heading">
-              <span class="rule-lookup-step">06</span>
+              <span class="rule-lookup-step">05</span>
               <h2>试查</h2>
             </div>
-            <PrimaryButton size="sm" :loading="trialLoading" @click="handleTrial">
+            <PrimaryButton size="sm" :disabled="!canOperate" :loading="trialLoading" @click="handleTrial">
               开始试查
             </PrimaryButton>
           </div>
@@ -605,69 +488,63 @@ onMounted(() => {
           <div class="rule-lookup-trial-result">
             <div class="rule-lookup-trial-result__head">
               <span>试查结果</span>
-              <StatusBadge :type="trialBadge.type" :label="trialBadge.label" />
+              <StatusBadge
+                :type="trialStatusType"
+                :label="trialResult ? trialResult.message : '未试查'"
+              />
             </div>
 
             <el-alert
-              v-if="trialErrorMessage"
-              :title="trialErrorMessage"
-              type="warning"
+              v-if="trialErrorMessage || trialErrorLines.length"
+              :title="trialErrorMessage || '试查失败'"
+              type="error"
               show-icon
               :closable="false"
               class="rule-lookup-trial-alert"
             >
-              <template v-if="trialErrorLines.length > 0" #default>
-                <ul class="rule-lookup-trial-errors">
-                  <li v-for="line in trialErrorLines" :key="line">{{ line }}</li>
-                </ul>
-              </template>
+              <ul v-if="trialErrorLines.length" class="rule-lookup-error-list">
+                <li v-for="line in trialErrorLines" :key="line">{{ line }}</li>
+              </ul>
             </el-alert>
 
-            <div v-else-if="trialResult?.status === 'hit'" class="rule-lookup-trial-hits">
-              <div
+            <div v-if="trialResult?.status === 'hit'" class="rule-lookup-trial-hits">
+              <article
                 v-for="item in trialResult.results"
                 :key="`${item.page}-${item.id_value}-${item.name_value}`"
                 class="rule-lookup-trial-hit"
               >
                 <div class="rule-lookup-trial-hit__head">
                   <div>
-                    <strong>{{ item.name_value || '-' }}</strong>
-                    <span>{{ item.page }} / ID：{{ item.id_value || '-' }}</span>
+                    <h3>{{ item.name_value || item.id_value }}</h3>
+                    <p>{{ item.page }} / ID：{{ item.id_value }}</p>
                   </div>
                   <StatusBadge type="success" :label="item.query_type" />
                 </div>
-                <el-alert
-                  v-if="item.warnings.length > 0"
-                  type="warning"
-                  show-icon
-                  :closable="false"
-                  class="rule-lookup-trial-alert"
-                >
-                  <template #default>
-                    {{ item.warnings.join('；') }}
-                  </template>
-                </el-alert>
-                <DataTable aria-label="试查命中字段">
+                <DataTable :aria-label="`${item.name_value} 字段结果`">
                   <template #head>
                     <tr>
-                      <th class="w-[160px]">字段</th>
-                      <th class="w-[160px]">显示名</th>
+                      <th>字段</th>
+                      <th>显示名</th>
                       <th>值</th>
                     </tr>
                   </template>
                   <template #body>
-                    <tr
-                      v-for="field in item.fields"
-                      :key="`${item.page}-${item.id_value}-${field.field}-${field.label}`"
-                      class="bg-white transition hover:bg-gray-50"
-                    >
-                      <td class="font-mono text-ink-900">{{ field.field }}</td>
+                    <tr v-for="field in item.fields" :key="`${item.page}-${field.field}-${field.label}`">
+                      <td class="font-mono">{{ field.field }}</td>
                       <td>{{ field.label }}</td>
-                      <td>{{ field.value || '-' }}</td>
+                      <td>{{ field.value }}</td>
                     </tr>
                   </template>
                 </DataTable>
-              </div>
+                <el-alert
+                  v-if="item.warnings.length"
+                  :title="item.warnings.join('；')"
+                  type="warning"
+                  show-icon
+                  :closable="false"
+                  class="rule-lookup-trial-alert"
+                />
+              </article>
             </div>
 
             <DataTable v-else-if="trialResult?.status === 'candidates'" aria-label="AI 候选列表">
@@ -676,33 +553,20 @@ onMounted(() => {
                   <th>分页</th>
                   <th>ID</th>
                   <th>名称</th>
-                  <th class="w-[120px]">置信度</th>
+                  <th>置信度</th>
                 </tr>
               </template>
               <template #body>
-                <tr
-                  v-for="candidate in trialResult.candidates"
-                  :key="candidate.key"
-                  class="bg-white transition hover:bg-gray-50"
-                >
+                <tr v-for="candidate in trialResult.candidates" :key="candidate.key">
                   <td>{{ candidate.page }}</td>
-                  <td class="font-mono text-ink-900">{{ candidate.id_value }}</td>
+                  <td class="font-mono">{{ candidate.id_value }}</td>
                   <td>{{ candidate.name_value }}</td>
                   <td>{{ Math.round(candidate.score * 100) }}%</td>
                 </tr>
               </template>
             </DataTable>
 
-            <el-alert
-              v-else-if="trialResult"
-              :title="trialResult.message"
-              :type="trialResult.status === 'ai_unavailable' ? 'warning' : 'info'"
-              show-icon
-              :closable="false"
-              class="rule-lookup-trial-alert"
-            />
-
-            <el-empty v-else description="输入条件后开始试查" :image-size="72" />
+            <el-empty v-else description="输入查询条件后点击开始试查" :image-size="72" />
           </div>
         </AppCard>
       </div>
@@ -718,7 +582,6 @@ onMounted(() => {
 .rule-lookup-editor-card,
 .rule-lookup-validation-card,
 .rule-lookup-history-card,
-.rule-lookup-credential-card,
 .rule-lookup-trial-card {
   min-width: 0;
 }
@@ -728,18 +591,8 @@ onMounted(() => {
   flex: 0 0 auto;
 }
 
-.rule-lookup-alert-card {
-  padding: 14px 18px;
-}
-
-.rule-lookup-alert-card__body {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  color: var(--color-danger);
-  font-size: 13px;
-  font-weight: 700;
+.rule-lookup-page-alert {
+  margin-bottom: 16px;
 }
 
 .rule-lookup-overview {
@@ -747,14 +600,15 @@ onMounted(() => {
   grid-template-columns: minmax(190px, 0.9fr) minmax(0, 2.2fr) minmax(220px, 0.8fr);
   gap: 22px;
   align-items: center;
+  min-height: 120px;
   padding: 22px 24px;
 }
 
 .rule-lookup-overview__main,
 .rule-lookup-heading,
 .rule-lookup-overview__title-row,
-.rule-lookup-credential-row__title,
-.rule-lookup-trial-result__head {
+.rule-lookup-trial-result__head,
+.rule-lookup-trial-hit__head {
   display: flex;
   min-width: 0;
   align-items: center;
@@ -788,8 +642,7 @@ onMounted(() => {
   white-space: nowrap;
 }
 
-.rule-lookup-overview p,
-.rule-lookup-muted {
+.rule-lookup-overview p {
   margin: 6px 0 0;
   color: #64748b;
   font-size: 13px;
@@ -846,7 +699,7 @@ onMounted(() => {
 
 .rule-lookup-bottom-grid {
   display: grid;
-  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.05fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 18px;
 }
 
@@ -868,6 +721,10 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 
+.rule-lookup-editor-notice {
+  margin: 16px 16px 0;
+}
+
 .rule-lookup-code-editor {
   overflow: auto;
   margin: 16px;
@@ -876,10 +733,6 @@ onMounted(() => {
   background: #fbfdff;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.78);
   padding: 8px 0;
-}
-
-.rule-lookup-markdown-input {
-  display: block;
 }
 
 .rule-lookup-markdown-input :deep(.el-textarea__inner) {
@@ -898,44 +751,14 @@ onMounted(() => {
   box-shadow: none;
 }
 
-.rule-lookup-code-line {
-  display: grid;
-  grid-template-columns: 48px minmax(680px, 1fr);
-  min-height: 26px;
-  align-items: center;
-  color: #334155;
-  font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.rule-lookup-code-line__no {
-  color: #94a3b8;
-  user-select: none;
-  text-align: right;
-  padding-right: 14px;
-}
-
-.rule-lookup-code-line code {
-  display: block;
-  border-left: 1px solid var(--color-border-light);
-  padding: 0 16px;
-  white-space: pre;
-}
-
-.rule-lookup-code-key {
-  color: var(--color-primary);
-  font-weight: 850;
-}
-
 .rule-lookup-validation-list,
 .rule-lookup-parse-summary,
-.rule-lookup-credential-list,
 .rule-lookup-trial-result {
   margin: 16px 20px 20px;
 }
 
-.rule-lookup-validation-list {
+.rule-lookup-validation-list,
+.rule-lookup-trial-hits {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -969,6 +792,11 @@ onMounted(() => {
 .rule-lookup-check--warning {
   color: var(--color-warning);
   background: var(--color-warning-soft);
+}
+
+.rule-lookup-check--danger {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
 }
 
 .rule-lookup-parse-summary {
@@ -1010,51 +838,8 @@ onMounted(() => {
   box-shadow: none;
 }
 
-.rule-lookup-credential-card,
 .rule-lookup-trial-card {
   padding-bottom: 18px;
-}
-
-.rule-lookup-credential-card .rule-lookup-muted {
-  margin: 14px 20px 0;
-}
-
-.rule-lookup-credential-list {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.rule-lookup-credential-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border: 1px solid var(--color-border);
-  border-radius: 12px;
-  background: #ffffff;
-  padding: 14px 16px;
-}
-
-.rule-lookup-credential-row strong {
-  color: var(--color-text-main);
-  font-size: 14px;
-}
-
-.rule-lookup-credential-row p {
-  margin: 7px 0 0;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.rule-lookup-credential-actions {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  justify-content: flex-end;
 }
 
 .rule-lookup-trial-form {
@@ -1085,66 +870,38 @@ onMounted(() => {
   font-weight: 800;
 }
 
-.rule-lookup-trial-alert {
-  margin-bottom: 12px;
-}
-
-.rule-lookup-trial-errors {
-  margin: 6px 0 0;
-  padding-left: 18px;
-  color: #92400e;
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.rule-lookup-trial-hits {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
 .rule-lookup-trial-hit {
-  min-width: 0;
   overflow: hidden;
   border: 1px solid var(--color-border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: #ffffff;
 }
 
 .rule-lookup-trial-hit__head {
-  display: flex;
-  align-items: flex-start;
   justify-content: space-between;
-  gap: 12px;
-  border-bottom: 1px solid var(--color-border-light);
-  padding: 12px 14px;
+  padding: 14px 16px;
 }
 
-.rule-lookup-trial-hit__head strong,
-.rule-lookup-trial-hit__head span {
-  display: block;
-}
-
-.rule-lookup-trial-hit__head strong {
+.rule-lookup-trial-hit__head h3 {
+  margin: 0;
   color: var(--color-text-main);
-  font-size: 14px;
+  font-size: 15px;
   font-weight: 850;
 }
 
-.rule-lookup-trial-hit__head span {
-  margin-top: 4px;
+.rule-lookup-trial-hit__head p {
+  margin: 5px 0 0;
   color: #64748b;
   font-size: 12px;
 }
 
-.rule-lookup-trial-hit .rule-lookup-trial-alert {
-  margin: 12px 14px;
+.rule-lookup-trial-alert {
+  margin-top: 12px;
 }
 
-.rule-lookup-trial-hit .ui-data-table {
-  border-right: 0;
-  border-bottom: 0;
-  border-left: 0;
+.rule-lookup-error-list {
+  margin: 6px 0 0;
+  padding-left: 18px;
 }
 
 @media (max-width: 1366px) {
@@ -1188,14 +945,12 @@ onMounted(() => {
     width: 100%;
   }
 
-  .rule-lookup-card-header,
-  .rule-lookup-credential-row {
+  .rule-lookup-card-header {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .rule-lookup-card-actions,
-  .rule-lookup-credential-actions {
+  .rule-lookup-card-actions {
     justify-content: flex-start;
   }
 
@@ -1208,10 +963,6 @@ onMounted(() => {
     border-right: 0;
     padding-right: 0;
     padding-left: 0;
-  }
-
-  .rule-lookup-code-line {
-    grid-template-columns: 42px minmax(560px, 1fr);
   }
 
   .rule-lookup-summary-row {

@@ -15,6 +15,7 @@ from backend.app.config_lookup.schemas import (
     ConfigLookupCandidate,
     ConfigLookupRequest,
 )
+from backend.app.config_lookup.ai_matcher import ProjectAiMatcher
 from backend.app.config_lookup.service import lookup_config_table
 from backend.app.database import async_session_factory
 from backend.app.models import (
@@ -26,48 +27,100 @@ from backend.app.models import (
 from backend.app.security.crypto import encrypt_secret
 
 
+@pytest.mark.anyio
+async def test_project_ai_matcher_prompt_mentions_json_for_json_object_provider(
+    test_db: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DeepSeek 等兼容接口使用 json_object 时要求 prompt 明确出现 JSON。"""
+    captured: dict[str, Any] = {}
+
+    async def fake_call_provider_json(**kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        captured.update(kwargs)
+        return {"matches": [{"key": "candidate-1", "score": 0.91}]}, {}
+
+    monkeypatch.setattr(
+        "backend.app.config_lookup.ai_matcher.call_provider_json",
+        fake_call_provider_json,
+    )
+    async with async_session_factory() as session:
+        session.add(
+            ProjectAiCredentialRecord(
+                project_id=1,
+                provider_preset="deepseek",
+                base_url="https://api.deepseek.com",
+                model="deepseek-chat",
+                encrypted_api_key=encrypt_secret("sk-test"),
+                enabled=True,
+            )
+        )
+        await session.commit()
+
+        scores = await ProjectAiMatcher(session, project_id=1).rank(
+            lookup_input="月卡",
+            candidates=[
+                ConfigLookupCandidate(
+                    key="candidate-1",
+                    page="Template",
+                    id_value="1001",
+                    name_value="月卡",
+                )
+            ],
+        )
+
+    assert scores[0].candidate_key == "candidate-1"
+    assert "json" in captured["system_prompt"].lower()
+
+
 def _parsed_config(*, file_name: str = "IAPConfig.xlsx") -> dict[str, Any]:
     return {
         "rule_family": "config_lookup",
-        "queries": [
+        "query_type": "礼包",
+        "query_root": "game_datas",
+        "file": file_name,
+        "pages": [
             {
-                "query_type": "礼包",
-                "query_root": "game_datas",
-                "file": file_name,
-                "pages": [
+                "name": "AbsolutePack",
+                "id_field": "INT_PackageId",
+                "name_field": "DESC",
+                "output_fields": [
+                    {"label": "ID字段", "field": "INT_PackageId"},
+                    {"label": "礼包名称", "field": "DESC"},
+                    {"label": "国际服开启", "field": "STR_ServerCond_US"},
                     {
-                        "name": "AbsolutePack",
-                        "id_field": "INT_PackageId",
-                        "name_field": "DESC",
-                        "output_fields": [
-                            {"field": "INT_PackageId", "display_name": None},
-                            {"field": "DESC", "display_name": "礼包名称"},
-                            {"field": "INT_PriceId", "display_name": None},
-                        ],
+                        "label": "绿色服开关",
+                        "field": "STR_ABSwitch",
+                        "value_map": {"0": "绿色服关闭", "1": "绿色服开启"},
                     },
                     {
-                        "name": "Template",
-                        "id_field": "INT_PackageId",
-                        "name_field": "DESC",
-                        "output_fields": [
-                            {"field": "INT_PackageId", "display_name": None},
-                            {"field": "DESC", "display_name": "模板名称"},
-                            {"field": "INT_PriceId", "display_name": None},
-                        ],
+                        "label": "价格",
+                        "field": "INT_PriceId",
+                        "reference": {
+                            "page": "Price",
+                            "join": "AbsolutePack.INT_PriceId=Price.INT_PriceId",
+                            "display_expression": "Price.INT_Point/100",
+                        },
                     },
                 ],
-                "references": [
+            },
+            {
+                "name": "Template",
+                "id_field": "INT_PackageId",
+                "name_field": "DESC",
+                "output_fields": [
+                    {"label": "ID字段", "field": "INT_PackageId"},
+                    {"label": "模板名称", "field": "DESC"},
                     {
-                        "name": "price",
-                        "file": "Price.xlsx",
-                        "page": "Price",
-                        "join": "INT_PriceId=INT_PriceId",
-                        "output_fields": [
-                            {"field": "INT_Point", "display_name": "价格点数"},
-                        ],
-                    }
+                        "label": "价格",
+                        "field": "INT_PriceId",
+                        "reference": {
+                            "page": "Price",
+                            "join": "Template.INT_PriceId=Price.INT_PriceId",
+                            "display_expression": "Price.INT_Point/100",
+                        },
+                    },
                 ],
-            }
+            },
         ],
     }
 
@@ -100,22 +153,26 @@ async def _seed_published_rule(
 ) -> None:
     parsed = parsed_config or _parsed_config()
     parsed_json = json.dumps(parsed, ensure_ascii=False)
-    session.add(
-        RuleConfigRecord(
-            project_id=project_id,
-            rule_family="config_lookup",
-            content_md="",
-            parsed_config_json=parsed_json,
-            status="published",
-            draft_version=1,
-            published_version=1,
-            optimistic_lock_version=1,
-        )
+    query_type = parsed["query_type"]
+    record = RuleConfigRecord(
+        project_id=project_id,
+        rule_family="config_lookup",
+        query_type=query_type,
+        content_md="",
+        parsed_config_json=parsed_json,
+        status="published",
+        draft_version=1,
+        published_version=1,
+        optimistic_lock_version=1,
     )
+    session.add(record)
+    await session.flush()
     session.add(
         RuleConfigVersionRecord(
+            rule_config_id=record.id,
             project_id=project_id,
             rule_family="config_lookup",
+            query_type=query_type,
             version=1,
             content_md="",
             parsed_config_json=parsed_json,
@@ -166,6 +223,9 @@ async def _seed_project_ai(
 
 def _write_lookup_workbooks(version_dir: Path, *, include_price_99: bool = True) -> None:
     version_dir.mkdir(parents=True, exist_ok=True)
+    price_rows = [{"INT_PriceId": 30, "INT_Point": 300}]
+    if include_price_99:
+        price_rows.append({"INT_PriceId": 99, "INT_Point": 990})
     with pd.ExcelWriter(version_dir / "IAPConfig.xlsx", engine="openpyxl") as writer:
         pd.DataFrame(
             [
@@ -174,12 +234,28 @@ def _write_lookup_workbooks(version_dir: Path, *, include_price_99: bool = True)
                     "DESC": "月卡",
                     "INT_PriceId": 30,
                     "STR_ServerCond_US": "US",
+                    "STR_ABSwitch": "state:1",
                 },
                 {
                     "INT_PackageId": 2002,
                     "DESC": "高级礼包",
                     "INT_PriceId": 99,
                     "STR_ServerCond_US": "US2",
+                    "STR_ABSwitch": 0,
+                },
+                {
+                    "INT_PackageId": 4004,
+                    "DESC": "空配置礼包",
+                    "INT_PriceId": 30,
+                    "STR_ServerCond_US": "",
+                    "STR_ABSwitch": "",
+                },
+                {
+                    "INT_PackageId": 5005,
+                    "DESC": "未知开关礼包",
+                    "INT_PriceId": 30,
+                    "STR_ServerCond_US": "US5",
+                    "STR_ABSwitch": "unknown:9",
                 },
             ]
         ).to_excel(writer, sheet_name="AbsolutePack", index=False)
@@ -189,11 +265,62 @@ def _write_lookup_workbooks(version_dir: Path, *, include_price_99: bool = True)
                 {"INT_PackageId": 3003, "DESC": "成长礼包", "INT_PriceId": 88},
             ]
         ).to_excel(writer, sheet_name="Template", index=False)
-    price_rows = [{"INT_PriceId": 30, "INT_Point": 300}]
-    if include_price_99:
-        price_rows.append({"INT_PriceId": 99, "INT_Point": 990})
-    with pd.ExcelWriter(version_dir / "Price.xlsx", engine="openpyxl") as writer:
         pd.DataFrame(price_rows).to_excel(writer, sheet_name="Price", index=False)
+
+
+def _write_many_candidate_workbooks(version_dir: Path) -> None:
+    version_dir.mkdir(parents=True, exist_ok=True)
+    with pd.ExcelWriter(version_dir / "IAPConfig.xlsx", engine="openpyxl") as writer:
+        pd.DataFrame(
+            [
+                {
+                    "INT_PackageId": 6001,
+                    "DESC": "候选礼包-1",
+                    "INT_PriceId": 30,
+                    "STR_ServerCond_US": "US1",
+                    "STR_ABSwitch": 1,
+                },
+                {
+                    "INT_PackageId": 6002,
+                    "DESC": "候选礼包-2",
+                    "INT_PriceId": 30,
+                    "STR_ServerCond_US": "US2",
+                    "STR_ABSwitch": 1,
+                },
+                {
+                    "INT_PackageId": 6002,
+                    "DESC": "候选礼包-2",
+                    "INT_PriceId": 30,
+                    "STR_ServerCond_US": "US2 duplicate",
+                    "STR_ABSwitch": 1,
+                },
+                {
+                    "INT_PackageId": 6003,
+                    "DESC": "候选礼包-3",
+                    "INT_PriceId": 30,
+                    "STR_ServerCond_US": "US3",
+                    "STR_ABSwitch": 1,
+                },
+                {
+                    "INT_PackageId": 6004,
+                    "DESC": "候选礼包-4",
+                    "INT_PriceId": 30,
+                    "STR_ServerCond_US": "US4",
+                    "STR_ABSwitch": 1,
+                },
+            ]
+        ).to_excel(writer, sheet_name="AbsolutePack", index=False)
+        pd.DataFrame(
+            [
+                {"INT_PackageId": 7001, "DESC": "候选礼包-5", "INT_PriceId": 30},
+                {"INT_PackageId": 7002, "DESC": "候选礼包-6", "INT_PriceId": 30},
+            ]
+        ).to_excel(writer, sheet_name="Template", index=False)
+        pd.DataFrame([{"INT_PriceId": 30, "INT_Point": 300}]).to_excel(
+            writer,
+            sheet_name="Price",
+            index=False,
+        )
 
 
 async def _prepare_lookup_project(
@@ -319,10 +446,60 @@ async def test_single_page_id_hit_returns_ordered_fields_and_display_name(
     assert item.page == "AbsolutePack"
     assert item.id_value == "2002"
     assert [(field.label, field.value) for field in item.fields] == [
-        ("INT_PackageId", "2002"),
+        ("ID字段", "2002"),
         ("礼包名称", "高级礼包"),
-        ("INT_PriceId", "99"),
-        ("价格点数", "990"),
+        ("国际服开启", "US2"),
+        ("绿色服开关", "绿色服关闭"),
+        ("价格", "9.9"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_enum_mapping_matches_colon_tail_value(
+    test_project_id: int,
+    tmp_path: Path,
+) -> None:
+    await _prepare_lookup_project(test_project_id, tmp_path)
+
+    result = await _lookup(test_project_id, lookup_input="1001")
+
+    assert result.status == "hit"
+    item = next(row for row in result.results if row.page == "AbsolutePack")
+    assert ("绿色服开关", "绿色服开启") in [
+        (field.label, field.value) for field in item.fields
+    ]
+
+
+@pytest.mark.anyio
+async def test_enum_mapping_empty_value_outputs_unconfigured(
+    test_project_id: int,
+    tmp_path: Path,
+) -> None:
+    await _prepare_lookup_project(test_project_id, tmp_path)
+
+    result = await _lookup(test_project_id, lookup_input="4004")
+
+    assert result.status == "hit"
+    assert ("国际服开启", "未配置") in [
+        (field.label, field.value) for field in result.results[0].fields
+    ]
+    assert ("绿色服开关", "未配置") in [
+        (field.label, field.value) for field in result.results[0].fields
+    ]
+
+
+@pytest.mark.anyio
+async def test_enum_mapping_unmatched_value_outputs_raw_value(
+    test_project_id: int,
+    tmp_path: Path,
+) -> None:
+    await _prepare_lookup_project(test_project_id, tmp_path)
+
+    result = await _lookup(test_project_id, lookup_input="5005")
+
+    assert result.status == "hit"
+    assert ("绿色服开关", "unknown:9") in [
+        (field.label, field.value) for field in result.results[0].fields
     ]
 
 
@@ -353,8 +530,25 @@ async def test_reference_join_miss_keeps_main_result_with_warning(
 
     assert result.status == "hit"
     item = result.results[0]
-    assert ("价格点数", "") in [(field.label, field.value) for field in item.fields]
-    assert item.warnings == ["引用 price 未命中：INT_PriceId=99"]
+    assert ("价格", "99(引用未找到)") in [(field.label, field.value) for field in item.fields]
+    assert item.warnings == ["引用未找到：AbsolutePack.INT_PriceId=99"]
+
+
+@pytest.mark.anyio
+async def test_missing_configured_field_returns_clear_message(
+    test_project_id: int,
+    tmp_path: Path,
+) -> None:
+    parsed_config = _parsed_config()
+    parsed_config["pages"][0]["output_fields"].append(
+        {"label": "不存在字段", "field": "MISSING_FIELD"}
+    )
+    await _prepare_lookup_project(test_project_id, tmp_path, parsed_config=parsed_config)
+
+    result = await _lookup(test_project_id, lookup_input="1001")
+
+    assert result.status == "not_found"
+    assert result.message == "配置字段不存在：MISSING_FIELD"
 
 
 @pytest.mark.anyio
@@ -365,12 +559,79 @@ async def test_non_numeric_input_triggers_ai_high_confidence_hit(
     ai_matcher = FakeAiMatcher({"月卡": 0.95, "模板月卡": 0.4})
     await _prepare_lookup_project(test_project_id, tmp_path)
 
-    result = await _lookup(test_project_id, lookup_input="月卡", ai_matcher=ai_matcher)
+    result = await _lookup(test_project_id, lookup_input="月卡礼包", ai_matcher=ai_matcher)
 
     assert result.status == "hit"
     assert result.ai.used is True
-    assert ai_matcher.calls and ai_matcher.calls[0][0] == "月卡"
+    assert ai_matcher.calls and ai_matcher.calls[0][0] == "月卡礼包"
     assert [item.name_value for item in result.results] == ["月卡"]
+
+
+@pytest.mark.anyio
+async def test_exact_name_hit_returns_detail_without_ai(
+    test_project_id: int,
+    tmp_path: Path,
+) -> None:
+    ai_matcher = FakeAiMatcher({})
+    await _prepare_lookup_project(test_project_id, tmp_path)
+
+    result = await _lookup(test_project_id, lookup_input="高级礼包", ai_matcher=ai_matcher)
+
+    assert result.status == "hit"
+    assert result.message == "查询命中"
+    assert result.ai.used is False
+    assert len(result.results) == 1
+    assert result.results[0].id_value == "2002"
+    assert result.results[0].name_value == "高级礼包"
+    assert ai_matcher.calls == []
+
+
+@pytest.mark.anyio
+async def test_partial_name_match_returns_deduplicated_id_name_candidates_without_ai(
+    test_project_id: int,
+    tmp_path: Path,
+) -> None:
+    ai_matcher = FakeAiMatcher({})
+    await _prepare_lookup_project(test_project_id, tmp_path)
+
+    result = await _lookup(test_project_id, lookup_input="未知开关", ai_matcher=ai_matcher)
+
+    assert result.status == "candidates"
+    assert result.message == "找到 1 个候选，请使用 ID 精确查询。"
+    assert result.results == []
+    assert [(candidate.id_value, candidate.name_value) for candidate in result.candidates] == [
+        ("5005", "未知开关礼包"),
+    ]
+    assert ai_matcher.calls == []
+
+
+@pytest.mark.anyio
+async def test_partial_name_candidates_keep_last_max_after_dedupe_in_excel_order(
+    test_project_id: int,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "game_datas"
+    _write_many_candidate_workbooks(root / "datas_qa88")
+    async with async_session_factory() as session:
+        await _seed_query_root(session, test_project_id, root)
+        await _seed_published_rule(session, test_project_id)
+        await _seed_project_ai(session, test_project_id)
+        await session.commit()
+
+    result = await _lookup(
+        test_project_id,
+        lookup_input="候选礼包",
+        ai_matcher=FakeAiMatcher({}),
+    )
+
+    assert result.status == "candidates"
+    assert result.message == (
+        "找到 6 个候选，仅展示最后 2 个，请补充更具体的名称、价格、月份或直接使用 ID 查询。"
+    )
+    assert [(candidate.id_value, candidate.name_value) for candidate in result.candidates] == [
+        ("7001", "候选礼包-5"),
+        ("7002", "候选礼包-6"),
+    ]
 
 
 @pytest.mark.anyio
@@ -407,19 +668,78 @@ async def test_ai_multiple_candidates_returns_candidate_list(
 
 
 @pytest.mark.anyio
-async def test_ai_low_confidence_returns_no_detail(
+async def test_ai_low_confidence_returns_deduplicated_suggestions(
     test_project_id: int,
     tmp_path: Path,
 ) -> None:
-    ai_matcher = FakeAiMatcher({"月卡": 0.5})
+    ai_matcher = FakeAiMatcher({"月卡": 0.5, "模板月卡": 0.4})
     await _prepare_lookup_project(test_project_id, tmp_path)
 
     result = await _lookup(test_project_id, lookup_input="完全不像", ai_matcher=ai_matcher)
 
-    assert result.status == "not_found"
+    assert result.status == "candidates"
     assert result.results == []
-    assert result.candidates == []
-    assert "未找到高置信候选" in result.message
+    assert result.message == "找到 2 个候选，请使用 ID 精确查询。"
+    assert [(candidate.id_value, candidate.name_value) for candidate in result.candidates] == [
+        ("1001", "月卡"),
+        ("1001", "模板月卡"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_ai_low_confidence_candidates_keep_last_max_after_dedupe_in_excel_order(
+    test_project_id: int,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "game_datas"
+    _write_many_candidate_workbooks(root / "datas_qa88")
+    async with async_session_factory() as session:
+        await _seed_query_root(session, test_project_id, root)
+        await _seed_published_rule(session, test_project_id)
+        await _seed_project_ai(session, test_project_id)
+        await session.commit()
+    ai_matcher = FakeAiMatcher(
+        {
+            "候选礼包-1": 0.5,
+            "候选礼包-2": 0.5,
+            "候选礼包-3": 0.5,
+            "候选礼包-4": 0.5,
+            "候选礼包-5": 0.5,
+            "候选礼包-6": 0.5,
+        }
+    )
+
+    result = await _lookup(
+        test_project_id,
+        lookup_input="完全不像",
+        ai_matcher=ai_matcher,
+    )
+
+    assert result.status == "candidates"
+    assert result.message == (
+        "找到 6 个候选，仅展示最后 2 个，请补充更具体的名称、价格、月份或直接使用 ID 查询。"
+    )
+    assert [(candidate.id_value, candidate.name_value) for candidate in result.candidates] == [
+        ("7001", "候选礼包-5"),
+        ("7002", "候选礼包-6"),
+    ]
+
+
+@pytest.mark.anyio
+async def test_ai_candidates_are_deduplicated_by_id_and_name(
+    test_project_id: int,
+    tmp_path: Path,
+) -> None:
+    ai_matcher = FakeAiMatcher({"月卡": 0.92, "模板月卡": 0.88})
+    await _prepare_lookup_project(test_project_id, tmp_path)
+
+    result = await _lookup(test_project_id, lookup_input="卡", ai_matcher=ai_matcher)
+
+    assert result.status == "candidates"
+    assert [(candidate.id_value, candidate.name_value) for candidate in result.candidates] == [
+        ("1001", "月卡"),
+        ("1001", "模板月卡"),
+    ]
 
 
 @pytest.mark.anyio
@@ -431,7 +751,7 @@ async def test_ai_unavailable_degrades_with_clear_message(
 
     result = await _lookup(
         test_project_id,
-        lookup_input="月卡",
+        lookup_input="月卡礼包",
         ai_matcher=FakeAiMatcher({"月卡": 0.95}),
     )
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -36,7 +38,12 @@ from backend.app.config_lookup.schemas import (
     ConfigLookupThresholds,
 )
 from backend.app.models import ProjectAiCredentialRecord, ProjectQueryRootRecord
-from backend.app.rule_configs.service import load_published_rule_config
+from backend.app.rule_configs.service import (
+    has_any_published_rule_config,
+    load_published_rule_config,
+)
+
+_DISPLAY_EXPR_RE = re.compile(r"^([^./\s]+)\.([^./\s]+)(?:/(\d+(?:\.\d+)?))?$")
 
 
 async def lookup_config_table(
@@ -49,13 +56,18 @@ async def lookup_config_table(
 ) -> ConfigLookupResponse:
     """执行配置表查询，不接飞书命令或 HTTP API。"""
 
-    parsed_config = (
-        parsed_config_override
-        if parsed_config_override is not None
-        else await load_published_rule_config(db, project_id=request.project_id)
-    )
-    if parsed_config_override is None and not parsed_config:
-        return _not_found("当前项目尚未发布配置表查询规则，请先在规则配置页发布")
+    parsed_config = parsed_config_override
+    if parsed_config is None:
+        parsed_config = await load_published_rule_config(
+            db,
+            project_id=request.project_id,
+            query_type=request.query_type,
+        )
+        if not parsed_config:
+            has_published = await has_any_published_rule_config(db, project_id=request.project_id)
+            if not has_published:
+                return _not_found("当前项目尚未发布配置表查询规则，请先在规则配置页发布")
+            return _not_found(f"查询类型不存在：{request.query_type}")
 
     query_config = _find_query_config(parsed_config, request.query_type)
     if query_config is None:
@@ -87,7 +99,7 @@ async def lookup_config_table(
 
     sheet_cache: dict[tuple[str, str], list[dict[str, Any]]] = {}
     try:
-        page_hits, candidates = _find_main_hits_and_candidates(
+        page_hits, candidates, partial_name_candidates = _find_main_hits_and_candidates(
             query_config=query_config,
             main_file_path=main_file_path,
             lookup_input=request.lookup_input,
@@ -101,6 +113,7 @@ async def lookup_config_table(
             results = _build_results(
                 query_config=query_config,
                 query_type=request.query_type,
+                main_file_path=main_file_path,
                 query_root_url=query_root.svn_root_url,
                 version_folder=version_folder.relative,
                 display_folder=version_folder.display,
@@ -113,10 +126,21 @@ async def lookup_config_table(
             return _not_found(str(exc))
         return ConfigLookupResponse(status="hit", message="查询命中", results=results)
 
+    if partial_name_candidates and _is_specific_partial_name(request.lookup_input):
+        thresholds = (await _load_ai_settings(db, project_id=request.project_id)).thresholds
+        candidate_reply = _candidate_reply(partial_name_candidates, thresholds.max_candidates)
+        return ConfigLookupResponse(
+            status="candidates",
+            message=candidate_reply.message,
+            candidates=candidate_reply.candidates,
+            ai=ConfigLookupAiInfo(used=False),
+        )
+
     return await _run_ai_name_match(
         db,
         request=request,
         query_config=query_config,
+        main_file_path=main_file_path,
         query_root_url=query_root.svn_root_url,
         query_root_alias=query_root_alias,
         version_folder=version_folder.relative,
@@ -129,13 +153,9 @@ async def lookup_config_table(
 
 
 def _find_query_config(parsed_config: dict[str, Any], query_type: str) -> dict[str, Any] | None:
-    queries = parsed_config.get("queries")
-    if not isinstance(queries, list):
+    if str(parsed_config.get("query_type") or "") != query_type:
         return None
-    for item in queries:
-        if isinstance(item, dict) and str(item.get("query_type") or "") == query_type:
-            return item
-    return None
+    return parsed_config
 
 
 async def _get_enabled_query_root(
@@ -190,11 +210,16 @@ def _find_main_hits_and_candidates(
     main_file_path: Path,
     lookup_input: str,
     sheet_cache: dict[tuple[str, str], list[dict[str, Any]]],
-) -> tuple[list[tuple[dict[str, Any], dict[str, Any]]], list[ConfigLookupCandidate]]:
+) -> tuple[
+    list[tuple[dict[str, Any], dict[str, Any]]],
+    list[ConfigLookupCandidate],
+    list[ConfigLookupCandidate],
+]:
     normalized_input = normalize_cell_value(lookup_input)
     is_numeric_input = normalized_input.isdigit()
     hits: list[tuple[dict[str, Any], dict[str, Any]]] = []
     candidates: list[ConfigLookupCandidate] = []
+    partial_name_candidates: list[ConfigLookupCandidate] = []
 
     for page_config in _list_page_configs(query_config):
         page_name = str(page_config.get("name") or "")
@@ -206,24 +231,33 @@ def _find_main_hits_and_candidates(
             name_value = normalize_cell_value(get_cell(row, name_field))
             if is_numeric_input and id_value == normalized_input:
                 hits.append((page_config, row))
+            elif not is_numeric_input and name_value == normalized_input:
+                hits.append((page_config, row))
             if name_value:
-                candidates.append(
-                    ConfigLookupCandidate(
-                        key=f"{page_name}:{row_index}:{id_value}",
-                        page=page_name,
-                        id_value=id_value,
-                        name_value=name_value,
-                        row=row,
-                        page_config=page_config,
-                    )
+                candidate = ConfigLookupCandidate(
+                    key=f"{page_name}:{row_index}:{id_value}",
+                    page=page_name,
+                    id_value=id_value,
+                    name_value=name_value,
+                    row=row,
+                    page_config=page_config,
                 )
-    return hits, candidates
+                candidates.append(candidate)
+                if (
+                    not is_numeric_input
+                    and normalized_input
+                    and normalized_input in name_value
+                    and name_value != normalized_input
+                ):
+                    partial_name_candidates.append(candidate)
+    return hits, candidates, partial_name_candidates
 
 
 def _build_results(
     *,
     query_config: dict[str, Any],
     query_type: str,
+    main_file_path: Path,
     query_root_url: str,
     version_folder: str,
     display_folder: str,
@@ -238,6 +272,7 @@ def _build_results(
             _build_result_item(
                 query_config=query_config,
                 query_type=query_type,
+                main_file_path=main_file_path,
                 query_root_url=query_root_url,
                 version_folder=version_folder,
                 display_folder=display_folder,
@@ -255,6 +290,7 @@ def _build_result_item(
     *,
     query_config: dict[str, Any],
     query_type: str,
+    main_file_path: Path,
     query_root_url: str,
     version_folder: str,
     display_folder: str,
@@ -268,41 +304,19 @@ def _build_result_item(
     name_field = str(page_config.get("name_field") or "")
     id_value = normalize_cell_value(get_cell(row, id_field))
     name_value = normalize_cell_value(get_cell(row, name_field))
-    fields = [_field_value(row, output_field) for output_field in _list_output_fields(page_config)]
+    fields: list[ConfigLookupFieldValue] = []
     warnings: list[str] = []
-
-    for reference in _list_reference_configs(query_config):
-        ref_file_path = _resolve_file(
-            file_resolver=file_resolver,
-            query_root_url=query_root_url,
-            version_folder=version_folder,
-            file_name=str(reference.get("file") or ""),
-            query_root_alias=query_root_alias,
-            display_folder=display_folder,
+    for output_field in _list_output_fields(page_config):
+        field, warning = _field_value(
+            row,
+            output_field,
+            current_page_name=str(page_config.get("name") or ""),
+            main_file_path=main_file_path,
+            sheet_cache=sheet_cache,
         )
-        ref_rows = _read_cached_sheet(sheet_cache, ref_file_path, str(reference.get("page") or ""))
-        left_field, right_field = _parse_join(str(reference.get("join") or ""))
-        left_value = normalize_cell_value(get_cell(row, left_field))
-        matched_ref = next(
-            (
-                ref_row
-                for ref_row in ref_rows
-                if normalize_cell_value(get_cell(ref_row, right_field)) == left_value
-            ),
-            None,
-        )
-        if matched_ref is None:
-            warnings.append(f"引用 {reference.get('name') or ''} 未命中：{left_field}={left_value}")
-            fields.extend(
-                ConfigLookupFieldValue(
-                    field=str(output_field.get("field") or ""),
-                    label=str(output_field.get("display_name") or output_field.get("field") or ""),
-                    value="",
-                )
-                for output_field in _list_output_fields(reference)
-            )
-            continue
-        fields.extend(_field_value(matched_ref, output_field) for output_field in _list_output_fields(reference))
+        fields.append(field)
+        if warning:
+            warnings.append(warning)
 
     return ConfigLookupResultItem(
         query_type=query_type,
@@ -319,6 +333,7 @@ async def _run_ai_name_match(
     *,
     request: ConfigLookupRequest,
     query_config: dict[str, Any],
+    main_file_path: Path,
     query_root_url: str,
     query_root_alias: str,
     version_folder: str,
@@ -384,6 +399,14 @@ async def _run_ai_name_match(
     ][: thresholds.max_candidates]
 
     if not qualifying:
+        candidate_reply = _candidate_reply(scored_candidates, thresholds.max_candidates)
+        if candidate_reply.candidates:
+            return ConfigLookupResponse(
+                status="candidates",
+                message=candidate_reply.message,
+                candidates=candidate_reply.candidates,
+                ai=ai_info,
+            )
         return ConfigLookupResponse(
             status="not_found",
             message="未找到高置信候选，请尝试输入更准确的名称或 ID",
@@ -396,6 +419,7 @@ async def _run_ai_name_match(
             result = _build_result_item(
                 query_config=query_config,
                 query_type=request.query_type,
+                main_file_path=main_file_path,
                 query_root_url=query_root_url,
                 version_folder=version_folder,
                 display_folder=display_folder,
@@ -417,7 +441,7 @@ async def _run_ai_name_match(
     return ConfigLookupResponse(
         status="candidates",
         message="找到多个可能匹配的候选，请选择后查看详情",
-        candidates=qualifying,
+        candidates=_dedupe_candidates(qualifying),
         ai=ai_info,
     )
 
@@ -426,6 +450,47 @@ class _AiSettings:
     def __init__(self, *, available: bool, thresholds: ConfigLookupThresholds) -> None:
         self.available = available
         self.thresholds = thresholds
+
+
+def _dedupe_candidates(candidates: list[ConfigLookupCandidate]) -> list[ConfigLookupCandidate]:
+    deduped: list[ConfigLookupCandidate] = []
+    seen: set[tuple[str, str]] = set()
+    for candidate in candidates:
+        key = (candidate.id_value, candidate.name_value)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    return deduped
+
+
+class _CandidateReply:
+    def __init__(self, *, message: str, candidates: list[ConfigLookupCandidate]) -> None:
+        self.message = message
+        self.candidates = candidates
+
+
+def _candidate_reply(
+    candidates: list[ConfigLookupCandidate],
+    max_candidates: int,
+) -> _CandidateReply:
+    deduped = _dedupe_candidates(candidates)
+    limit = max(1, max_candidates)
+    limited = deduped[-limit:]
+    total = len(deduped)
+    if total > limit:
+        message = (
+            f"找到 {total} 个候选，仅展示最后 {limit} 个，"
+            "请补充更具体的名称、价格、月份或直接使用 ID 查询。"
+        )
+    else:
+        message = f"找到 {total} 个候选，请使用 ID 精确查询。"
+    return _CandidateReply(message=message, candidates=limited)
+
+
+def _is_specific_partial_name(value: str) -> bool:
+    normalized = normalize_cell_value(value)
+    return len(normalized) >= 4
 
 
 async def _load_ai_settings(db: AsyncSession, *, project_id: int) -> _AiSettings:
@@ -457,31 +522,127 @@ def _read_cached_sheet(
     return sheet_cache[key]
 
 
-def _field_value(row: dict[str, Any], output_field: dict[str, Any]) -> ConfigLookupFieldValue:
+def _field_value(
+    row: dict[str, Any],
+    output_field: dict[str, Any],
+    *,
+    current_page_name: str,
+    main_file_path: Path,
+    sheet_cache: dict[tuple[str, str], list[dict[str, Any]]],
+) -> tuple[ConfigLookupFieldValue, str | None]:
     field_name = str(output_field.get("field") or "")
-    label = str(output_field.get("display_name") or field_name)
+    label = str(output_field.get("label") or field_name)
+    raw_value = normalize_cell_value(get_cell(row, field_name))
+    reference = output_field.get("reference")
+    if isinstance(reference, dict):
+        value, warning = _reference_field_value(
+            row,
+            reference,
+            raw_value=raw_value,
+            current_page_name=current_page_name,
+            main_file_path=main_file_path,
+            sheet_cache=sheet_cache,
+        )
+        return ConfigLookupFieldValue(field=field_name, label=label, value=value), warning
+
+    value = _apply_value_map(raw_value, output_field.get("value_map"))
     return ConfigLookupFieldValue(
         field=field_name,
         label=label,
-        value=normalize_cell_value(get_cell(row, field_name)),
+        value=value,
+    ), None
+
+
+def _reference_field_value(
+    row: dict[str, Any],
+    reference: dict[str, Any],
+    *,
+    raw_value: str,
+    current_page_name: str,
+    main_file_path: Path,
+    sheet_cache: dict[tuple[str, str], list[dict[str, Any]]],
+) -> tuple[str, str | None]:
+    ref_page = str(reference.get("page") or "")
+    left_page, left_field, right_page, right_field = _parse_join(str(reference.get("join") or ""))
+    if left_page != current_page_name or right_page != ref_page:
+        raise ConfigLookupExcelError(f"引用规则分页不匹配：{reference.get('join') or ''}")
+    left_value = normalize_cell_value(get_cell(row, left_field))
+    ref_rows = _read_cached_sheet(sheet_cache, main_file_path, ref_page)
+    matched_ref = next(
+        (
+            ref_row
+            for ref_row in ref_rows
+            if normalize_cell_value(get_cell(ref_row, right_field)) == left_value
+        ),
+        None,
     )
+    if matched_ref is None:
+        return f"{raw_value}(引用未找到)", f"引用未找到：{left_page}.{left_field}={left_value}"
+    value = _evaluate_display_expression(
+        matched_ref,
+        str(reference.get("display_expression") or ""),
+        expected_page=ref_page,
+    )
+    return value, None
 
 
-def _parse_join(join: str) -> tuple[str, str]:
+def _apply_value_map(raw_value: str, value_map: Any) -> str:
+    if raw_value == "":
+        return "未配置"
+    if isinstance(value_map, dict):
+        mapped = value_map.get(raw_value)
+        if mapped is not None:
+            return str(mapped)
+        tail_value = _colon_tail(raw_value)
+        if tail_value != raw_value:
+            mapped = value_map.get(tail_value)
+            if mapped is not None:
+                return str(mapped)
+    return raw_value
+
+
+def _colon_tail(raw_value: str) -> str:
+    parts = re.split(r"[:：]", raw_value)
+    return parts[-1].strip() if parts else raw_value
+
+
+def _evaluate_display_expression(
+    row: dict[str, Any],
+    display_expression: str,
+    *,
+    expected_page: str,
+) -> str:
+    match = _DISPLAY_EXPR_RE.match(display_expression)
+    if match is None:
+        raise ConfigLookupExcelError(f"显示内容格式不合法：{display_expression}")
+    page_name, field_name, divisor = match.groups()
+    if page_name != expected_page:
+        raise ConfigLookupExcelError(f"显示内容分页不匹配：{display_expression}")
+    raw_value = normalize_cell_value(get_cell(row, field_name))
+    if not divisor:
+        return raw_value
+    try:
+        result = Decimal(raw_value) / Decimal(divisor)
+    except (InvalidOperation, ZeroDivisionError) as exc:
+        raise ConfigLookupExcelError(f"显示内容无法计算：{display_expression}") from exc
+    normalized = result.normalize()
+    return format(normalized, "f")
+
+
+def _parse_join(join: str) -> tuple[str, str, str, str]:
     parts = [part.strip() for part in join.split("=", 1)]
     if len(parts) != 2 or not parts[0] or not parts[1]:
         raise ConfigLookupExcelError(f"关联格式不合法：{join}")
-    return parts[0], parts[1]
+    left = parts[0].split(".", 1)
+    right = parts[1].split(".", 1)
+    if len(left) != 2 or len(right) != 2 or not all(left + right):
+        raise ConfigLookupExcelError(f"关联格式不合法：{join}")
+    return left[0], left[1], right[0], right[1]
 
 
 def _list_page_configs(query_config: dict[str, Any]) -> list[dict[str, Any]]:
     pages = query_config.get("pages")
     return [page for page in pages if isinstance(page, dict)] if isinstance(pages, list) else []
-
-
-def _list_reference_configs(query_config: dict[str, Any]) -> list[dict[str, Any]]:
-    references = query_config.get("references")
-    return [ref for ref in references if isinstance(ref, dict)] if isinstance(references, list) else []
 
 
 def _list_output_fields(config: dict[str, Any]) -> list[dict[str, Any]]:

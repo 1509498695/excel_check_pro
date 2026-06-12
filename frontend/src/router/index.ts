@@ -38,6 +38,10 @@ export const router = createRouter({
     },
     {
       path: '/rule-configs/config_lookup',
+      redirect: { name: 'rule-configs' },
+    },
+    {
+      path: '/rule-configs/config_lookup/:ruleId',
       name: 'rule-config-lookup',
       component: routeComponents.ruleConfigLookup,
       meta: { auth: true, activeNav: 'rule-configs' },

@@ -17,6 +17,7 @@ from backend.app.integrations.feishu_download import (
 
 def test_extract_download_path_supports_plain_and_quoted_paths() -> None:
     assert extract_download_path("@_user_1 下载 configs/a.xlsx") == "configs/a.xlsx"
+    assert extract_download_path("@配配 下载 configs/a.xlsx") == "configs/a.xlsx"
     assert extract_download_path('@_user_1 下载 "sub dir/a.xlsx"') == "sub dir/a.xlsx"
     assert extract_download_path("@_user_1 下载") == ""
     assert extract_download_path("下载 configs/a.xlsx") is None
@@ -25,8 +26,13 @@ def test_extract_download_path_supports_plain_and_quoted_paths() -> None:
 
 def test_extract_query_request_supports_directory_and_prefix() -> None:
     assert extract_query_request("@_user_1 查询") == QueryRequest()
+    assert extract_query_request("@配配 查询") == QueryRequest()
     assert extract_query_request("@_user_1 查询 configs") == QueryRequest(
         directory="configs"
+    )
+    assert extract_query_request("@配配 查询 configs ab") == QueryRequest(
+        directory="configs",
+        prefix="ab",
     )
     assert extract_query_request('@_user_1 查询 "sub dir" x') == QueryRequest(
         directory="sub dir",
@@ -133,6 +139,30 @@ def test_resolve_query_listing_updates_only_requested_svn_directory(
         )
     ]
     assert groups[0].entries == [r"datas_qa88\about.xlsx"]
+
+
+def test_resolve_query_listing_reports_non_working_copy_svn_root_clearly(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "svn"
+    root.mkdir()
+    (root / "about.xlsx").write_bytes(b"x")
+
+    def fail_update(*args, **kwargs):  # noqa: ANN002, ANN003
+        raise AssertionError("non-working-copy roots must not call svn update")
+
+    groups = resolve_query_listing(
+        QueryRequest(directory=".", prefix="a"),
+        local_roots=[],
+        svn_roots=[str(root)],
+        allowed_suffixes=[".xlsx"],
+        update_working_copy=fail_update,
+    )
+
+    assert groups[0].entries == []
+    assert groups[0].error == (
+        "SVN 下载根目录必须配置为本机 SVN 工作副本目录（目录下或父级需存在 .svn）"
+    )
 
 
 def test_resolve_query_listing_finds_nested_svn_working_copy(

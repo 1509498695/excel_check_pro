@@ -95,14 +95,15 @@ class FixedRulesConfigRecord(Base):
 
 
 class RuleConfigRecord(Base):
-    """通用规则配置当前文档（按 project_id + rule_family 隔离）。"""
+    """通用规则配置当前文档（按 project_id + rule_family + query_type 隔离）。"""
 
     __tablename__ = "rule_configs"
     __table_args__ = (
         Index(
-            "uq_rule_configs_project_family",
+            "uq_rule_configs_project_family_query_type",
             "project_id",
             "rule_family",
+            "query_type",
             unique=True,
         ),
         Index("ix_rule_configs_project_id", "project_id"),
@@ -115,6 +116,7 @@ class RuleConfigRecord(Base):
         nullable=False,
     )
     rule_family: Mapped[str] = mapped_column(String(64), nullable=False)
+    query_type: Mapped[str] = mapped_column(String(100), nullable=False)
     content_md: Mapped[str] = mapped_column(Text, default="")
     parsed_config_json: Mapped[str] = mapped_column(Text, default="{}")
     status: Mapped[str] = mapped_column(String(32), default="draft", index=True)
@@ -151,12 +153,12 @@ class RuleConfigVersionRecord(Base):
     __tablename__ = "rule_config_versions"
     __table_args__ = (
         Index(
-            "uq_rule_config_versions_project_family_version",
-            "project_id",
-            "rule_family",
+            "uq_rule_config_versions_rule_config_version",
+            "rule_config_id",
             "version",
             unique=True,
         ),
+        Index("ix_rule_config_versions_rule_config_id", "rule_config_id"),
         Index(
             "ix_rule_config_versions_project_family",
             "project_id",
@@ -165,11 +167,16 @@ class RuleConfigVersionRecord(Base):
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    rule_config_id: Mapped[int] = mapped_column(
+        ForeignKey("rule_configs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     project_id: Mapped[int] = mapped_column(
         ForeignKey("projects.id", ondelete="CASCADE"),
         nullable=False,
     )
     rule_family: Mapped[str] = mapped_column(String(64), nullable=False)
+    query_type: Mapped[str] = mapped_column(String(100), nullable=False)
     version: Mapped[int] = mapped_column(nullable=False)
     content_md: Mapped[str] = mapped_column(Text, default="")
     parsed_config_json: Mapped[str] = mapped_column(Text, default="{}")
