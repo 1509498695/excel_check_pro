@@ -1,8 +1,8 @@
 # Excel Check
 
-文档更新时间：2026-06-10 12:30
+文档更新时间：2026-06-12 17:50
 
-> 当前稳定文档入口保留 9 份：本 README、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/MODULES.md](docs/MODULES.md)、[docs/STANDARDS.md](docs/STANDARDS.md)、[docs/FRONTEND_STYLE_GUIDE.md](docs/FRONTEND_STYLE_GUIDE.md)、[docs/adr/](docs/adr/)、[frontend/README.md](frontend/README.md)、[CHANGELOG.md](CHANGELOG.md) 与 [PROJECT_RECORD.md](PROJECT_RECORD.md)。历史需求、旧分钟级进度和一次性重构方案见 [docs/archive/](docs/archive/)。
+> 当前稳定文档入口保留 10 份：本 README、[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、[docs/MODULES.md](docs/MODULES.md)、[docs/STANDARDS.md](docs/STANDARDS.md)、[docs/specs/](docs/specs/)、[docs/FRONTEND_STYLE_GUIDE.md](docs/FRONTEND_STYLE_GUIDE.md)、[docs/adr/](docs/adr/)、[frontend/README.md](frontend/README.md)、[CHANGELOG.md](CHANGELOG.md) 与 [PROJECT_RECORD.md](PROJECT_RECORD.md)。历史需求、旧分钟级进度和一次性重构方案见 [docs/archive/](docs/archive/)。
 
 Excel Check 是面向配置表校验的多用户 Web 应用。系统把数据源、变量、规则和结果统一到 `TaskTree`，支持个人临时校验和项目长期规则复用。
 
@@ -277,6 +277,7 @@ python scripts/check_release_package.py D:\path\to\extracted-package
 - 架构与协议：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - 模块速查：[docs/MODULES.md](docs/MODULES.md)
 - 开发规范：[docs/STANDARDS.md](docs/STANDARDS.md)
+- 业务能力 Spec：[docs/specs/](docs/specs/)
 - 前端样式规范：[docs/FRONTEND_STYLE_GUIDE.md](docs/FRONTEND_STYLE_GUIDE.md)
 - 架构决策记录：[docs/adr/](docs/adr/)
 - 前端说明：[frontend/README.md](frontend/README.md)

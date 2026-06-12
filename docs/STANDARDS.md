@@ -6,6 +6,7 @@
 
 - 兼容优先：无迁移方案时不得破坏 API 路径、JSON 字段、`TaskTree` 和统一执行结果结构。
 - 单模块单切片：一次只处理一个明确模块或文档切片。
+- 业务 Spec 先行：修改业务能力前，先阅读 `docs/specs/` 中对应 Spec；没有对应 Spec 时先补最小 Spec 再改实现。
 - 文档跟随事实：对外行为、部署方式、接口语义或占位状态变化时，同步稳定文档。
 - 历史兼容字段不直接删除；旧 shim 和迁移逻辑保留到有明确清理窗口。
 
@@ -71,6 +72,7 @@ npm run build
 | `docs/ARCHITECTURE.md` | 稳定架构、核心契约、接口边界、限制。 |
 | `docs/MODULES.md` | 路由、目录和业务切片定位。 |
 | `docs/STANDARDS.md` | 本文档：开发与文档维护规则。 |
+| `docs/specs/` | 业务能力 Spec，供 Codex 和维护者在开发前快速了解完整链路。 |
 | `frontend/README.md` | 前端子项目启动、构建、目录和约定。 |
 | `docs/adr/` | 架构决策记录，记录稳定设计取舍和不可逆收口。 |
 | `CHANGELOG.md` | 版本级变化，不记录分钟级流水。 |
@@ -81,6 +83,8 @@ npm run build
 
 - 当前说明不得复制历史流水；需要追溯时链接到 `docs/archive/`。
 - `README.md` 修改时更新 `文档更新时间：YYYY-MM-DD HH:mm`。
+- `docs/specs/` 按业务能力粗模块维护，一份 Spec 覆盖前端、后端、数据、API、测试和限制；复杂差异放二级章节，不优先拆细文档。
+- `docs/MODULES.md` 和本文档必须强制指向业务 Spec；`README.md` 只保留入口链接。
 - 每次文档或代码治理后追加 `PROJECT_RECORD.md`，不再追加 `docs/archive/PROJECT_RECORD.md`。
 - 文档中出现 API 路径时，以代码路由为准。
 - 仅文档治理不要求改动业务代码或归档旧进度日记。

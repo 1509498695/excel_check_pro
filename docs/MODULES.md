@@ -8,7 +8,9 @@
 |---|---|---|
 | `/` | `frontend/src/views/MainBoard.vue` | 个人校验四步工作流。 |
 | `/fixed-rules` | `frontend/src/views/FixedRulesBoard.vue` | 项目校验配置、执行、导入和结果。 |
-| `/admin` | `frontend/src/views/AdminView.vue` | 项目、成员、角色和密码管理。 |
+| `/rule-configs` | `frontend/src/views/RuleConfigsView.vue` | 规则配置工作区首页。 |
+| `/rule-configs/config_lookup/:ruleId` | `frontend/src/views/RuleConfigLookupView.vue` | 配置表查询规则编辑、发布、历史和试运行。 |
+| `/admin` | `frontend/src/views/AdminView.vue` | 项目、成员、角色、密码、飞书机器人和项目级 AI 管理。 |
 | `/profile` | `frontend/src/views/ProfileView.vue` | 账号、密码和项目切换。 |
 | `/user-guide` | `frontend/src/views/UserGuideView.vue` | 登录后使用说明。 |
 | `/login` `/register` | `LoginView.vue` `RegisterView.vue` | 登录与注册。 |
@@ -49,16 +51,20 @@
 
 ## 4. 重点业务切片
 
-| 切片 | 前端 | 后端 |
-|---|---|---|
-| 个人校验 | `views/MainBoard.vue`、`store/workbench*`、`components/workbench/` | `api/workbench_api.py`、`api/execute_api.py`、`rules/` |
-| 项目校验 | `views/FixedRulesBoard.vue`、`store/fixedRules.ts` | `api/fixed_rules_api.py`、`fixed_rules/` |
-| 个人规则导入项目 | `features/fixed-rules-import/` | `fixed_rules/importer/` |
-| 项目级 AI 配置 | `features/ai/providerPresets.ts`、`features/admin/projectAiConfigForm.ts`、`api/projectAiConfig.ts`、`types/projectAiConfig.ts` | `admin/router.py`、`admin/schemas.py`、`ai/credentials.py`、`ai/providers.py` |
-| AI 辅助能力 | `components/fixed-rules/PackageItemsRuleDialog.vue`、活动任务相关规则表单 | `services/package_items_ai_parser.py`、`services/event_task_ai_advisor.py`、`config_lookup/ai_matcher.py` |
-| 数据源 | `api/workbench.ts`、数据源面板组件 | `api/source_api.py`、`loaders/` |
-| 飞书接入 | `components/admin/FeishuBotConfigCard.vue`、`components/workbench/DataSourcePanel.vue`、`api/admin.ts`、`api/workbench.ts` | `admin/router.py`、`api/feishu_api.py`、`integrations/feishu_*`、`loaders/feishu_reader.py`、`services/feishu_sheet_authorization_service.py` |
-| IAP 礼包校验 | `components/fixed-rules/PackageItemsRuleDialog.vue`、`components/workbench/WorkbenchRuleOrchestrationPanel.vue`、`api/workbench.ts`、`utils/taskTree.ts` | `api/workbench_api.py`、`api/execute_api.py`、`services/package_items_parser.py`、`fixed_rules/package_items_runtime.py`、`rules/handlers/fixed/package_items.py` |
+开发前先读对应 Spec，再按前端、后端和测试入口定位代码。
+
+| 切片 | Spec | 前端 | 后端 |
+|---|---|---|---|
+| 身份、项目与后台管理 | [specs/admin-auth-projects.md](specs/admin-auth-projects.md) | `views/AdminView.vue`、`views/LoginView.vue`、`views/ProfileView.vue`、`store/auth.ts` | `auth/`、`admin/router.py` |
+| 个人校验 | [specs/workbench-personal-check.md](specs/workbench-personal-check.md) | `views/MainBoard.vue`、`store/workbench*`、`components/workbench/` | `api/workbench_api.py`、`api/execute_api.py`、`rules/` |
+| 项目校验 | [specs/fixed-rules-project-check.md](specs/fixed-rules-project-check.md) | `views/FixedRulesBoard.vue`、`store/fixedRules.ts`、`features/fixed-rules-import/` | `api/fixed_rules_api.py`、`fixed_rules/` |
+| 规则引擎与规则模型 | [specs/rule-engine.md](specs/rule-engine.md) | `rules/`、`features/rule-orchestration/`、`utils/taskTree.ts` | `rules/` |
+| 数据源 | [specs/data-sources.md](specs/data-sources.md) | `components/workbench/DataSourcePanel.vue`、`api/workbench.ts`、`api/svn.ts` | `api/source_api.py`、`loaders/` |
+| 飞书集成 | [specs/feishu-integration.md](specs/feishu-integration.md) | `components/admin/FeishuBotConfigCard.vue`、`components/workbench/DataSourcePanel.vue`、`api/admin.ts` | `admin/router.py`、`api/feishu_api.py`、`integrations/feishu_*`、`loaders/feishu_reader.py` |
+| 规则配置工作区 / 配置表查询 | [specs/rule-configs-config-lookup.md](specs/rule-configs-config-lookup.md) | `views/RuleConfigsView.vue`、`views/RuleConfigLookupView.vue`、`api/ruleConfigs.ts`、`features/rule-configs/` | `api/rule_configs_api.py`、`rule_configs/`、`config_lookup/` |
+| 项目级 AI 能力 | [specs/ai-project-credentials.md](specs/ai-project-credentials.md) | `features/ai/providerPresets.ts`、`features/admin/projectAiConfigForm.ts`、`api/projectAiConfig.ts` | `admin/router.py`、`ai/`、`services/*ai*`、`config_lookup/ai_matcher.py` |
+| 执行任务与结果 | [specs/execution-runs-results.md](specs/execution-runs-results.md) | 个人和项目结果区、`api/fixedRules.ts`、`api/workbench.ts` | `api/execute_api.py`、`api/execute_runs_api.py`、`execution_*`、`result_*` |
+| 交付、部署与工程治理 | [specs/delivery-devops.md](specs/delivery-devops.md) | `frontend/package-lock.json`、E2E 配置 | `scripts/`、`migrations/`、`.github/workflows/`、`backend/app/db_migrations.py` |
 
 ## 5. 文档入口
 
@@ -66,8 +72,9 @@
 |---|---|
 | [../README.md](../README.md) | 项目入口、启动、部署、联调。 |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | 稳定架构、核心契约、API 边界。 |
-| [MODULES.md](MODULES.md) | 本文档：路由和代码位置。 |
+| [MODULES.md](MODULES.md) | 本文档：路由、代码位置和 Spec 定位。 |
 | [STANDARDS.md](STANDARDS.md) | 开发与文档维护规范。 |
+| [specs/](specs/) | Codex 开发前阅读的业务能力 Spec。 |
 | [adr/](adr/) | 当前架构决策记录。 |
 | [../frontend/README.md](../frontend/README.md) | 前端子项目说明。 |
 | [../CHANGELOG.md](../CHANGELOG.md) | 版本级变化。 |
