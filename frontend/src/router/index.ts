@@ -47,6 +47,12 @@ export const router = createRouter({
       meta: { auth: true, activeNav: 'rule-configs' },
     },
     {
+      path: '/test-cases',
+      name: 'test-cases',
+      component: routeComponents.testCases,
+      meta: { auth: true },
+    },
+    {
       path: '/admin',
       name: 'admin',
       component: routeComponents.admin,

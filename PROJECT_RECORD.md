@@ -769,3 +769,586 @@
 ### 下一步建议
 
 - 后续如新增 AI 辅助能力，先在 ADR 或架构文档中明确是否读取项目级凭据、不可用时是否回退、以及是否会影响确定性校验结果。
+
+## 进度记录 2026-06-22 10:38
+
+### 本次目标
+
+阅读当前仓库代码和稳定文档，结合旧会话 `019eca67-83e2-7532-babe-54883f9497cc`、`qa-case` skill 与 TestCaseStudio 项目，新增一份专门记录“用例生成”需求的上下文文档。
+
+### 本次完成
+
+- 新增 `docs/specs/test-case-generation.md`，整理独立“用例生成”页面的需求目标、已确认口径、策划案来源、快照边界、参考案例库、生成方法论、V1 工作流、输出字段、权限安全、前后端边界、测试覆盖和待确认问题。
+- 将旧会话中已确认的关键结论沉淀到 Spec：单次一个 `Planning Sheet`、默认整张 Sheet、后端快照预算和 warnings、项目级 AI 凭据、项目级参考案例库、参考案例画像、V1 参考案例格式、暂不做跨项目引用和图片识别。
+- 更新 `docs/specs/README.md`，把“用例生成（需求整理中）”加入业务能力 Spec 索引。
+- 更新 `CHANGELOG.md` 的文档治理条目，明确该能力仍处于需求整理阶段，尚未新增页面或生产接口。
+
+### 当前项目进度
+
+#### 已完成功能
+
+- 多用户认证、注册、登录、项目切换、项目/成员/角色/密码管理。
+- 个人校验四步工作流和项目校验长期规则配置，共用 `TaskTree` 与统一执行结果结构。
+- 本地 Excel、浏览器上传 Excel、SVN Excel、飞书电子表格数据源接入。
+- 11 类规则执行能力、IAP 礼包校验、配置表查询规则、项目级飞书机器人和项目级 AI 凭据配置已接入。
+- `CONTEXT.md` 已具备用例生成相关术语，包括 `Planning Sheet`、`Planning Sheet Snapshot`、`Test Case Generation Workspace`、`Reference Test Case Library`、`Reference Test Case Profile` 和 `Test Case Blueprint`。
+
+#### 已实现但未打通/占位功能
+
+- 用例生成能力目前只有需求上下文和领域术语沉淀，尚未进入生产代码实现。
+- 当前仓库已有飞书和 Excel 读取、项目级 AI provider、项目成员权限等底座，但尚未封装为用例生成专用服务。
+- TestCaseStudio 可作为参考项目，其个人 API Key、Streamlit 本地应用和本地目录扫描模式不适合直接照搬到当前多用户 Web 项目。
+
+#### 未开始功能
+
+- `/test-cases` 前端页面、导航入口、API 类型和页面状态管理未开始。
+- `backend/app/test_cases/`、`test_cases_api.py`、参考案例库持久化、画像生成、AI 编排和 Excel 导出未开始。
+- 图片/原型图理解、XMind/Markdown/Feishu 表导出、生成历史持久化和跨项目案例库引用不在 V1 范围。
+
+### 规范化调整
+
+- 保持 `CONTEXT.md` 只作为术语表，不继续写入接口、组件、默认上限等实现细节。
+- 将新需求按业务能力 Spec 记录到 `docs/specs/`，符合“业务 Spec 先行”的开发规范。
+- 明确 `qa-case` 在当前仓库中不能直接执行 CLI，只迁移方法论和字段口径。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/specs/README.md`
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只新增和同步文档，不修改业务代码，不新增数据库迁移，不运行前后端测试。
+- 旧会话中已有的 `CONTEXT.md` 修改处于工作区未提交状态，本次没有回滚或覆盖。
+- 后续实现前仍需确认案例库维护权限、是否保存生成历史、蓝图是否允许人工编辑、导出列顺序是否严格复刻主参考和图片能力是否进入 V2。
+
+### 下一步建议
+
+- 下一轮先围绕 `docs/specs/test-case-generation.md` 的待确认问题逐项收敛；确认 V1 范围后，再拆后端数据模型、API schema、前端页面和测试计划。
+
+## 进度记录 2026-06-22 11:05
+
+### 本次目标
+
+在“用例生成”V1 决策已收敛后，按“数据模型/迁移 → 参考案例库和画像 → 策划案快照 → AI 生成编排 → Excel 导出 → 前端页面”拆出可执行实施计划。
+
+### 本次完成
+
+- 新增 `docs/superpowers/plans/2026-06-22-test-case-generation.md`，按后续 agent 可执行的复选清单格式整理实施计划。
+- 计划覆盖数据表、迁移、参考案例库、画像提取、策划案快照、项目级 AI 编排、Excel 导出、前端页面、测试文件和验证命令。
+- 将已确认 V1 范围写入计划：不保存生成历史、不编辑蓝图、不做图片理解、不严格复刻参考 Excel、案例库维护权限按项目成员/项目管理员收口。
+
+### 当前项目进度
+
+- 用例生成仍处于需求与实施计划阶段，尚未新增生产接口、数据库迁移或前端页面。
+- 下一步可直接从计划的 Phase 1 “数据模型/迁移”开始实施。
+
+### 文档同步
+
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只新增计划文档和项目记录，不修改业务代码。
+- 未运行前后端测试；后续实现每个 Phase 时按计划中的 targeted 命令验证。
+
+## 进度记录 2026-06-22 12:09
+
+### 本次目标
+
+将“用例生成”从需求上下文整理为 V1 版本需求文档，明确范围、权限、流程、输入输出、限制和验收标准。
+
+### 本次完成
+
+- 重写 `docs/specs/test-case-generation.md` 为《用例生成 V1 需求文档》，覆盖页面入口、策划案来源、快照预算、参考案例库、参考案例画像、AI 蓝图与用例生成、Excel 导出、权限安全、验收标准和 V2 候选。
+- 更新 `docs/specs/README.md`，将用例生成状态从“需求整理中”调整为“V1 需求已确认”。
+- 更新 `CHANGELOG.md` 的文档治理条目，说明该能力已有 V1 需求文档但尚未实现生产接口或页面。
+
+### 当前项目进度
+
+- 用例生成 V1 需求已形成稳定文档。
+- 用例生成实现仍未开始；下一步仍可按 `docs/superpowers/plans/2026-06-22-test-case-generation.md` 从 Phase 1 数据模型/迁移推进。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/specs/README.md`
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只修改文档，不新增业务代码、迁移或页面。
+- 未运行测试；后续进入实现切片时再按计划中的 targeted 命令验证。
+
+## 进度记录 2026-06-22 14:44
+
+### 本次目标
+
+基于《用例生成 V1 需求文档》和当前前端样式规范，生成一张与项目风格一致的“用例生成”页面 UI 方向图。
+
+### 本次完成
+
+- 使用图像生成工具生成桌面端 16:9 高保真 UI 方向图，覆盖左侧项目导航、策划案来源、参考案例库、生成设置、用例表格、蓝图摘要和 warnings。
+- 将生成图复制到 `docs/assets/test-case-generation-ui-v1.png`，避免只保留在 Codex 默认生成目录。
+- 在 `docs/specs/test-case-generation.md` 的快速入口中补充 UI 设计图路径。
+- 更新 `CHANGELOG.md` 的文档治理条目，记录 V1 需求文档配套页面 UI 方向图。
+
+### 当前项目进度
+
+- 用例生成 V1 需求文档和 UI 方向图已具备。
+- 生产代码仍未开始实现；下一步仍应按实施计划从 Phase 1 数据模型/迁移推进。
+
+### 文档同步
+
+- `docs/assets/test-case-generation-ui-v1.png`
+- `docs/specs/test-case-generation.md`
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只新增设计图和文档引用，不新增业务代码、迁移或页面。
+- 图像生成的中文细节可能存在轻微渲染偏差；实现时以需求文档和现有组件样式为准。
+- 未运行测试。
+
+## 进度记录 2026-06-22 18:21
+
+### 本次目标
+
+参照“用例生成”V1 需求文档和 UI 方向图，先新增静态数据版前端页面，不接入后端接口。
+
+### 本次完成
+
+- 新增 `frontend/src/views/TestCaseGeneratorView.vue`，使用静态数据呈现策划案来源、参考案例库、生成设置、测试用例表格、用例蓝图、warnings 和导出入口。
+- 更新 `frontend/src/router/index.ts`，新增认证路由 `/test-cases`。
+- 更新 `frontend/src/router/routePreload.ts`，补充用例生成页面预加载。
+- 更新 `frontend/src/App.vue`，在左侧主导航加入“用例生成”入口。
+- 新增 `frontend/tests/unit/testCaseGeneratorRoute.test.ts`，覆盖 `/test-cases` 路由注册。
+- 新增 `frontend/tests/unit/TestCaseGeneratorView.test.ts`，覆盖静态工作台内容和策划案来源切换。
+- 更新 `docs/specs/test-case-generation.md` 和 `docs/specs/README.md`，说明静态前端页已新增但后端尚未接入。
+- 更新 `CHANGELOG.md`，记录静态“用例生成”页面。
+
+### 当前项目进度
+
+- 用例生成 V1 已有需求文档、UI 方向图和静态前端页面。
+- 参考案例库、策划案快照、AI 生成编排、Excel 导出等后端能力仍未开始。
+
+### 验证结果
+
+- `npm run test:unit -- testCaseGeneratorRoute`：先失败于缺少 `/test-cases` 路由，接入路由后通过。
+- `npm run test:unit -- testCaseGeneratorRoute TestCaseGeneratorView`：通过，2 个测试文件、3 个用例。
+- `npm run build`：通过。
+- `npm run lint`：通过。
+- 浏览器级 Playwright 检查未执行成功：本机缺少 Playwright Chromium 浏览器二进制。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/specs/README.md`
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 页面所有业务数据均为静态数据，未调用后端。
+- `/test-cases` 仍复用现有登录守卫；本地试看需要已有前端登录态或后端认证服务。
+- 后续接入真实接口时，需要按实施计划继续补后端模型、API、导出器和 API 层测试。
+
+## 进度记录 2026-06-22 18:46
+
+### 本次目标
+
+确认用例生成 V1 参考案例库中“推荐主参考”的唯一性范围，并同步需求文档和实施计划。
+
+### 本次完成
+
+- 明确 V1 推荐主参考按“项目 + 分类”唯一；同一项目的不同分类可以各自拥有一个推荐主参考。
+- 更新 `docs/specs/test-case-generation.md` 的“推荐主参考”需求描述。
+- 更新 `docs/superpowers/plans/2026-06-22-test-case-generation.md`，同步服务函数、清理范围、权限测试和生成兜底规则。
+
+### 当前项目进度
+
+- 用例生成 V1 的参考案例库推荐主参考范围已确认。
+- 后续实现参考案例库时，应按 `project_id + category_id` 清理同分类下其它推荐标记。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只更新文档，不新增业务代码。
+- 未运行测试。
+
+## 进度记录 2026-06-22 18:53
+
+### 本次目标
+
+确认用例生成 V1 中删除参考案例分类时，原分类下推荐主参考标记的处理规则。
+
+### 本次完成
+
+- 明确删除分类时将关联参考案例移动到“未分类”展示，同时清空这些参考案例的推荐主参考标记。
+- 明确“未分类”作为 `category_id = null` 的独立推荐范围，管理员可重新设置一个推荐主参考。
+- 更新 `docs/specs/test-case-generation.md` 的分类删除规则。
+- 更新 `docs/superpowers/plans/2026-06-22-test-case-generation.md`，同步数据处理规则和 API 测试要求。
+
+### 当前项目进度
+
+- 推荐主参考的唯一范围和分类删除后的标记清理规则均已确认。
+- 后续实现 `delete_reference_category` 时，应在同一事务内完成分类删除、关联文件 `category_id` 置空和 `is_recommended_primary` 清空；未分类范围后续可单独设置一个推荐主参考。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只更新文档，不新增业务代码。
+- 未运行测试。
+
+## 进度记录 2026-06-22 18:56
+
+### 本次目标
+
+确认用例生成 V1 参考案例上传时，同名 active 文件的处理规则。
+
+### 本次完成
+
+- 明确 V1 不做参考案例覆盖替换。
+- 明确同一项目、同一分类、同名 active 参考案例直接拒绝上传，并提示先联系项目管理员删除旧文件后再上传。
+- 更新 `docs/specs/test-case-generation.md`，移除“上传或替换”措辞并补充同名 active 拒绝规则。
+- 更新 `docs/superpowers/plans/2026-06-22-test-case-generation.md`，同步服务规则和测试覆盖要求。
+
+### 当前项目进度
+
+- 参考案例库的推荐主参考范围、分类删除标记清理和同名 active 上传冲突规则均已确认。
+- 后续实现 `save_reference_file` 时，应按 `project_id + category_id + original_filename + deleted_at IS NULL` 做 active 冲突检查；`category_id = null` 的未分类范围也参与同名检查。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只更新文档，不新增业务代码。
+- 未运行测试。
+
+## 进度记录 2026-06-22 19:01
+
+### 本次目标
+
+确认用例生成 V1 参考案例分类创建权限。
+
+### 本次完成
+
+- 明确 V1 参考案例分类创建对所有项目成员开放。
+- 明确分类重命名和删除仍仅限项目管理员和超级管理员。
+- 更新 `docs/specs/test-case-generation.md` 的角色能力、分类需求和权限验收。
+- 更新 `docs/superpowers/plans/2026-06-22-test-case-generation.md`，同步 API 权限边界和测试覆盖要求。
+
+### 当前项目进度
+
+- 参考案例库权限口径进一步收敛：成员可创建分类和上传参考案例，管理员维护删除、重命名和推荐主参考。
+- 后续实现 API 时，`POST /api/v1/test-cases/reference-categories` 应走严格项目成员校验，`PATCH/DELETE /reference-categories/{category_id}` 走项目管理员校验。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只更新文档，不新增业务代码。
+- 未运行测试。
+
+## 进度记录 2026-06-22 19:05
+
+### 本次目标
+
+确认用例生成 V1 参考案例分类是否允许空分类。
+
+### 本次完成
+
+- 明确 V1 允许项目成员创建空分类。
+- 明确空分类仅用于组织参考案例，不影响生成流程。
+- 更新 `docs/specs/test-case-generation.md` 的分类需求。
+- 更新 `docs/superpowers/plans/2026-06-22-test-case-generation.md`，同步创建分类服务和测试要求。
+
+### 当前项目进度
+
+- 参考案例库分类规则已进一步明确：成员可创建空分类，上传参考案例时可选择已有分类或未分类。
+- 后续实现 `create_reference_category` 时，只校验项目成员身份、名称非空和同项目名称唯一，不要求分类下已有参考文件。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只更新文档，不新增业务代码。
+- 未运行测试。
+
+## 进度记录 2026-06-22 19:09
+
+### 本次目标
+
+确认用例生成 V1 参考案例分类名称的规范化和去重规则。
+
+### 本次完成
+
+- 明确分类名称保存前去除首尾空格。
+- 明确去除首尾空格后为空字符串时拒绝。
+- 明确同一项目内按去除首尾空格后的名称唯一。
+- 明确不做大小写折叠、内部空格规整或全角/半角转换。
+- 更新 `docs/specs/test-case-generation.md` 的分类名称规则。
+- 更新 `docs/superpowers/plans/2026-06-22-test-case-generation.md`，同步实现提示和测试覆盖要求。
+
+### 当前项目进度
+
+- 参考案例分类命名规则已确认，并与现有项目名称保存前 `strip()` 的处理风格对齐。
+- 后续实现 `create_reference_category` 和 `rename_reference_category` 时，应统一使用 trim 后名称进行保存与唯一性校验。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只更新文档，不新增业务代码。
+- 未运行测试。
+
+## 进度记录 2026-06-23 17:26
+
+### 本次目标
+
+确认用例生成 V1 参考案例上传后，画像生成失败时是否保留文件或记录。
+
+### 本次完成
+
+- 明确画像生成失败视为上传失败。
+- 明确画像失败时删除已写入文件，不保存参考案例记录，不在列表中暴露 failed 半成品。
+- 更新 `docs/specs/test-case-generation.md` 的参考案例上传和画像异常规则。
+- 更新 `docs/superpowers/plans/2026-06-22-test-case-generation.md`，同步上传服务清理行为和测试覆盖要求。
+
+### 当前项目进度
+
+- 参考案例上传链路的失败边界已确认：V1 只暴露可用画像的 active 参考案例。
+- 后续实现 `save_reference_file` 时，应在画像解析失败后清理临时文件并回滚数据库插入，不提供 failed 记录重试入口。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只更新文档，不新增业务代码。
+- 未运行测试。
+
+## 进度记录 2026-06-23 18:03
+
+### 本次目标
+
+确认用例生成 V1 中 Excel 参考案例多 Sheet 时的默认 Sheet 选择和页面手动选择规则。
+
+### 本次完成
+
+- 明确 Excel 参考案例默认 Sheet 由后端判定。
+- 明确默认优先级为 `测试用例`、`用例`、`TestCases`；都未命中时使用第一个非空 Sheet。
+- 明确页面默认选中后端识别出的默认 Sheet，用户可以在生成设置中手动改选主参考 Sheet。
+- 更新 `docs/specs/test-case-generation.md` 的参考案例上传和主参考 Sheet 需求。
+- 更新 `docs/superpowers/plans/2026-06-22-test-case-generation.md`，同步常量、画像提取逻辑、API 测试和前端测试要求。
+
+### 当前项目进度
+
+- 参考案例 Excel 多 Sheet 画像和生成选择规则已确认。
+- 后续实现 `reference_profiles.py` 时，应为每个非空 Sheet 生成画像，并按 `测试用例`、`用例`、`TestCases`、第一个非空 Sheet 的顺序解析默认 Sheet。
+- 后续前端接入真实接口时，应将 `default_sheet_name` 作为默认选中值，并允许用户改选 `sheet_options` 中的其它 Sheet。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只更新文档，不新增业务代码。
+- 未运行测试。
+
+## 进度记录 2026-06-23 18:09
+
+### 本次目标
+
+澄清用例生成页面中红框位置的“数量”含义，并同步需求文档、实施计划和当前静态页面。
+
+### 本次完成
+
+- 明确该位置展示的是从参考案例或主参考 Sheet 画像中读取出的参考用例数量。
+- 明确该字段为只读展示，不是用户可输入的目标生成数量。
+- 更新 `docs/specs/test-case-generation.md`，补充参考用例数量的画像字段和前端状态规则。
+- 更新 `docs/superpowers/plans/2026-06-22-test-case-generation.md`，将 `generation_options` 中的 case count target 口径移除，改为 `reference_case_count` 只读展示。
+- 更新 `frontend/src/views/TestCaseGeneratorView.vue`，将静态页面文案从“目标用例数量”改为“参考用例数量”，并按主参考 Sheet 示例展示数量。
+- 更新 `frontend/tests/unit/TestCaseGeneratorView.test.ts`，同步静态页面断言。
+
+### 当前项目进度
+
+- 用例生成 V1 的数量字段语义已收口：参考用例数量来自参考画像，用于提示参考规模，不作为生成数量控制项。
+- 后续实现 `reference_profiles.py` 时，应从可识别用例行中计算 `reference_case_count`；前端接入真实接口后应展示该字段并随主参考 Sheet 切换更新。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 代码同步
+
+- `frontend/src/views/TestCaseGeneratorView.vue`
+- `frontend/tests/unit/TestCaseGeneratorView.test.ts`
+
+### 未完成项与风险
+
+- 本次只同步文档和静态前端页面，未接入后端。
+- 后端真实 `reference_case_count` 的识别规则仍需在实现时通过单测固定。
+
+## 进度记录 2026-06-23 18:54
+
+### 本次目标
+
+确认用例生成 V1 中 `reference_case_count` 的具体计数规则。
+
+### 本次完成
+
+- 明确 Excel 参考用例数量从识别到的表头下一行开始统计。
+- 明确只统计包含用例标题、检查点、步骤、预期等用例内容字段的行。
+- 明确模块、功能、场景等层级字段只作为辅助判断，纯分组行不计入。
+- 明确完全空行、说明行、合计行、只有备注/说明字段有值的行不计入。
+- 明确 Markdown/TXT 只有能识别表格用例行或 checklist 用例项时才统计，否则返回未知并在页面显示“未识别”。
+- 更新 `docs/specs/test-case-generation.md` 和 `docs/superpowers/plans/2026-06-22-test-case-generation.md`。
+
+### 当前项目进度
+
+- 参考用例数量已具备可实现、可测试的 V1 规则。
+- 后续实现 `reference_profiles.py` 时，应围绕表头识别、分组行排除、说明/合计行排除、Markdown/TXT 未识别回退补单测。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只更新文档，不新增业务代码。
+- 未运行测试。
+
+## 进度记录 2026-06-23 18:56
+
+### 本次目标
+
+确认 Excel 参考案例可读取但表头或用例行无法可靠识别时的 V1 处理规则。
+
+### 本次完成
+
+- 明确 Excel 参考案例必须至少有一个可用 Sheet。
+- 明确可用 Sheet 指能可靠识别表头，并能识别出至少一行参考用例的 Sheet。
+- 明确只有可用 Sheet 进入主参考 Sheet 可选列表。
+- 明确 Excel 文件可读取但没有任何可用 Sheet 时，视为画像生成失败并拒绝上传。
+- 更新 `docs/specs/test-case-generation.md` 和 `docs/superpowers/plans/2026-06-22-test-case-generation.md`。
+
+### 当前项目进度
+
+- 参考案例画像失败边界进一步收紧：Excel 能打开不等于可作为参考案例，必须识别出可用 Sheet 才能保存。
+- 后续实现 `reference_profiles.py` 时，应在无可用 Sheet 时抛出画像提取错误，由上传服务清理文件并不保存记录。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只更新文档，不新增业务代码。
+- 未运行测试。
+
+## 进度记录 2026-06-23 19:03
+
+### 本次目标
+
+澄清参考案例库的存储形态、与现有 Excel 上传读取能力的复用边界，以及多 Sheet 中部分 Sheet 不可用时的上传规则。
+
+### 本次完成
+
+- 明确参考案例库是项目级服务端资源，不是用户本机配置。
+- 明确参考案例通过浏览器上传到后端，由后端按项目保存文件、画像和元数据，同项目成员通过 API 查看、选择和使用。
+- 明确参考案例文件属于长期项目资产，不能放入普通 Excel 上传清理目录；实施计划改为独立参考案例存储根目录。
+- 明确不能直接把现有 `/api/v1/sources/upload` 的返回结果当作参考案例库记录，因为现有接口面向用户级数据源路径，不管理分类、画像、推荐主参考和项目共享列表。
+- 明确可复用或抽取现有上传/Excel 读取的底层能力，包括文件名清洗、分块保存、大小限制、后缀校验、Excel engine 选择和 workbook 打开。
+- 明确多 Sheet Excel 只要至少有一个可用 Sheet 就允许上传；不可用 Sheet 跳过并记录 warnings。
+- 更新 `docs/specs/test-case-generation.md` 和 `docs/superpowers/plans/2026-06-22-test-case-generation.md`。
+
+### 当前项目进度
+
+- 参考案例库的存储和复用边界已明确：API 和业务生命周期独立，长期文件存储独立，底层上传/读取能力尽量复用。
+- 后续实现时应优先抽取共享文件上传和 Excel 打开 helper，避免复制 `source_api.py` / `local_reader.py` 中的底层逻辑，同时保持 `/api/v1/test-cases/references` 独立。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只更新文档，不新增业务代码。
+- 未运行测试。
+
+## 进度记录 2026-06-23 19:44
+
+### 本次目标
+
+确认用例生成 V1 中管理员删除参考案例时，数据库记录、物理文件和画像数据的处理规则。
+
+### 本次完成
+
+- 明确删除参考案例时，列表和生成选择立即排除该记录。
+- 明确数据库记录采用软删除，仅保留审计所需元数据。
+- 明确物理文件立即删除。
+- 明确删除后不继续保留可复用的 `storage_path` 和 `profile_json`。
+- 更新 `docs/specs/test-case-generation.md` 的参考案例删除需求。
+- 更新 `docs/superpowers/plans/2026-06-22-test-case-generation.md` 的数据模型、服务行为、测试覆盖和风险说明。
+
+### 当前项目进度
+
+- 参考案例删除边界已收口：V1 不长期保留原文件或画像，只保留文件名、后缀、大小、上传人、上传时间、删除人、删除时间等审计元数据。
+- 后续实现 `soft_delete_reference_file` 时，应在同一业务操作中删除物理文件、设置 `deleted_at/deleted_by`，并清空 `storage_path/profile_json/is_recommended_primary`。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只更新文档，不新增业务代码。
+- 未运行测试。

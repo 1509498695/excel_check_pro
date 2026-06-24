@@ -5,6 +5,7 @@ const viewLoaders = {
   fixedRules: () => import('../views/FixedRulesBoard.vue'),
   ruleConfigs: () => import('../views/RuleConfigsView.vue'),
   ruleConfigLookup: () => import('../views/RuleConfigLookupView.vue'),
+  testCases: () => import('../views/TestCaseGeneratorView.vue'),
   admin: () => import('../views/AdminView.vue'),
   profile: () => import('../views/ProfileView.vue'),
   userGuide: () => import('../views/UserGuideView.vue'),
@@ -17,6 +18,7 @@ export const routeComponents = {
   fixedRules: viewLoaders.fixedRules,
   ruleConfigs: viewLoaders.ruleConfigs,
   ruleConfigLookup: viewLoaders.ruleConfigLookup,
+  testCases: viewLoaders.testCases,
   admin: viewLoaders.admin,
   profile: viewLoaders.profile,
   userGuide: viewLoaders.userGuide,
@@ -40,6 +42,11 @@ export function preloadRouteComponent(path: string): void {
     normalizedPath.startsWith('/rule-configs/config_lookup/')
   ) {
     void viewLoaders.ruleConfigLookup()
+    return
+  }
+
+  if (normalizedPath === '/test-cases') {
+    void viewLoaders.testCases()
     return
   }
 

@@ -208,6 +208,50 @@ _Avoid_: Missing query type, missing published rule, configuration file not foun
 A lookup failure state where a configuration file declared by a query definition group does not exist under the selected versioned config folder.
 _Avoid_: Missing versioned config folder, missing sheet, missing query type
 
+**Planning Document**:
+Source material used to derive test cases from product or game design content. A planning document is not a configuration table to be validated and is not a Markdown rule configuration.
+_Avoid_: Configuration table, validation source, rule configuration, lookup source
+
+**Planning Sheet**:
+The single worksheet selected from a planning document as the complete source material for one test case generation. It is treated as whole-sheet input rather than a user-selected row/column range, workbook-wide source, or multi-sheet merge.
+_Avoid_: Workbook bundle, multi-sheet source, arbitrary sheet merge, manual range selection
+
+**Planning Sheet Snapshot**:
+A bounded representation of a planning sheet prepared for test case generation, preserving the selected sheet's source identity while making content limits visible to the user.
+_Avoid_: Raw workbook, hidden truncation, user-selected range
+
+**Test Case Generation Workspace**:
+A project-member-visible workspace where users turn one planning sheet into a test-case blueprint and generated test case rows using the project's AI capability.
+_Avoid_: Personal check workspace, rule configuration workspace, manual rule editor
+
+**Reference Test Case Library**:
+A project-scoped collection of existing test case materials used as style, field, hierarchy, and granularity examples for test case generation. It is shared by members of one project and guides output format and testing style, but is not a planning document or source requirement.
+_Avoid_: Personal case directory, global case library, planning document, requirement source, Reference Lookup File, configuration table
+
+**Reference Test Case Category**:
+A project-scoped grouping inside the reference test case library that defines the active reference scope for one test case generation. Switching category changes the set of reference test case materials considered for generation, clears previous reference selections, and may provide that category's recommended primary reference test case as the new default. When a category has no recommended primary reference test case, no reference is selected by default.
+_Avoid_: Data source category, permission boundary, cross-category generation mix, visual-only filter, first-file default
+
+**Reference Test Case Selection**:
+The set of reference test case materials selected from the current reference test case category for one generation. A selection may include multiple reference test case materials, but it must contain exactly one primary reference test case before generation can run.
+_Avoid_: Cross-category selection, implicit first-file selection, primary-free generation, multiple primary references
+
+**Primary Reference Test Case**:
+The single reference test case material within the current reference test case selection that should most strongly influence generated test case fields, hierarchy, naming style, and case granularity.
+_Avoid_: Requirement source, generated result, lookup reference file, secondary reference, multiple primaries
+
+**Reference Test Case Profile**:
+A reusable structured summary extracted from reference test case material that describes its fields, hierarchy, priority style, naming style, and case granularity for generation guidance.
+_Avoid_: Requirement source, generated test case, raw reference file
+
+**Test Case Generation Warning**:
+A user-visible caveat attached to a test case generation result when source content, assumptions, or coverage limits may affect the generated cases.
+_Avoid_: Silent omission, debug log, model disclaimer
+
+**Test Case Blueprint**:
+An intermediate testing outline derived from a planning sheet that names the feature areas, rules, scenarios, risks, and coverage dimensions before test case rows are produced.
+_Avoid_: Final test case table, coverage statistics, raw planning content
+
 **Project AI Credential**:
 An administrator-managed AI provider credential owned by a project and used by project-level automation such as Feishu bot configuration-table lookups and AI-assisted validation helpers. It is the only configurable AI credential surface; individual users do not maintain separate AI provider keys.
 _Avoid_: Personal AI key, user-owned AI config, bot user key, shared admin key

@@ -23,6 +23,7 @@
 | 项目级 AI 能力 | [ai-project-credentials.md](ai-project-credentials.md) | 项目级凭据、provider、脱敏、不可用策略、调用方边界。 |
 | 执行任务与结果 | [execution-runs-results.md](execution-runs-results.md) | 同步执行、后台任务、结果存储、异常明细、导出。 |
 | 交付、部署与工程治理 | [delivery-devops.md](delivery-devops.md) | Alembic、检查脚本、CI、源码包、生产安全配置。 |
+| 用例生成（静态前端页已新增） | [test-case-generation.md](test-case-generation.md) | 独立用例生成页、项目级参考案例库、策划案快照、AI 生成、Excel 导出的 V1 需求；静态页面已接入，后端接口尚未实现。 |
 
 ## 文档边界
 

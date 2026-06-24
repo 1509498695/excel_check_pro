@@ -54,6 +54,13 @@ const navItems = computed(() => {
       icon: 'M4 6h16 M4 12h16 M4 18h16 M8 6v12',
     },
     {
+      to: '/test-cases',
+      label: '用例生成',
+      routeName: 'test-cases',
+      show: true,
+      icon: 'M7 5h10 M7 9h10 M7 13h6 M5 3h14v18H5z M14 17l2 2 4-4',
+    },
+    {
       to: '/admin',
       label: '管理后台',
       routeName: 'admin',
