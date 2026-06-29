@@ -15,7 +15,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 
 from backend.app.database import Base
 
@@ -478,6 +478,109 @@ class FeishuSheetAuthorizationRecord(Base):
         nullable=True,
     )
     authorized_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class TestCaseReferenceCategoryRecord(Base):
+    """用例生成 V1 参考案例分类（按 project_id 隔离）。"""
+
+    __tablename__ = "test_case_reference_categories"
+    __table_args__ = (
+        Index(
+            "uq_test_case_reference_categories_project_name_key",
+            "project_id",
+            "name_key",
+            unique=True,
+        ),
+        Index("ix_test_case_reference_categories_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    name: Mapped[str] = mapped_column(String(80), nullable=False)
+    name_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    @validates("name")
+    def _sync_name_key(self, _key: str, value: str) -> str:
+        self.name_key = value.strip()
+        return value
+
+
+class TestCaseReferenceFileRecord(Base):
+    """用例生成 V1 参考案例文件记录。
+
+    active 状态由 deleted_at 是否为空决定。删除成功后保留审计行，但清空
+    storage_path、profile_json 和推荐主参考标记。
+    """
+
+    __tablename__ = "test_case_reference_files"
+    __table_args__ = (
+        Index("ix_test_case_reference_files_project_id", "project_id"),
+        Index("ix_test_case_reference_files_category_id", "category_id"),
+        Index(
+            "ix_test_case_reference_files_project_category",
+            "project_id",
+            "category_id",
+        ),
+        Index(
+            "ix_test_case_reference_files_project_filename",
+            "project_id",
+            "original_filename",
+        ),
+        Index(
+            "ix_test_case_reference_files_project_recommended",
+            "project_id",
+            "category_id",
+            "is_recommended_primary",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    category_id: Mapped[int | None] = mapped_column(
+        ForeignKey("test_case_reference_categories.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    stored_filename: Mapped[str] = mapped_column(String(255), default="")
+    suffix: Mapped[str] = mapped_column(String(16), default="")
+    size_bytes: Mapped[int] = mapped_column(default=0)
+    storage_path: Mapped[str] = mapped_column(Text, default="")
+    profile_json: Mapped[str] = mapped_column(Text, default="")
+    is_recommended_primary: Mapped[bool] = mapped_column(Boolean, default=False)
+    uploaded_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    deleted_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    deleted_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True),
         nullable=True,
     )

@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
 import {
   Collection,
-  DataAnalysis,
+  CopyDocument,
   Document,
   Download,
   FolderOpened,
@@ -22,18 +23,50 @@ import PageHeader from '../components/shell/PageHeader.vue'
 import PrimaryButton from '../components/shell/PrimaryButton.vue'
 import SecondaryButton from '../components/shell/SecondaryButton.vue'
 import DataSourcePanel from '../components/workbench/DataSourcePanel.vue'
+import {
+  createReferenceCategory as createReferenceCategoryApi,
+  deleteReferenceFile,
+  exportTestCaseWorkbook,
+  fetchReferenceCategories,
+  fetchReferenceFiles,
+  generateTestCases,
+  readPlanningSnapshot,
+  readPlanningSnapshotBrief,
+  setRecommendedPrimaryReference,
+  uploadReferenceFile,
+} from '../api/testCases'
+import { fetchSourceMetadata, fetchWorkbenchConfig, saveWorkbenchConfig } from '../api/workbench'
 import type { SourceManagementStoreLike } from '../types/panelStores'
+import type { ApiFileResponse } from '../types/api'
+import type {
+  GenerationWarning,
+  PlanningSnapshotResponse,
+  ReferenceCategoryResponse,
+  ReferenceFileResponse,
+  ReferenceProfile,
+  ReferenceSheetOption as BackendReferenceSheetOption,
+  TestCaseGenerationResponse,
+  TestCaseGenerationRequest,
+} from '../types/testCases'
 import type { DataSource, SourceMetadata } from '../types/workbench'
 
-type PreviewTab = 'snapshot' | 'blueprint' | 'cases' | 'warnings'
-type Priority = 'P0' | 'P1' | 'P2'
+type PreviewTab = 'brief' | 'cases' | 'warnings'
+type Priority = string
 type ReferenceFileType = 'xlsx' | 'md' | 'txt'
 type ReferenceTypeFilter = 'all' | ReferenceFileType
 type ReferenceSort = 'recommended' | 'newest' | 'name'
 
+interface TestCaseGenerationPlanningSourceConfig {
+  planning_sources: DataSource[]
+  preferred_planning_source_id: string | null
+  selected_planning_sheet_name: string | null
+}
+
 interface ReferenceFile {
   id: string
+  backendId: number
   categoryId: string
+  categoryNumericId: number | null
   name: string
   type: ReferenceFileType
   tag?: string
@@ -46,12 +79,15 @@ interface ReferenceFile {
   isRecommendedPrimary?: boolean
   defaultSheetName?: string
   sheetOptions?: ReferenceSheetOption[]
+  profile?: ReferenceProfile | null
 }
 
 interface ReferenceCategory {
   id: string
+  backendId: number | null
   name: string
   description: string
+  referenceCount: number
 }
 
 interface ReferenceSheetOption {
@@ -71,16 +107,10 @@ interface GeneratedCase {
   remarks: string
 }
 
-interface BlueprintModule {
-  name: string
-  count: number
-  tone: 'primary' | 'success' | 'warning' | 'purple'
-}
-
 const activeTab = ref<PreviewTab>('cases')
-const selectedReferenceCategoryId = ref('activity')
-const selectedReferenceIds = ref<string[]>(['activity-regression-template'])
-const primaryReferenceId = ref('activity-regression-template')
+const selectedReferenceCategoryId = ref('')
+const selectedReferenceIds = ref<string[]>([])
+const primaryReferenceId = ref('')
 const selectedReferenceSheetName = ref('')
 const referenceSearchKeyword = ref('')
 const referenceTypeFilter = ref<ReferenceTypeFilter>('all')
@@ -92,40 +122,50 @@ const profilePreviewDialogVisible = ref(false)
 const referenceMoreDialogVisible = ref(false)
 const newReferenceCategoryName = ref('')
 const createCategoryError = ref('')
+const referenceApiErrorMessage = ref('')
+const uploadReferenceError = ref('')
+const referenceUploadFile = ref<File | null>(null)
+const isReferenceLibraryLoading = ref(false)
+const isCreatingReferenceCategory = ref(false)
+const isUploadingReference = ref(false)
+const isUpdatingReference = ref(false)
 const profilePreviewFileId = ref('')
 const referenceMoreFileId = ref('')
 const isGeneratedResultStale = ref(false)
 const generatedResultStaleReason = ref('')
-const selectedPlanningSourceId = ref('plan_feishu')
+const selectedPlanningSourceId = ref('')
 const selectedPlanningSheetName = ref('')
 const planningSourceCollapsed = ref(false)
 const planningSourcePanelRef = ref<{ openCreateDialog: () => void } | null>(null)
+const planningSnapshot = ref<PlanningSnapshotResponse | null>(null)
+const snapshotBriefMarkdown = ref('')
+const snapshotBriefWarnings = ref<GenerationWarning[]>([])
+const snapshotBriefErrorMessage = ref('')
+const generationResult = ref<TestCaseGenerationResponse | null>(null)
+const apiErrorMessage = ref('')
+const isSnapshotLoading = ref(false)
+const isSnapshotBriefLoading = ref(false)
+const isGeneratingCases = ref(false)
+const isExportingCases = ref(false)
+const snapshotBriefParticipatedInLastGeneration = ref<boolean | null>(null)
+const workbenchConfigSnapshot = ref<Record<string, unknown>>({})
+const hasLoadedWorkbenchConfig = ref(false)
+const isPlanningSourceConfigHydrating = ref(false)
+const planningSourcePersistenceError = ref('')
+
+let snapshotBriefRequestId = 0
+let hasPlanningSourceConfigLocalEdits = false
+let isApplyingPlanningSourceConfig = false
 
 const referencePageSize = 5
-
-const defaultPlanningSource: DataSource = {
-  id: 'plan_feishu',
-  type: 'feishu',
-  pathOrUrl: 'https://example.feishu.cn/sheets/xxx',
-}
-
-const defaultPlanningSourceMetadata: SourceMetadata = {
-  source_id: 'plan_feishu',
-  source_type: 'feishu',
-  authorization_status: 'authorized',
-  sheets: [
-    { name: '活动策划案 / Sheet1', sheet_id: 'activity-sheet', columns: ['模块', '需求点', '配置来源', '备注'] },
-    { name: '奖励配置 / Sheet2', sheet_id: 'reward-sheet', columns: ['奖励ID', '奖励内容', '限制条件'] },
-  ],
-}
+const TEST_CASE_GENERATION_CONFIG_KEY = 'test_case_generation'
+const PLANNING_SOURCE_TYPES = new Set<string>(['local_excel', 'feishu', 'svn'])
 
 const planningSourceStore = reactive<SourceManagementStoreLike>({
-  sources: [{ ...defaultPlanningSource }],
+  sources: [],
   capabilities: ['local_excel', 'feishu', 'svn'],
-  preferredSourceId: defaultPlanningSource.id,
-  sourceMetadataMap: {
-    [defaultPlanningSource.id]: { ...defaultPlanningSourceMetadata },
-  },
+  preferredSourceId: null,
+  sourceMetadataMap: {},
   svnPathReplacementPresets: [],
   selectedSvnPathReplacementPreset: null,
   async loadSourceMetadata(sourceId: string): Promise<SourceMetadata> {
@@ -137,11 +177,8 @@ const planningSourceStore = reactive<SourceManagementStoreLike>({
     if (cached) {
       return cached
     }
-    const metadata: SourceMetadata = {
-      source_id: source.id,
-      source_type: source.type,
-      sheets: [],
-    }
+    const response = await fetchSourceMetadata(source)
+    const metadata = response.data
     if (planningSourceStore.sourceMetadataMap) {
       planningSourceStore.sourceMetadataMap[sourceId] = metadata
     }
@@ -176,6 +213,7 @@ const planningSourceStore = reactive<SourceManagementStoreLike>({
 
     planningSourceStore.preferredSourceId = normalizedSource.id
     selectedPlanningSourceId.value = normalizedSource.id
+    queuePlanningSourceConfigPersist()
   },
   removeSource(sourceId: string): void {
     planningSourceStore.sources = planningSourceStore.sources.filter((source) => source.id !== sourceId)
@@ -185,218 +223,45 @@ const planningSourceStore = reactive<SourceManagementStoreLike>({
     if (selectedPlanningSourceId.value === sourceId) {
       selectedPlanningSourceId.value = planningSourceStore.sources[0]?.id ?? ''
     }
+    planningSourceStore.preferredSourceId = selectedPlanningSourceId.value || null
+    if (!selectedPlanningSourceId.value) {
+      selectedPlanningSheetName.value = ''
+    }
+    queuePlanningSourceConfigPersist()
   },
   useSampleSource(): void {
-    planningSourceStore.upsertSource({ ...defaultPlanningSource })
+    // 用例生成页不提供演示来源，避免生产页面出现假数据。
   },
 })
 
-const referenceCategories = ref<ReferenceCategory[]>([
-  { id: 'activity', name: '活动用例', description: '活动入口、规则、奖励和回归影响' },
-  { id: 'reward', name: '礼包用例', description: '礼包发放、领取限制和补偿边界' },
-  { id: 'ui', name: 'UI 通用', description: '入口展示、按钮状态、空态和提示' },
-  { id: 'uncategorized', name: '未分类', description: '暂未归入分类的参考材料' },
-])
+const REFERENCE_UNCATEGORIZED_CATEGORY_ID = 'uncategorized'
 
-const rewardReferenceFiles: ReferenceFile[] = Array.from({ length: 24 }, (_, index) => {
-  const caseNumber = index + 1
-  const isExcel = caseNumber % 4 === 0
-  const paddedNumber = String(caseNumber).padStart(2, '0')
+const referenceCategories = ref<ReferenceCategory[]>([])
+const referenceFiles = ref<ReferenceFile[]>([])
 
-  return {
-    id: `reward-edge-${paddedNumber}`,
-    categoryId: 'reward',
-    name: isExcel ? `礼包领取回归 ${paddedNumber}.xlsx` : `礼包活动边界补充 ${paddedNumber}.md`,
-    type: isExcel ? 'xlsx' : 'md',
-    summary: isExcel ? '礼包发放字段、兑换条件和回归状态' : '领取次数、补偿发放和异常提示',
-    uploadedBy: caseNumber % 3 === 0 ? 'Samo QA' : 'admin',
-    uploadedAt: `2026-06-${String(22 - (caseNumber % 7)).padStart(2, '0')}T${String(9 + (caseNumber % 8)).padStart(
-      2,
-      '0',
-    )}:20:00+08:00`,
-    caseCount: isExcel ? 64 + caseNumber : 18 + caseNumber,
-    profileSummary: isExcel
-      ? '字段结构：用例编号 / 礼包ID / 奖励内容 / 限制条件；优先级：P0/P1/P2；默认 Sheet：礼包用例'
-      : '字段结构：Markdown 表格；优先级风格：高/中/低；粒度：一行一个领取边界',
-    defaultSheetName: isExcel ? '礼包用例' : undefined,
-    sheetOptions: isExcel
-      ? [
-          { sheetName: '礼包用例', sheetIndex: 0, isDefault: true, caseCount: 64 + caseNumber },
-          { sheetName: '补偿回归', sheetIndex: 1, caseCount: 28 + caseNumber },
-        ]
-      : undefined,
-  }
+const generatedCases = computed<GeneratedCase[]>(() =>
+  (generationResult.value?.cases ?? []).map((caseItem, index) => ({
+    id: caseItem.case_id || `TC-${String(index + 1).padStart(3, '0')}`,
+    module: caseItem.module || caseItem.feature || '-',
+    checkpoint: caseItem.feature || caseItem.scenario || caseItem.case_type || '-',
+    title: caseItem.title || caseItem.scenario || caseItem.source_requirement || '-',
+    priority: caseItem.priority || 'P2',
+    status: caseItem.initial_status || '未执行',
+    remarks: caseItem.remarks || caseItem.config_source || '-',
+  })),
+)
+
+const warnings = computed<string[]>(() => {
+  const warningItems: GenerationWarning[] = generationResult.value
+    ? [...generationResult.value.warnings, ...(generationResult.value.blueprint.warnings ?? [])]
+    : planningSnapshot.value?.warnings ?? []
+  return [...new Set(warningItems.map((warning) => warning.message).filter(Boolean))]
 })
-
-const referenceFiles = ref<ReferenceFile[]>([
-  {
-    id: 'activity-regression-template',
-    categoryId: 'activity',
-    name: '活动回归模板.xlsx',
-    type: 'xlsx',
-    tag: '推荐主参考',
-    summary: '字段完整，P0/P1/P2 优先级风格',
-    uploadedBy: 'admin',
-    uploadedAt: '2026-06-22T10:18:00+08:00',
-    caseCount: 120,
-    profileSummary: '字段结构：编号 / 模块 / 检查点 / 标题 / 优先级 / 备注；优先级：P0/P1/P2；默认 Sheet：测试用例',
-    warnings: ['包含历史说明页，已排除不可用 Sheet。'],
-    isRecommendedPrimary: true,
-    defaultSheetName: '测试用例',
-    sheetOptions: [
-      { sheetName: '测试用例', sheetIndex: 0, isDefault: true, caseCount: 120 },
-      { sheetName: '历史回归', sheetIndex: 1, caseCount: 86 },
-      { sheetName: '边界场景', sheetIndex: 2, caseCount: 34 },
-    ],
-  },
-  {
-    id: 'activity-boundary-md',
-    categoryId: 'activity',
-    name: '礼包活动边界.md',
-    type: 'md',
-    summary: '补充奖励领取、次数限制和异常路径',
-    uploadedBy: 'Samo QA',
-    uploadedAt: '2026-06-21T16:36:00+08:00',
-    caseCount: 42,
-    profileSummary: '字段结构：Markdown 表格；优先级风格：P0/P1；粒度：边界条件独立成例',
-  },
-  {
-    id: 'activity-ui-checklist',
-    categoryId: 'activity',
-    name: 'UI 通用检查.txt',
-    type: 'txt',
-    summary: '覆盖入口展示、按钮状态和空态提示',
-    uploadedBy: 'admin',
-    uploadedAt: '2026-06-20T14:12:00+08:00',
-    caseCount: undefined,
-    profileSummary: '字段结构：checklist；优先级未知；粒度：入口、按钮、空态提示',
-    warnings: ['TXT 未可靠识别用例数量。'],
-  },
-  {
-    id: 'ui-common-checklist',
-    categoryId: 'ui',
-    name: 'UI 通用冒烟.xlsx',
-    type: 'xlsx',
-    tag: '推荐主参考',
-    summary: '入口、弹窗、按钮、空态与错误提示',
-    uploadedBy: 'admin',
-    uploadedAt: '2026-06-19T11:08:00+08:00',
-    caseCount: 76,
-    profileSummary: '字段结构：页面 / 控件 / 状态 / 预期；优先级：P1/P2；默认 Sheet：UI冒烟',
-    isRecommendedPrimary: true,
-    defaultSheetName: 'UI冒烟',
-    sheetOptions: [
-      { sheetName: 'UI冒烟', sheetIndex: 0, isDefault: true, caseCount: 76 },
-      { sheetName: '空态检查', sheetIndex: 1, caseCount: 24 },
-    ],
-  },
-  {
-    id: 'ui-empty-state',
-    categoryId: 'ui',
-    name: '空态与弱网提示.txt',
-    type: 'txt',
-    summary: '覆盖空态、错误提示、弱网重试和二次确认',
-    uploadedBy: 'Samo QA',
-    uploadedAt: '2026-06-18T17:45:00+08:00',
-    profileSummary: '字段结构：文本 checklist；优先级未知；粒度：一个提示态一个检查点',
-  },
-  {
-    id: 'uncategorized-legacy',
-    categoryId: 'uncategorized',
-    name: '历史活动用例摘录.md',
-    type: 'md',
-    summary: '旧活动用例片段，尚未归类',
-    uploadedBy: 'admin',
-    uploadedAt: '2026-06-16T15:22:00+08:00',
-    caseCount: 18,
-    profileSummary: '字段结构：Markdown 段落；优先级风格不稳定；粒度偏粗，需要人工确认',
-    warnings: ['该文件未归类，建议先整理分类后使用。'],
-  },
-  ...rewardReferenceFiles,
-])
-
-const generatedCases: GeneratedCase[] = [
-  {
-    id: 'TC-001',
-    module: '活动入口',
-    checkpoint: '展示校验',
-    title: '活动入口按配置开放',
-    priority: 'P1',
-    status: '未执行',
-    remarks: '-',
-  },
-  {
-    id: 'TC-002',
-    module: '奖励领取',
-    checkpoint: '次数限制',
-    title: '同账号重复领取提示',
-    priority: 'P0',
-    status: '未执行',
-    remarks: '-',
-  },
-  {
-    id: 'TC-003',
-    module: '奖励领取',
-    checkpoint: '道具发放',
-    title: '奖励发放成功并计入背包',
-    priority: 'P1',
-    status: '未执行',
-    remarks: '-',
-  },
-  {
-    id: 'TC-004',
-    module: '兑换商店',
-    checkpoint: '兑换条件',
-    title: '积分不足时提示规则说明',
-    priority: 'P1',
-    status: '未执行',
-    remarks: '-',
-  },
-  {
-    id: 'TC-005',
-    module: '异常与边界',
-    checkpoint: '网络异常',
-    title: '网络中断后重试机制生效',
-    priority: 'P0',
-    status: '未执行',
-    remarks: '弱网/断网',
-  },
-  {
-    id: 'TC-006',
-    module: '回归影响',
-    checkpoint: '历史数据',
-    title: '历史活动数据不受影响',
-    priority: 'P2',
-    status: '未执行',
-    remarks: '回归验证',
-  },
-]
-
-const blueprintModules: BlueprintModule[] = [
-  { name: '入口与展示', count: 28, tone: 'primary' },
-  { name: '奖励领取', count: 36, tone: 'success' },
-  { name: '异常与边界', count: 34, tone: 'warning' },
-  { name: '回归影响', count: 28, tone: 'purple' },
-]
-
-const warnings = [
-  '来源材料可能包含图片或附件，V1 未读取其中语义。',
-  '读取 1800 行，纳入前 800 行。',
-  '5 个超长单元格已截断到 300 字符。',
-]
-
-const snapshotRows = [
-  ['1', '模块', '需求点', '配置来源', '备注'],
-  ['2', '活动入口', '按开服时间开放入口', 'ActivityConfig.xls', '入口图未读取'],
-  ['3', '奖励领取', '每日可领取 1 次，跨日刷新', 'RewardConfig.xls', '需校验背包'],
-  ['4', '兑换商店', '积分不足时不能兑换', 'ShopConfig.xls', '弱网重试'],
-]
 
 const tabs: Array<{ key: PreviewTab; label: string }> = [
-  { key: 'snapshot', label: '策划案快照' },
-  { key: 'blueprint', label: '用例蓝图' },
+  { key: 'brief', label: 'AI 整理稿' },
   { key: 'cases', label: '测试用例' },
-  { key: 'warnings', label: 'Warnings' },
+  { key: 'warnings', label: '限制提示' },
 ]
 
 const selectedPlanningSource = computed(
@@ -482,17 +347,49 @@ const selectedReferenceSheet = computed(
     selectedReferenceSheetOptions.value[0],
 )
 const referenceCaseCountDisplay = computed(() => {
+  if (!primaryReference.value) {
+    return '未使用主参考'
+  }
   const caseCount = hasReferenceSheetOptions.value ? selectedReferenceSheet.value?.caseCount : primaryReference.value?.caseCount
 
   return typeof caseCount === 'number' ? `约 ${caseCount} 条` : '未识别'
 })
-const isGenerationReady = computed(() => selectedReferenceFiles.value.length > 0 && Boolean(primaryReference.value))
+const hasPlanningSnapshot = computed(() => Boolean(planningSnapshot.value))
+const hasGeneratedResult = computed(() => Boolean(generationResult.value))
+const hasSnapshotBriefMarkdown = computed(() => Boolean(snapshotBriefMarkdown.value.trim()))
+const canReadSnapshot = computed(() => Boolean(selectedPlanningSource.value && selectedPlanningSheetName.value))
+const isGenerationReady = computed(() => hasPlanningSnapshot.value && !isSnapshotLoading.value && !isGeneratingCases.value)
+const prioritySummary = computed(() => Object.entries(generationResult.value?.stats.priority_counts ?? {}))
+const snapshotBriefWarningMessages = computed(() =>
+  snapshotBriefWarnings.value.map((warning) => warning.message).filter(Boolean),
+)
+const snapshotFirstRowSummary = computed(() => {
+  const firstRow = planningSnapshot.value?.rows[0]
+  if (!firstRow) {
+    return ''
+  }
+  return firstRow.cells
+    .map((cell) => cell.value)
+    .filter(Boolean)
+    .join(' / ')
+})
+const previewStatusLabel = computed(() => {
+  if (generationResult.value) {
+    return '用例已生成'
+  }
+  if (planningSnapshot.value) {
+    return '快照已读取'
+  }
+  return '待读取快照'
+})
+const previewStatusType = computed(() => (generationResult.value ? 'primary' : planningSnapshot.value ? 'success' : 'info'))
+const canExportGeneratedResult = computed(() => hasGeneratedResult.value && !isGeneratedResultStale.value)
 const selectedReferenceSummary = computed(() => {
   if (!selectedReferenceFiles.value.length) {
-    return '未选择参考案例'
+    return '未选择参考案例 · 使用 qa-case 标准生成'
   }
   if (!primaryReference.value) {
-    return `已选 ${selectedReferenceFiles.value.length} 个，请指定主参考`
+    return `已选 ${selectedReferenceFiles.value.length} 个 · 未指定主参考`
   }
   return `已选 ${selectedReferenceFiles.value.length} 个 · 主参考：${primaryReference.value.name}`
 })
@@ -501,22 +398,218 @@ const profilePreviewFile = computed(
 )
 const referenceMoreFile = computed(() => referenceFiles.value.find((file) => file.id === referenceMoreFileId.value) ?? null)
 const metrics = computed(() => [
-  { label: '策划案快照', value: '728 行', statusLabel: '已读取', statusType: 'success' as const, iconTone: 'primary' as const },
   {
-    label: '参考案例',
+    label: '快照行数',
+    value: planningSnapshot.value ? `${planningSnapshot.value.rows.length} 行` : '未读取',
+    statusLabel: planningSnapshot.value ? '已读取' : '待读取',
+    statusType: planningSnapshot.value ? ('success' as const) : ('neutral' as const),
+    iconTone: 'primary' as const,
+  },
+  {
+    label: '本次参考',
     value: `${selectedReferenceFiles.value.length} 个`,
-    statusLabel: primaryReference.value ? '含主参考' : '待选择',
-    statusType: primaryReference.value ? ('success' as const) : ('warning' as const),
+    statusLabel: primaryReference.value ? '含主参考' : selectedReferenceFiles.value.length ? '补充参考' : '可选增强',
+    statusType: primaryReference.value || selectedReferenceFiles.value.length ? ('success' as const) : ('neutral' as const),
     iconTone: 'success' as const,
   },
-  { label: '生成用例', value: '126 条', statusLabel: '本次预览', statusType: 'neutral' as const, iconTone: 'purple' as const },
-  { label: 'Warnings', value: '3 条', statusLabel: '需确认', statusType: 'warning' as const, iconTone: 'warning' as const },
+  {
+    label: '预览用例',
+    value: generationResult.value ? `${generationResult.value.stats.total} 条` : '未生成',
+    statusLabel: generationResult.value ? '未保存' : '待生成',
+    statusType: generationResult.value ? ('neutral' as const) : ('neutral' as const),
+    iconTone: 'purple' as const,
+  },
+  {
+    label: '限制提示',
+    value: `${warnings.value.length} 条`,
+    statusLabel: warnings.value.length ? '需确认' : '暂无',
+    statusType: warnings.value.length ? ('warning' as const) : ('neutral' as const),
+    iconTone: 'warning' as const,
+  },
 ])
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isPlanningSourceType(value: unknown): value is DataSource['type'] {
+  return typeof value === 'string' && PLANNING_SOURCE_TYPES.has(value)
+}
+
+function normalizePlanningSource(value: unknown): DataSource | null {
+  if (!isRecord(value) || !isPlanningSourceType(value.type)) {
+    return null
+  }
+
+  const sourceId = typeof value.id === 'string' ? value.id.trim() : ''
+  if (!sourceId) {
+    return null
+  }
+
+  const source: DataSource = {
+    id: sourceId,
+    type: value.type,
+  }
+  if (typeof value.path === 'string') {
+    source.path = value.path
+  }
+  if (typeof value.url === 'string') {
+    source.url = value.url
+  }
+  if (typeof value.pathOrUrl === 'string') {
+    source.pathOrUrl = value.pathOrUrl.trim()
+  }
+  if (typeof value.token === 'string') {
+    source.token = value.token
+  }
+  return source
+}
+
+function normalizePlanningSourceConfig(rawConfig: unknown): TestCaseGenerationPlanningSourceConfig {
+  if (!isRecord(rawConfig)) {
+    return {
+      planning_sources: [],
+      preferred_planning_source_id: null,
+      selected_planning_sheet_name: null,
+    }
+  }
+
+  const planningSources = Array.isArray(rawConfig.planning_sources)
+    ? rawConfig.planning_sources
+        .map(normalizePlanningSource)
+        .filter((source): source is DataSource => Boolean(source))
+    : []
+  const preferredSourceId =
+    typeof rawConfig.preferred_planning_source_id === 'string' && rawConfig.preferred_planning_source_id.trim()
+      ? rawConfig.preferred_planning_source_id.trim()
+      : null
+  const selectedSheetName =
+    typeof rawConfig.selected_planning_sheet_name === 'string' && rawConfig.selected_planning_sheet_name.trim()
+      ? rawConfig.selected_planning_sheet_name.trim()
+      : null
+
+  return {
+    planning_sources: planningSources,
+    preferred_planning_source_id: preferredSourceId,
+    selected_planning_sheet_name: selectedSheetName,
+  }
+}
+
+function buildPlanningSourceConfig(): TestCaseGenerationPlanningSourceConfig {
+  const preferredSourceId = selectedPlanningSourceId.value || planningSourceStore.preferredSourceId || null
+  return {
+    planning_sources: planningSourceStore.sources.map((source) => ({ ...source })),
+    preferred_planning_source_id: preferredSourceId,
+    selected_planning_sheet_name: selectedPlanningSheetName.value.trim() || null,
+  }
+}
+
+function applyPlanningSourceConfig(config: TestCaseGenerationPlanningSourceConfig): void {
+  isApplyingPlanningSourceConfig = true
+  planningSourceStore.sources = config.planning_sources
+  planningSourceStore.sourceMetadataMap = {}
+  planningSourceStore.preferredSourceId = config.preferred_planning_source_id
+
+  const preferredSourceId = config.preferred_planning_source_id
+  const restoredSourceId =
+    preferredSourceId && config.planning_sources.some((source) => source.id === preferredSourceId)
+      ? preferredSourceId
+      : config.planning_sources[0]?.id ?? ''
+
+  selectedPlanningSourceId.value = restoredSourceId
+  selectedPlanningSheetName.value = restoredSourceId ? config.selected_planning_sheet_name ?? '' : ''
+  void nextTick(() => {
+    isApplyingPlanningSourceConfig = false
+  })
+}
+
+function queuePlanningSourceConfigPersist(): void {
+  hasPlanningSourceConfigLocalEdits = true
+  void persistPlanningSourceConfig()
+}
+
+async function persistPlanningSourceConfig(): Promise<void> {
+  if (isPlanningSourceConfigHydrating.value) {
+    return
+  }
+  if (!hasLoadedWorkbenchConfig.value) {
+    planningSourcePersistenceError.value = '策划案来源保存失败：尚未读取到当前工作台配置，避免覆盖个人校验配置。'
+    return
+  }
+
+  const payload: Record<string, unknown> = {
+    ...workbenchConfigSnapshot.value,
+    [TEST_CASE_GENERATION_CONFIG_KEY]: buildPlanningSourceConfig(),
+  }
+  planningSourcePersistenceError.value = ''
+
+  try {
+    await saveWorkbenchConfig(payload)
+    workbenchConfigSnapshot.value = payload
+    hasPlanningSourceConfigLocalEdits = false
+  } catch (error) {
+    planningSourcePersistenceError.value = getApiErrorMessage(error, '策划案来源保存失败，刷新后可能无法保留。')
+  }
+}
+
+async function loadPlanningSourceConfig(): Promise<void> {
+  isPlanningSourceConfigHydrating.value = true
+  planningSourcePersistenceError.value = ''
+  let loadedWorkbenchConfig = false
+
+  try {
+    const response = await fetchWorkbenchConfig()
+    const config = isRecord(response.data) ? { ...response.data } : {}
+    loadedWorkbenchConfig = true
+    hasLoadedWorkbenchConfig.value = true
+    workbenchConfigSnapshot.value = config
+
+    if (!hasPlanningSourceConfigLocalEdits) {
+      applyPlanningSourceConfig(normalizePlanningSourceConfig(config[TEST_CASE_GENERATION_CONFIG_KEY]))
+    }
+  } catch (error) {
+    planningSourcePersistenceError.value = getApiErrorMessage(error, '读取策划案来源保存配置失败。')
+  } finally {
+    isPlanningSourceConfigHydrating.value = false
+  }
+
+  if (loadedWorkbenchConfig && hasPlanningSourceConfigLocalEdits) {
+    void persistPlanningSourceConfig()
+  }
+}
 
 watch(
   selectedPlanningSourceId,
-  () => {
-    selectedPlanningSheetName.value = selectedPlanningSheetOptions.value[0]?.name ?? ''
+  (sourceId, previousSourceId) => {
+    if (previousSourceId !== undefined && sourceId !== previousSourceId) {
+      clearSnapshotAndGeneratedResult()
+    }
+    const shouldPersistSourceChange =
+      previousSourceId !== undefined &&
+      sourceId !== previousSourceId &&
+      !isPlanningSourceConfigHydrating.value &&
+      !isApplyingPlanningSourceConfig
+    const firstSheetName = selectedPlanningSheetOptions.value[0]?.name ?? ''
+    if (!sourceId) {
+      selectedPlanningSheetName.value = ''
+    } else if (firstSheetName && !selectedPlanningSheetOptions.value.some((sheet) => sheet.name === selectedPlanningSheetName.value)) {
+      selectedPlanningSheetName.value = firstSheetName
+    }
+    void ensurePlanningSourceMetadata(sourceId).then((metadata) => {
+      if (!metadata || selectedPlanningSourceId.value !== sourceId) {
+        return
+      }
+      if (!metadata.sheets.some((sheet) => sheet.name === selectedPlanningSheetName.value)) {
+        selectedPlanningSheetName.value = metadata.sheets[0]?.name ?? ''
+      }
+      if (shouldPersistSourceChange) {
+        queuePlanningSourceConfigPersist()
+      }
+    })
+    planningSourceStore.preferredSourceId = sourceId || null
+    if (shouldPersistSourceChange && !sourceId) {
+      queuePlanningSourceConfigPersist()
+    }
   },
   { immediate: true },
 )
@@ -541,6 +634,12 @@ watch(
   },
 )
 
+watch(selectedPlanningSheetName, (sheetName, previousSheetName) => {
+  if (previousSheetName !== undefined && sheetName !== previousSheetName) {
+    clearSnapshotAndGeneratedResult()
+  }
+})
+
 watch([referenceSearchKeyword, referenceTypeFilter, referenceSort], () => {
   referenceCurrentPage.value = 1
 })
@@ -562,7 +661,11 @@ function getPriorityType(priority: Priority): 'danger' | 'warning' | 'primary' {
 }
 
 function getReferenceCategoryCount(categoryId: string): number {
-  return referenceCategoryCounts.value[categoryId] ?? 0
+  return currentReferenceCategory.value?.id === categoryId
+    ? currentReferenceCategory.value.referenceCount
+    : referenceCategories.value.find((category) => category.id === categoryId)?.referenceCount ??
+        referenceCategoryCounts.value[categoryId] ??
+        0
 }
 
 function getReferenceTypeLabel(type: ReferenceFileType): string {
@@ -589,9 +692,385 @@ function formatReferenceUploadTime(value: string): string {
   }).format(new Date(value))
 }
 
+function getReferenceFileType(suffix: string): ReferenceFileType {
+  const normalizedSuffix = suffix.toLowerCase().replace(/^\./, '')
+  if (normalizedSuffix === 'md') {
+    return 'md'
+  }
+  if (normalizedSuffix === 'txt') {
+    return 'txt'
+  }
+  return 'xlsx'
+}
+
+function getReferenceSourceTypeLabel(sourceType: ReferenceProfile['source_type']): string {
+  if (sourceType === 'excel') {
+    return 'Excel'
+  }
+  if (sourceType === 'markdown') {
+    return 'Markdown'
+  }
+  return 'TXT'
+}
+
+function mapReferenceSheetOption(sheet: BackendReferenceSheetOption, index: number): ReferenceSheetOption {
+  return {
+    sheetName: sheet.name,
+    sheetIndex: index,
+    isDefault: sheet.is_default,
+    caseCount: sheet.reference_case_count,
+  }
+}
+
+function getRecognizedReferenceFields(profile: ReferenceProfile): string[] {
+  return profile.columns
+    .map((column) => column.standard_label ?? column.standard_field ?? column.original_name)
+    .filter((field): field is string => Boolean(field?.trim()))
+}
+
+function buildReferenceProfileSummary(record: ReferenceFileResponse): string {
+  const profile = record.profile
+  if (!profile) {
+    return '暂未识别画像。'
+  }
+
+  const fields = getRecognizedReferenceFields(profile)
+  const defaultSheetName = record.default_sheet_name ?? profile.default_sheet_name
+  return [
+    `来源类型：${getReferenceSourceTypeLabel(profile.source_type)}`,
+    fields.length ? `字段结构：${fields.slice(0, 6).join(' / ')}` : '字段结构：未识别',
+    defaultSheetName ? `默认 Sheet：${defaultSheetName}` : '',
+  ]
+    .filter(Boolean)
+    .join('；')
+}
+
+function mapReferenceFileResponse(record: ReferenceFileResponse): ReferenceFile {
+  const profileWarnings = record.profile?.warnings.map((warning) => warning.message).filter(Boolean) ?? []
+  const sheetOptions = record.profile?.sheet_options.map(mapReferenceSheetOption) ?? []
+  const type = getReferenceFileType(record.suffix)
+
+  return {
+    id: String(record.id),
+    backendId: record.id,
+    categoryId:
+      typeof record.category_id === 'number' ? String(record.category_id) : REFERENCE_UNCATEGORIZED_CATEGORY_ID,
+    categoryNumericId: record.category_id ?? null,
+    name: record.original_filename,
+    type,
+    tag: record.is_recommended_primary ? '推荐主参考' : undefined,
+    summary: record.category_name,
+    uploadedBy: '项目成员',
+    uploadedAt: record.created_at,
+    caseCount: record.reference_case_count ?? record.profile?.reference_case_count ?? undefined,
+    profileSummary: buildReferenceProfileSummary(record),
+    warnings: profileWarnings.length ? profileWarnings : undefined,
+    isRecommendedPrimary: record.is_recommended_primary,
+    defaultSheetName: record.default_sheet_name ?? record.profile?.default_sheet_name ?? undefined,
+    sheetOptions: sheetOptions.length ? sheetOptions : undefined,
+    profile: record.profile ?? null,
+  }
+}
+
+function buildReferenceCategories(
+  categoryItems: ReferenceCategoryResponse[],
+  files: ReferenceFile[],
+): ReferenceCategory[] {
+  const uncategorizedCount = files.filter((file) => file.categoryId === REFERENCE_UNCATEGORIZED_CATEGORY_ID).length
+  return [
+    ...categoryItems.map((category) => ({
+      id: String(category.id),
+      backendId: category.id,
+      name: category.name,
+      description: '项目参考案例分类',
+      referenceCount: category.reference_count,
+    })),
+    {
+      id: REFERENCE_UNCATEGORIZED_CATEGORY_ID,
+      backendId: null,
+      name: '未分类',
+      description: '暂未归入分类的参考材料',
+      referenceCount: uncategorizedCount,
+    },
+  ]
+}
+
+function applyReferenceCategorySelection(categoryId: string, options: { markStale: boolean }): void {
+  selectedReferenceCategoryId.value = categoryId
+  referenceSearchKeyword.value = ''
+  referenceCurrentPage.value = 1
+
+  const recommendedReference = referenceFiles.value.find(
+    (file) => file.categoryId === categoryId && file.isRecommendedPrimary,
+  )
+  selectedReferenceIds.value = recommendedReference ? [recommendedReference.id] : []
+  primaryReferenceId.value = recommendedReference?.id ?? ''
+  updatePrimaryReferenceSheet(recommendedReference ?? null)
+  if (options.markStale) {
+    markGeneratedResultStale(
+      recommendedReference
+        ? '参考案例分类已切换，已使用该分类的推荐主参考。'
+        : '参考案例分类已切换，本次将按 qa-case 标准逻辑生成。',
+    )
+  }
+}
+
+async function loadReferenceLibrary(): Promise<void> {
+  isReferenceLibraryLoading.value = true
+  referenceApiErrorMessage.value = ''
+  try {
+    const [categoryResponse, fileResponse] = await Promise.all([
+      fetchReferenceCategories(),
+      fetchReferenceFiles(),
+    ])
+    const files = fileResponse.data.items.map(mapReferenceFileResponse)
+    const categories = buildReferenceCategories(categoryResponse.data.items, files)
+    referenceFiles.value = files
+    referenceCategories.value = categories
+
+    const nextCategoryId = categories.some((category) => category.id === selectedReferenceCategoryId.value)
+      ? selectedReferenceCategoryId.value
+      : categories[0]?.id ?? ''
+    applyReferenceCategorySelection(nextCategoryId, { markStale: false })
+  } catch (error) {
+    referenceApiErrorMessage.value = getApiErrorMessage(error, '读取参考案例库失败，请稍后重试。')
+    referenceCategories.value = []
+    referenceFiles.value = []
+    selectedReferenceCategoryId.value = ''
+    selectedReferenceIds.value = []
+    primaryReferenceId.value = ''
+    selectedReferenceSheetName.value = ''
+  } finally {
+    isReferenceLibraryLoading.value = false
+  }
+}
+
 function markGeneratedResultStale(reason: string): void {
   isGeneratedResultStale.value = true
   generatedResultStaleReason.value = reason
+}
+
+function clearSnapshotAndGeneratedResult(): void {
+  planningSnapshot.value = null
+  resetSnapshotBriefState()
+  clearGeneratedResult()
+}
+
+function clearGeneratedResult(): void {
+  generationResult.value = null
+  apiErrorMessage.value = ''
+  isGeneratedResultStale.value = false
+  generatedResultStaleReason.value = ''
+  snapshotBriefParticipatedInLastGeneration.value = null
+}
+
+function resetSnapshotBriefState(): void {
+  snapshotBriefRequestId += 1
+  snapshotBriefMarkdown.value = ''
+  snapshotBriefWarnings.value = []
+  snapshotBriefErrorMessage.value = ''
+  isSnapshotBriefLoading.value = false
+}
+
+function getApiErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof Error && error.message ? error.message : fallback
+}
+
+async function generateSnapshotBrief(): Promise<void> {
+  const snapshot = planningSnapshot.value
+  if (!snapshot) {
+    return
+  }
+
+  const requestId = ++snapshotBriefRequestId
+  isSnapshotBriefLoading.value = true
+  snapshotBriefMarkdown.value = ''
+  snapshotBriefWarnings.value = []
+  snapshotBriefErrorMessage.value = ''
+
+  try {
+    const response = await readPlanningSnapshotBrief({ planning_snapshot: snapshot })
+    if (requestId !== snapshotBriefRequestId || planningSnapshot.value !== snapshot) {
+      return
+    }
+    snapshotBriefMarkdown.value = response.data.brief_markdown
+    snapshotBriefWarnings.value = response.data.warnings ?? []
+  } catch (error) {
+    if (requestId !== snapshotBriefRequestId || planningSnapshot.value !== snapshot) {
+      return
+    }
+    snapshotBriefErrorMessage.value = getApiErrorMessage(error, 'AI 整理稿生成失败，请稍后重试。')
+  } finally {
+    if (requestId === snapshotBriefRequestId) {
+      isSnapshotBriefLoading.value = false
+    }
+  }
+}
+
+async function copySnapshotBriefMarkdown(): Promise<void> {
+  const markdown = snapshotBriefMarkdown.value.trim()
+  if (!markdown) {
+    return
+  }
+
+  try {
+    await copyTextToClipboard(markdown)
+    ElMessage.success('已复制整理稿 Markdown。')
+  } catch {
+    ElMessage.warning('复制失败，请手动选择 Markdown 内容复制。')
+  }
+}
+
+async function copyTextToClipboard(text: string): Promise<void> {
+  const clipboard = globalThis.navigator?.clipboard
+  if (clipboard?.writeText) {
+    await clipboard.writeText(text)
+    return
+  }
+  copyTextWithTextarea(text)
+}
+
+function copyTextWithTextarea(text: string): void {
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.setAttribute('readonly', 'readonly')
+  textarea.style.position = 'fixed'
+  textarea.style.left = '-9999px'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) {
+    throw new Error('copy failed')
+  }
+}
+
+async function refreshPlanningSourceMetadata(sourceId: string): Promise<SourceMetadata | null> {
+  const source = planningSourceStore.sources.find((item) => item.id === sourceId)
+  if (!source) {
+    return null
+  }
+
+  const response = await fetchSourceMetadata(source)
+  const metadata = response.data
+  if (planningSourceStore.sourceMetadataMap) {
+    planningSourceStore.sourceMetadataMap[sourceId] = metadata
+  }
+  return metadata
+}
+
+async function ensurePlanningSourceMetadata(sourceId: string): Promise<SourceMetadata | null> {
+  if (!sourceId) {
+    return null
+  }
+
+  const cached = planningSourceStore.sourceMetadataMap?.[sourceId]
+  if (cached) {
+    return cached
+  }
+
+  return refreshPlanningSourceMetadata(sourceId)
+}
+
+async function readSnapshot(): Promise<void> {
+  if (!selectedPlanningSource.value || !selectedPlanningSheetName.value) {
+    return
+  }
+
+  isSnapshotLoading.value = true
+  apiErrorMessage.value = ''
+  try {
+    const source = selectedPlanningSource.value
+    const response = await readPlanningSnapshot({
+      source_type: source.type === 'feishu' ? 'feishu' : 'uploaded_excel',
+      source,
+      sheet_name: selectedPlanningSheetName.value,
+    })
+    planningSnapshot.value = response.data
+    clearGeneratedResult()
+    resetSnapshotBriefState()
+    activeTab.value = 'brief'
+    void generateSnapshotBrief()
+  } catch (error) {
+    apiErrorMessage.value = getApiErrorMessage(error, '读取策划案快照失败，请稍后重试。')
+  } finally {
+    isSnapshotLoading.value = false
+  }
+}
+
+async function generateCases(): Promise<void> {
+  if (!planningSnapshot.value) {
+    return
+  }
+
+  isGeneratingCases.value = true
+  apiErrorMessage.value = ''
+  try {
+    const selectedReferenceBackendIds = selectedReferenceFiles.value.map((file) => file.backendId)
+    const primaryReferenceBackendId = primaryReference.value?.backendId ?? null
+    const primaryReferenceSheetName =
+      primaryReference.value && hasReferenceSheetOptions.value ? selectedReferenceSheetName.value || null : null
+    const briefMarkdown = snapshotBriefMarkdown.value.trim()
+    const payload: TestCaseGenerationRequest = {
+      planning_snapshot: planningSnapshot.value,
+      reference_ids: selectedReferenceBackendIds,
+      primary_reference_id: primaryReferenceBackendId,
+      primary_reference_sheet_name: primaryReferenceSheetName,
+    }
+    if (briefMarkdown) {
+      payload.snapshot_brief_markdown = briefMarkdown
+    }
+    const response = await generateTestCases(payload)
+    generationResult.value = response.data
+    isGeneratedResultStale.value = false
+    generatedResultStaleReason.value = ''
+    snapshotBriefParticipatedInLastGeneration.value = Boolean(briefMarkdown)
+    activeTab.value = 'cases'
+  } catch (error) {
+    apiErrorMessage.value = getApiErrorMessage(error, '生成用例失败，请稍后重试。')
+  } finally {
+    isGeneratingCases.value = false
+  }
+}
+
+function saveDownloadedFile(file: ApiFileResponse): void {
+  if (typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') {
+    return
+  }
+
+  const url = URL.createObjectURL(file.blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = file.filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+async function exportCases(): Promise<void> {
+  if (!generationResult.value || isGeneratedResultStale.value) {
+    return
+  }
+
+  isExportingCases.value = true
+  apiErrorMessage.value = ''
+  try {
+    const file = await exportTestCaseWorkbook({
+      blueprint: generationResult.value.blueprint,
+      cases: generationResult.value.cases,
+      warnings: generationResult.value.warnings,
+      stats: generationResult.value.stats,
+      export_columns: generationResult.value.export_columns,
+      primary_reference_profile: generationResult.value.primary_reference_profile ?? null,
+      source_summary: planningSnapshot.value?.source_summary ?? '',
+    })
+    saveDownloadedFile(file)
+  } catch (error) {
+    apiErrorMessage.value = getApiErrorMessage(error, '导出 Excel 失败，请稍后重试。')
+  } finally {
+    isExportingCases.value = false
+  }
 }
 
 function updatePrimaryReferenceSheet(file: ReferenceFile | null): void {
@@ -611,19 +1090,7 @@ function selectReferenceCategory(categoryId: string): void {
     return
   }
 
-  selectedReferenceCategoryId.value = categoryId
-  referenceSearchKeyword.value = ''
-  referenceCurrentPage.value = 1
-
-  const recommendedReference = referenceFiles.value.find(
-    (file) => file.categoryId === categoryId && file.isRecommendedPrimary,
-  )
-  selectedReferenceIds.value = recommendedReference ? [recommendedReference.id] : []
-  primaryReferenceId.value = recommendedReference?.id ?? ''
-  updatePrimaryReferenceSheet(recommendedReference ?? null)
-  markGeneratedResultStale(
-    recommendedReference ? '参考案例分类已切换，已使用该分类的推荐主参考。' : '参考案例分类已切换，请先选择参考案例和主参考案例。',
-  )
+  applyReferenceCategorySelection(categoryId, { markStale: true })
 }
 
 function isReferenceSelected(fileId: string): boolean {
@@ -648,7 +1115,7 @@ function toggleReferenceSelection(file: ReferenceFile, checked: boolean): void {
   if (primaryReferenceId.value === file.id) {
     primaryReferenceId.value = ''
     selectedReferenceSheetName.value = ''
-    markGeneratedResultStale('当前主参考案例已移出选择，请重新指定主参考案例。')
+    markGeneratedResultStale('当前主参考案例已移出选择，本次将按无主参考模式生成。')
     return
   }
   markGeneratedResultStale('参考案例选择已变化，需要重新生成。')
@@ -701,7 +1168,7 @@ function openCreateReferenceCategoryDialog(): void {
   createCategoryDialogVisible.value = true
 }
 
-function createReferenceCategory(): void {
+async function createReferenceCategory(): Promise<void> {
   const categoryName = newReferenceCategoryName.value.trim()
   if (!categoryName) {
     createCategoryError.value = '分类名不能为空。'
@@ -712,18 +1179,49 @@ function createReferenceCategory(): void {
     return
   }
 
-  const categoryId = `custom-${referenceCategories.value.length + 1}`
-  referenceCategories.value.push({
-    id: categoryId,
-    name: categoryName,
-    description: '页面态新建分类，尚未接入后端保存。',
-  })
-  createCategoryDialogVisible.value = false
-  selectReferenceCategory(categoryId)
+  isCreatingReferenceCategory.value = true
+  createCategoryError.value = ''
+  try {
+    const response = await createReferenceCategoryApi({ name: categoryName })
+    selectedReferenceCategoryId.value = String(response.data.id)
+    createCategoryDialogVisible.value = false
+    await loadReferenceLibrary()
+  } catch (error) {
+    createCategoryError.value = getApiErrorMessage(error, '创建参考案例分类失败，请稍后重试。')
+  } finally {
+    isCreatingReferenceCategory.value = false
+  }
 }
 
 function openUploadReferenceDialog(): void {
+  referenceUploadFile.value = null
+  uploadReferenceError.value = ''
   uploadReferenceDialogVisible.value = true
+}
+
+function handleReferenceUploadFileChange(event: Event): void {
+  const input = event.target instanceof HTMLInputElement ? event.target : null
+  referenceUploadFile.value = input?.files?.[0] ?? null
+  uploadReferenceError.value = ''
+}
+
+async function uploadReference(): Promise<void> {
+  if (!referenceUploadFile.value) {
+    uploadReferenceError.value = '请选择一个 .xlsx、.xls、.md 或 .txt 参考案例文件。'
+    return
+  }
+
+  isUploadingReference.value = true
+  uploadReferenceError.value = ''
+  try {
+    await uploadReferenceFile(referenceUploadFile.value, currentReferenceCategory.value?.backendId ?? null)
+    uploadReferenceDialogVisible.value = false
+    await loadReferenceLibrary()
+  } catch (error) {
+    uploadReferenceError.value = getApiErrorMessage(error, '上传参考案例失败，请稍后重试。')
+  } finally {
+    isUploadingReference.value = false
+  }
 }
 
 function openProfilePreview(file: ReferenceFile): void {
@@ -734,6 +1232,37 @@ function openProfilePreview(file: ReferenceFile): void {
 function openReferenceMore(file: ReferenceFile): void {
   referenceMoreFileId.value = file.id
   referenceMoreDialogVisible.value = true
+}
+
+async function setReferenceAsRecommended(file: ReferenceFile): Promise<void> {
+  isUpdatingReference.value = true
+  referenceApiErrorMessage.value = ''
+  try {
+    await setRecommendedPrimaryReference(file.backendId)
+    selectedReferenceCategoryId.value = file.categoryId
+    referenceMoreDialogVisible.value = false
+    await loadReferenceLibrary()
+    markGeneratedResultStale('推荐主参考已更新，本次默认主参考已同步。')
+  } catch (error) {
+    referenceApiErrorMessage.value = getApiErrorMessage(error, '设置推荐主参考失败，请确认当前账号权限。')
+  } finally {
+    isUpdatingReference.value = false
+  }
+}
+
+async function removeReferenceFile(file: ReferenceFile): Promise<void> {
+  isUpdatingReference.value = true
+  referenceApiErrorMessage.value = ''
+  try {
+    await deleteReferenceFile(file.backendId)
+    referenceMoreDialogVisible.value = false
+    await loadReferenceLibrary()
+    markGeneratedResultStale('参考案例已删除，当前生成结果需要重新生成。')
+  } catch (error) {
+    referenceApiErrorMessage.value = getApiErrorMessage(error, '删除参考案例失败，请确认当前账号权限。')
+  } finally {
+    isUpdatingReference.value = false
+  }
 }
 
 function getPlanningSourceLabel(source: DataSource): string {
@@ -757,37 +1286,44 @@ function openPlanningSourceCreate(): void {
   planningSourcePanelRef.value?.openCreateDialog()
 }
 
-function handlePlanningSourceSaved(sourceId: string): void {
+async function handlePlanningSourceSaved(sourceId: string): Promise<void> {
   selectedPlanningSourceId.value = sourceId
+  const metadata = await refreshPlanningSourceMetadata(sourceId)
+  if (metadata && selectedPlanningSourceId.value === sourceId) {
+    selectedPlanningSheetName.value = metadata.sheets[0]?.name ?? ''
+  }
+  queuePlanningSourceConfigPersist()
+}
+
+function handlePlanningSheetSelectionChange(): void {
+  if (isPlanningSourceConfigHydrating.value || isApplyingPlanningSourceConfig) {
+    return
+  }
+  queuePlanningSourceConfigPersist()
 }
 
 function togglePlanningSourceSection(): void {
   planningSourceCollapsed.value = !planningSourceCollapsed.value
 }
 
-updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === primaryReferenceId.value) ?? null)
+onMounted(() => {
+  void loadPlanningSourceConfig()
+  void loadReferenceLibrary()
+})
 </script>
 
 <template>
   <div class="test-case-generator-page">
     <PageHeader
       breadcrumb="主页 / 用例生成"
-      title="用例生成"
-      description="读取策划案 Sheet，结合项目参考案例生成测试用例。"
+      title="用例生成工作台"
+      description="按 01 到 04 完成来源维护、快照读取、参考选择和结果导出。"
     >
       <template #actions>
         <div class="tcg-ai-status">
           <el-icon><SuccessFilled /></el-icon>
-          <span>项目 AI 已配置</span>
+          <span>项目 AI 可用</span>
         </div>
-        <SecondaryButton @click="openUploadReferenceDialog">
-          <template #icon><Upload /></template>
-          上传参考案例
-        </SecondaryButton>
-        <PrimaryButton :disabled="!isGenerationReady">
-          <template #icon><VideoPlay /></template>
-          生成用例
-        </PrimaryButton>
       </template>
     </PageHeader>
 
@@ -803,9 +1339,9 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
           :icon-tone="item.iconTone"
         >
           <template #icon>
-            <Document v-if="item.label === '策划案快照'" />
-            <FolderOpened v-else-if="item.label === '参考案例'" />
-            <Collection v-else-if="item.label === '生成用例'" />
+            <Document v-if="item.label === '快照行数'" />
+            <FolderOpened v-else-if="item.label === '本次参考'" />
+            <Collection v-else-if="item.label === '预览用例'" />
             <WarningFilled v-else />
           </template>
         </MetricCard>
@@ -815,8 +1351,8 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
         class="tcg-source-module"
         step="01"
         title="数据源"
-        description="添加飞书表格、上传 Excel 或 SVN Excel 作为策划案来源"
-        status-label="页面态"
+        description="维护本页策划案来源，读取前确认默认 Sheet。"
+        status-label="用户项目保存"
         status-tone="done"
         :active="true"
         :collapsed="planningSourceCollapsed"
@@ -826,7 +1362,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
         <template #actions>
           <PrimaryButton size="sm" @click="openPlanningSourceCreate">
             <template #icon><Plus /></template>
-            新增策划案来源
+            新增来源
           </PrimaryButton>
         </template>
 
@@ -836,21 +1372,27 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
           toolbar-mode="hidden"
           @saved="handlePlanningSourceSaved"
         />
+        <p v-if="planningSourcePersistenceError" class="tcg-api-error" role="alert">
+          {{ planningSourcePersistenceError }}
+        </p>
       </CollapsibleSection>
 
       <section class="tcg-panel tcg-input-module" data-test="generation-input-module">
         <div class="tcg-panel__header">
-          <div>
-            <h2>生成输入</h2>
-            <p>选择策划案来源、Planning Sheet 和本次生成主参考</p>
+          <div class="tcg-module-heading">
+            <span class="tcg-module-heading__index">02</span>
+            <div>
+              <h2>生成输入</h2>
+              <p>读取策划案快照；参考案例可选，用于补充字段、粒度和历史风格。</p>
+            </div>
           </div>
         </div>
 
         <div class="tcg-input-grid">
           <section class="tcg-input-block" aria-labelledby="planning-source-title">
             <div class="tcg-input-block__header">
-              <h3 id="planning-source-title">策划案来源</h3>
-              <span>读取快照</span>
+              <h3 id="planning-source-title">策划案快照</h3>
+              <span>可读取</span>
             </div>
             <label class="tcg-field">
               <span>策划案来源</span>
@@ -876,6 +1418,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
               <el-select
                 v-model="selectedPlanningSheetName"
                 :disabled="!hasPlanningSheetOptions"
+                @change="handlePlanningSheetSelectionChange"
               >
                 <el-option
                   v-if="!hasPlanningSheetOptions"
@@ -893,7 +1436,13 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
             <p v-if="selectedPlanningSource" class="tcg-source-hint">
               {{ selectedPlanningSource.pathOrUrl ?? selectedPlanningSource.path ?? selectedPlanningSource.url }}
             </p>
-            <SecondaryButton class="tcg-full-button">
+            <SecondaryButton
+              class="tcg-full-button"
+              data-test="read-snapshot-button"
+              :disabled="!canReadSnapshot"
+              :loading="isSnapshotLoading"
+              @click="readSnapshot"
+            >
               <template #icon><Refresh /></template>
               读取快照
             </SecondaryButton>
@@ -901,8 +1450,8 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 
           <section class="tcg-input-block" aria-labelledby="generation-settings-title">
             <div class="tcg-input-block__header">
-              <h3 id="generation-settings-title">生成设置</h3>
-              <span>{{ isGenerationReady ? '可生成' : '待选择' }}</span>
+              <h3 id="generation-settings-title">主参考设置</h3>
+              <span>{{ hasPlanningSnapshot ? '可生成' : '待快照' }}</span>
             </div>
             <label class="tcg-field">
               <span>主参考案例</span>
@@ -915,7 +1464,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
               >
                 <el-option
                   v-if="!selectedReferenceFiles.length"
-                  label="先在参考案例库选择参考案例"
+                  label="可选：先选择参考案例后指定主参考"
                   value=""
                 />
                 <el-option
@@ -937,7 +1486,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
               >
                 <el-option
                   v-if="!hasReferenceSheetOptions"
-                  label="当前参考案例无 Sheet"
+                  :label="primaryReference ? '当前参考案例无 Sheet' : '未选择主参考'"
                   value=""
                 />
                 <el-option
@@ -954,7 +1503,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
             </label>
             <div class="tcg-warning-note">
               <el-icon><WarningFilled /></el-icon>
-              <span>{{ isGenerationReady ? 'V1 不读取图片/附件' : '请选择参考案例并指定一个主参考案例' }}</span>
+              <span>{{ primaryReference ? '当前版本不读取图片或附件，参考案例仅作增强' : '未选择主参考时按 qa-case 标准逻辑生成' }}</span>
             </div>
           </section>
         </div>
@@ -962,9 +1511,12 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 
       <section class="tcg-panel tcg-reference-library" data-test="reference-library">
         <div class="tcg-panel__header">
-          <div>
-            <h2>参考案例库</h2>
-            <p>{{ selectedReferenceSummary }}</p>
+          <div class="tcg-module-heading">
+            <span class="tcg-module-heading__index">03</span>
+            <div>
+              <h2>参考案例库</h2>
+              <p>{{ selectedReferenceSummary }}；参考案例是增强输入，不是生成前置条件。</p>
+            </div>
           </div>
           <div class="tcg-panel__actions">
             <SecondaryButton size="sm" @click="openCreateReferenceCategoryDialog">
@@ -977,6 +1529,11 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
             </SecondaryButton>
           </div>
         </div>
+
+        <p v-if="referenceApiErrorMessage" class="tcg-api-error" role="alert">{{ referenceApiErrorMessage }}</p>
+        <p v-else-if="isReferenceLibraryLoading" class="tcg-inline-warning" aria-live="polite">
+          正在读取项目参考案例库…
+        </p>
 
         <div class="tcg-reference-categories" aria-label="参考案例分类">
           <button
@@ -1051,10 +1608,10 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
         </div>
 
         <p v-if="!primaryReference && selectedReferenceFiles.length" class="tcg-inline-warning" aria-live="polite">
-          已选择参考案例，请指定一个主参考案例后再生成。
+          已选择参考案例但未指定主参考，本次会把它们作为补充参考使用。
         </p>
         <p v-else-if="!selectedReferenceFiles.length" class="tcg-inline-warning" aria-live="polite">
-          当前分类未选择参考案例，生成前必须选择参考案例并指定主参考。
+          当前分类未选择参考案例，本次将按 qa-case 标准逻辑生成。
         </p>
 
         <div
@@ -1174,6 +1731,36 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
       </section>
 
       <section class="tcg-preview" aria-label="用例生成预览">
+          <div class="tcg-preview__header" data-test="preview-action-bar">
+            <div class="tcg-module-heading">
+              <span class="tcg-module-heading__index">04</span>
+              <div>
+                <h2>结果预览</h2>
+                <p>核对整理稿、测试用例和限制提示，确认后导出 Excel。</p>
+              </div>
+            </div>
+            <div class="tcg-preview__actions">
+              <SecondaryButton
+                data-test="preview-export-button"
+                :disabled="!canExportGeneratedResult"
+                :loading="isExportingCases"
+                @click="exportCases"
+              >
+                <template #icon><Download /></template>
+                导出 Excel
+              </SecondaryButton>
+              <PrimaryButton
+                :disabled="!isGenerationReady"
+                :loading="isGeneratingCases"
+                data-test="preview-generate-button"
+                @click="generateCases"
+              >
+                <template #icon><VideoPlay /></template>
+                生成用例
+              </PrimaryButton>
+            </div>
+          </div>
+
           <div class="tcg-preview__tabs">
             <button
               v-for="tab in tabs"
@@ -1188,24 +1775,105 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 
           <div class="tcg-preview__toolbar">
             <div class="tcg-status-strip">
-              <el-tag type="primary" size="large">蓝图已生成</el-tag>
-              <el-tag type="warning" size="large">3 条限制提示</el-tag>
+              <el-tag :type="previewStatusType" size="large">{{ previewStatusLabel }}</el-tag>
+              <el-tag :type="warnings.length ? 'warning' : 'info'" size="large">{{ warnings.length }} 条限制提示</el-tag>
+              <span v-if="generationResult" class="tcg-muted">用例总数 {{ generationResult.stats.total }}</span>
               <span class="tcg-muted">主参考：{{ primaryReference?.name ?? '未选择主参考' }}</span>
             </div>
             <div class="tcg-priority-summary">
-              <el-tag type="danger" size="large">P0 8</el-tag>
-              <el-tag type="warning" size="large">P1 42</el-tag>
-              <el-tag type="primary" size="large">P2 76</el-tag>
+              <el-tag v-for="[priority, count] in prioritySummary" :key="priority" :type="getPriorityType(priority)" size="large">
+                {{ priority }} {{ count }}
+              </el-tag>
+              <span v-if="!prioritySummary.length" class="tcg-muted">待读取生成结果</span>
             </div>
           </div>
+
+          <p v-if="apiErrorMessage" class="tcg-api-error" role="alert">{{ apiErrorMessage }}</p>
 
           <div v-if="isGeneratedResultStale" class="tcg-stale-notice" role="status" aria-live="polite">
             <el-icon><WarningFilled /></el-icon>
             <span>{{ generatedResultStaleReason }}</span>
           </div>
 
-          <div v-if="activeTab === 'cases'" class="tcg-tab-panel">
-            <el-table :data="generatedCases" class="tcg-case-table">
+          <div v-if="activeTab === 'brief'" class="tcg-tab-panel">
+            <div class="tcg-brief-panel">
+              <div class="tcg-brief-panel__header">
+                <div>
+                  <strong>AI 快照整理稿</strong>
+                  <span>辅助阅读与对齐，需求事实来源仍以 Planning Sheet Snapshot 为准。</span>
+                </div>
+                <div class="tcg-brief-panel__actions">
+                  <SecondaryButton
+                    size="sm"
+                    data-test="copy-snapshot-brief-button"
+                    :disabled="!hasSnapshotBriefMarkdown || isSnapshotBriefLoading"
+                    @click="copySnapshotBriefMarkdown"
+                  >
+                    <template #icon><CopyDocument /></template>
+                    复制 Markdown
+                  </SecondaryButton>
+                  <SecondaryButton
+                    size="sm"
+                    data-test="retry-snapshot-brief-button"
+                    :disabled="!hasPlanningSnapshot || isSnapshotBriefLoading"
+                    :loading="isSnapshotBriefLoading"
+                    @click="generateSnapshotBrief"
+                  >
+                    <template #icon><Refresh /></template>
+                    重新整理
+                  </SecondaryButton>
+                </div>
+              </div>
+
+              <p
+                v-if="generationResult && snapshotBriefParticipatedInLastGeneration === false"
+                class="tcg-brief-panel__notice"
+                role="status"
+              >
+                整理稿未参与本次生成。
+              </p>
+
+              <div v-if="isSnapshotBriefLoading" class="tcg-brief-state" role="status" aria-live="polite">
+                <span class="tcg-loading-dot"></span>
+                <div>
+                  <strong>整理中</strong>
+                  <span>快照已读取，可直接生成用例。</span>
+                </div>
+              </div>
+              <div v-else-if="snapshotBriefErrorMessage" class="tcg-brief-error" role="alert">
+                <el-icon><WarningFilled /></el-icon>
+                <div>
+                  <strong>整理稿生成失败</strong>
+                  <p>{{ snapshotBriefErrorMessage }}</p>
+                  <p v-if="snapshotFirstRowSummary" class="tcg-muted">
+                    原始快照仍已保留：{{ snapshotFirstRowSummary }}
+                  </p>
+                  <SecondaryButton
+                    size="sm"
+                    data-test="retry-snapshot-brief-error-button"
+                    :loading="isSnapshotBriefLoading"
+                    @click="generateSnapshotBrief"
+                  >
+                    <template #icon><Refresh /></template>
+                    重新整理
+                  </SecondaryButton>
+                </div>
+              </div>
+              <div v-else-if="snapshotBriefMarkdown" class="tcg-brief-markdown" data-test="snapshot-brief-markdown">
+                <pre>{{ snapshotBriefMarkdown }}</pre>
+                <ul v-if="snapshotBriefWarningMessages.length" class="tcg-brief-warning-list">
+                  <li v-for="warning in snapshotBriefWarningMessages" :key="warning">
+                    <el-icon><WarningFilled /></el-icon>
+                    <span>{{ warning }}</span>
+                  </li>
+                </ul>
+              </div>
+              <div v-else class="tcg-empty-result">生成前先读取策划案快照</div>
+            </div>
+          </div>
+
+          <div v-else-if="activeTab === 'cases'" class="tcg-tab-panel">
+            <el-table v-if="generatedCases.length" :data="generatedCases" class="tcg-case-table">
               <el-table-column prop="id" label="用例编号" width="112" />
               <el-table-column prop="module" label="功能模块" width="128" />
               <el-table-column prop="checkpoint" label="检查点" width="132" />
@@ -1227,77 +1895,35 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
                 </template>
               </el-table-column>
             </el-table>
-          </div>
-
-          <div v-else-if="activeTab === 'snapshot'" class="tcg-tab-panel">
-            <div class="tcg-snapshot-grid">
-              <div v-for="row in snapshotRows" :key="row.join('-')" class="tcg-snapshot-row">
-                <span v-for="cell in row" :key="cell">{{ cell }}</span>
-              </div>
-            </div>
-          </div>
-
-          <div v-else-if="activeTab === 'blueprint'" class="tcg-tab-panel">
-            <div class="tcg-blueprint-list">
-              <article v-for="item in blueprintModules" :key="item.name" class="tcg-blueprint-card">
-                <div class="tcg-blueprint-card__icon" :class="`is-${item.tone}`">
-                  <DataAnalysis />
-                </div>
-                <div>
-                  <strong>{{ item.name }}</strong>
-                  <span>约 {{ item.count }} 条</span>
-                </div>
-              </article>
+            <div v-else class="tcg-empty-result">
+              {{ hasPlanningSnapshot ? '快照已读取，点击生成用例。' : '生成前先读取策划案快照' }}
             </div>
           </div>
 
           <div v-else class="tcg-tab-panel">
-            <ul class="tcg-warning-list">
+            <ul v-if="warnings.length" class="tcg-warning-list">
               <li v-for="warning in warnings" :key="warning">
                 <el-icon><WarningFilled /></el-icon>
                 <span>{{ warning }}</span>
               </li>
             </ul>
-          </div>
-
-          <div class="tcg-blueprint-summary">
-            <div class="tcg-section-title">
-              <h2>用例蓝图</h2>
-              <span>只读预览</span>
-            </div>
-            <div class="tcg-blueprint-modules">
-              <article v-for="item in blueprintModules" :key="item.name">
-                <div class="tcg-module-icon" :class="`is-${item.tone}`">
-                  <DataAnalysis />
-                </div>
-                <div>
-                  <strong>{{ item.name }}</strong>
-                  <span>约 {{ item.count }} 条</span>
-                </div>
-              </article>
-            </div>
+            <div v-else class="tcg-empty-result">暂无限制提示</div>
           </div>
 
           <div class="tcg-warning-strip">
             <div class="tcg-section-title">
-              <h2>Warnings</h2>
+              <h2>限制提示</h2>
               <span>本次生成限制</span>
             </div>
             <div class="tcg-warning-strip__items">
-              <span v-for="warning in warnings.slice(0, 2)" :key="warning">
+              <span v-for="warning in warnings" :key="warning">
                 <el-icon><WarningFilled /></el-icon>
                 {{ warning }}
               </span>
+              <span v-if="!warnings.length" class="tcg-muted">暂无限制提示。</span>
             </div>
           </div>
 
-          <div class="tcg-export-bar">
-            <span>本次结果仅保留在当前页面预览，不保存生成历史。</span>
-            <SecondaryButton>
-              <template #icon><Download /></template>
-              导出 Excel
-            </SecondaryButton>
-          </div>
       </section>
     </main>
 
@@ -1317,7 +1943,9 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
       <template #footer>
         <div class="tcg-dialog-actions">
           <SecondaryButton size="sm" @click="createCategoryDialogVisible = false">取消</SecondaryButton>
-          <PrimaryButton size="sm" @click="createReferenceCategory">创建分类</PrimaryButton>
+          <PrimaryButton size="sm" :loading="isCreatingReferenceCategory" @click="createReferenceCategory">
+            创建分类
+          </PrimaryButton>
         </div>
       </template>
     </el-dialog>
@@ -1325,8 +1953,31 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
     <el-dialog v-model="uploadReferenceDialogVisible" title="上传参考案例" width="460px">
       <div class="tcg-static-dialog">
         <strong>上传到当前分类：{{ currentReferenceCategory?.name ?? '未选择分类' }}</strong>
-        <p>静态页仅展示入口，不读取文件或保存到后端。后续接入时支持 Excel、Markdown 和 TXT 参考案例。</p>
+        <p>支持 .xlsx、.xls、.md、.txt；上传后由后端生成确定性画像。</p>
+        <label class="tcg-dialog-field">
+          <span>参考案例文件</span>
+          <input
+            type="file"
+            accept=".xlsx,.xls,.md,.txt"
+            data-test="reference-upload-input"
+            @change="handleReferenceUploadFileChange"
+          />
+        </label>
+        <p v-if="uploadReferenceError" class="tcg-dialog-error" role="alert">{{ uploadReferenceError }}</p>
       </div>
+      <template #footer>
+        <div class="tcg-dialog-actions">
+          <SecondaryButton size="sm" @click="uploadReferenceDialogVisible = false">取消</SecondaryButton>
+          <PrimaryButton
+            size="sm"
+            data-test="reference-upload-submit"
+            :loading="isUploadingReference"
+            @click="uploadReference"
+          >
+            上传
+          </PrimaryButton>
+        </div>
+      </template>
     </el-dialog>
 
     <el-dialog v-model="profilePreviewDialogVisible" title="参考案例画像" width="520px">
@@ -1342,11 +1993,19 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
     <el-dialog v-model="referenceMoreDialogVisible" title="更多操作" width="420px">
       <div v-if="referenceMoreFile" class="tcg-static-dialog">
         <strong>{{ referenceMoreFile.name }}</strong>
-        <p>以下管理员动作仅作为静态页面态展示，当前未接入后端权限或持久化。</p>
+        <p>管理员动作以后端权限校验结果为准，普通项目成员调用时会被后端拒绝。</p>
         <div class="tcg-static-actions">
           <button type="button" disabled>重命名分类</button>
-          <button type="button" disabled>删除文件</button>
-          <button type="button" disabled>设为推荐主参考</button>
+          <button type="button" :disabled="isUpdatingReference" @click="removeReferenceFile(referenceMoreFile)">
+            删除文件
+          </button>
+          <button
+            type="button"
+            :disabled="isUpdatingReference || referenceMoreFile.isRecommendedPrimary"
+            @click="setReferenceAsRecommended(referenceMoreFile)"
+          >
+            设为推荐主参考
+          </button>
         </div>
       </div>
     </el-dialog>
@@ -1355,16 +2014,15 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 
 <style scoped>
 .test-case-generator-page {
-  --tcg-panel-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(250, 252, 255, 0.94));
-  --tcg-panel-border: rgba(203, 213, 225, 0.72);
-  --tcg-panel-shadow:
-    0 10px 26px rgba(15, 23, 42, 0.045),
-    inset 0 1px 0 rgba(255, 255, 255, 0.86);
-  --tcg-panel-shadow-strong:
-    0 14px 34px rgba(15, 23, 42, 0.065),
-    inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  --tcg-row-hover: #f7faff;
+  --tcg-panel-bg: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(251, 253, 255, 0.98) 100%);
+  --tcg-panel-border: rgba(203, 213, 225, 0.78);
+  --tcg-panel-shadow: 0 14px 36px rgba(15, 23, 42, 0.045);
+  --tcg-panel-shadow-strong: 0 18px 44px rgba(15, 23, 42, 0.075);
+  --tcg-row-hover: #f4f8ff;
   --tcg-focus-ring: rgba(15, 98, 254, 0.18);
+  --tcg-section-bg: #f5f8ff;
+  --tcg-panel-rail: linear-gradient(90deg, rgba(15, 98, 254, 0.74), rgba(18, 183, 106, 0.52));
+  --tcg-soft-inset: inset 0 1px 0 rgba(255, 255, 255, 0.92);
 
   display: flex;
   min-height: 0;
@@ -1380,11 +2038,11 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
   min-height: 0;
   flex: 1 1 auto;
   flex-direction: column;
-  gap: 12px;
+  gap: 16px;
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
-  padding: 18px 28px 40px;
+  padding: 20px 28px 44px;
   scrollbar-gutter: stable;
 }
 
@@ -1395,15 +2053,15 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 .tcg-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
 
 .tcg-metrics :deep(.ui-metric-card) {
   border-color: var(--tcg-panel-border);
   background: var(--tcg-panel-bg);
-  box-shadow: var(--tcg-panel-shadow);
-  min-height: 78px;
-  padding: 12px 18px;
+  box-shadow: var(--tcg-panel-shadow), var(--tcg-soft-inset);
+  min-height: 74px;
+  padding: 13px 18px;
   transition:
     border-color 160ms cubic-bezier(0.2, 0, 0, 1),
     box-shadow 160ms cubic-bezier(0.2, 0, 0, 1);
@@ -1421,18 +2079,18 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 }
 
 .tcg-metrics :deep(.ui-metric-card__icon) {
-  width: 40px;
-  height: 40px;
+  width: 38px;
+  height: 38px;
 }
 
 .tcg-metrics :deep(.ui-metric-card__icon svg) {
-  width: 20px;
-  height: 20px;
+  width: 19px;
+  height: 19px;
 }
 
 .tcg-metrics :deep(.ui-metric-card__value) {
-  margin: 4px 0;
-  font-size: 24px;
+  margin: 3px 0;
+  font-size: 23px;
   font-variant-numeric: tabular-nums;
   letter-spacing: 0;
 }
@@ -1444,8 +2102,8 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 .tcg-source-module :deep(.ui-collapsible-section__inner) {
   border-color: var(--tcg-panel-border);
   background: var(--tcg-panel-bg);
-  padding: 12px 16px;
-  box-shadow: var(--tcg-panel-shadow) !important;
+  padding: 14px 18px;
+  box-shadow: var(--tcg-panel-shadow), var(--tcg-soft-inset) !important;
 }
 
 .tcg-source-module :deep(.workbench-section-head) {
@@ -1501,19 +2159,32 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 }
 
 .tcg-preview {
+  position: relative;
   border: 1px solid var(--tcg-panel-border);
-  border-radius: 12px;
+  border-radius: 14px;
   background: var(--tcg-panel-bg);
-  box-shadow: var(--tcg-panel-shadow);
+  box-shadow: var(--tcg-panel-shadow), var(--tcg-soft-inset);
+}
+
+.tcg-preview::before,
+.tcg-input-module::before,
+.tcg-reference-library::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  border-radius: 14px 14px 0 0;
+  background: var(--tcg-panel-rail);
+  content: '';
+  opacity: 0.82;
 }
 
 .tcg-panel {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   border-bottom: 1px solid var(--color-border-light);
-  padding: 11px 14px;
+  padding: 16px 18px;
 }
 
 .tcg-panel:last-child {
@@ -1522,27 +2193,65 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 
 .tcg-panel__header,
 .tcg-section-title,
-.tcg-preview__toolbar,
-.tcg-export-bar {
+.tcg-preview__toolbar {
   display: flex;
-  align-items: center;
+  min-width: 0;
+  align-items: flex-start;
   justify-content: space-between;
+  gap: 16px;
+}
+
+.tcg-panel__header > div,
+.tcg-preview__header > div,
+.tcg-section-title > div {
+  min-width: 0;
+}
+
+.tcg-module-heading {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
   gap: 12px;
+}
+
+.tcg-module-heading__index {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.68), rgba(255, 255, 255, 0)) padding-box,
+    var(--color-primary-soft);
+  color: var(--color-primary-hover);
+  font-size: 15px;
+  font-weight: 850;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  box-shadow:
+    inset 0 0 0 1px rgba(15, 98, 254, 0.08),
+    0 8px 18px rgba(15, 98, 254, 0.1);
+}
+
+.tcg-module-heading > div {
+  min-width: 0;
 }
 
 .tcg-panel__header h2,
 .tcg-section-title h2 {
   margin: 0;
   color: var(--color-text-main);
-  font-size: 14px;
-  font-weight: 750;
+  font-size: 15px;
+  font-weight: 800;
   letter-spacing: 0;
   line-height: 1.25;
   text-wrap: balance;
 }
 
 .tcg-panel__header p {
-  margin: 3px 0 0;
+  margin: 5px 0 0;
   color: var(--color-text-muted);
   font-size: 12px;
   font-weight: 650;
@@ -1622,13 +2331,14 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 
 .tcg-input-module,
 .tcg-reference-library {
-  gap: 10px;
+  position: relative;
+  gap: 14px;
   border: 1px solid var(--tcg-panel-border);
-  border-radius: 12px;
+  border-radius: 14px;
   border-bottom: 1px solid var(--tcg-panel-border);
   background: var(--tcg-panel-bg);
-  box-shadow: var(--tcg-panel-shadow);
-  padding: 12px 14px;
+  box-shadow: var(--tcg-panel-shadow), var(--tcg-soft-inset);
+  padding: 16px 18px;
 }
 
 .tcg-input-module .tcg-panel__header,
@@ -1639,19 +2349,19 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 .tcg-input-grid {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 14px;
+  gap: 18px;
 }
 
 .tcg-input-block {
   display: grid;
   min-width: 0;
   align-content: start;
-  gap: 8px;
+  gap: 10px;
 }
 
 .tcg-input-block + .tcg-input-block {
   border-left: 1px solid var(--color-border-light);
-  padding-left: 14px;
+  padding-left: 18px;
 }
 
 .tcg-input-block__header {
@@ -1665,7 +2375,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 .tcg-input-block__header h3 {
   margin: 0;
   color: var(--color-text-main);
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 800;
   letter-spacing: 0;
   line-height: 1.25;
@@ -1674,7 +2384,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 .tcg-input-block__header span {
   flex: 0 0 auto;
   border-radius: var(--radius-pill);
-  background: #eef4ff;
+  background: #eef5ff;
   color: #315fbe;
   font-size: 11px;
   font-weight: 800;
@@ -1690,20 +2400,20 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
   display: flex;
   gap: 8px;
   overflow-x: auto;
-  padding-bottom: 2px;
+  padding: 1px 0 3px;
   scrollbar-width: thin;
   scrollbar-gutter: stable;
 }
 
 .tcg-reference-category {
   display: inline-flex;
-  min-height: 32px;
+  min-height: 34px;
   flex: 0 0 auto;
   align-items: center;
   gap: 6px;
-  border: 1px solid var(--color-border);
+  border: 1px solid rgba(203, 213, 225, 0.86);
   border-radius: var(--radius-pill);
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.92);
   color: var(--color-text-secondary);
   cursor: pointer;
   font: inherit;
@@ -1734,7 +2444,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 .tcg-reference-category:hover,
 .tcg-reference-category.is-active {
   border-color: rgba(15, 98, 254, 0.28);
-  background: var(--color-primary-soft);
+  background: linear-gradient(180deg, #f8fbff, var(--color-primary-soft));
   color: var(--color-primary);
 }
 
@@ -1755,9 +2465,9 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 
 .tcg-reference-toolbar {
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) minmax(360px, 440px) minmax(180px, 220px);
+  grid-template-columns: minmax(300px, 1fr) minmax(360px, 440px) minmax(180px, 220px);
   align-items: center;
-  gap: 10px;
+  gap: 12px;
 }
 
 .tcg-reference-search input,
@@ -1765,14 +2475,15 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 .tcg-dialog-field input {
   width: 100%;
   min-height: 34px;
-  border: 1px solid var(--color-border);
+  border: 1px solid rgba(203, 213, 225, 0.86);
   border-radius: var(--ui-control-radius);
   background: rgba(255, 255, 255, 0.94);
   color: var(--color-text-main);
   font: inherit;
   font-size: 13px;
   font-weight: 650;
-  padding: 0 10px;
+  padding: 0 12px;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.025);
 }
 
 .tcg-reference-search input::placeholder,
@@ -1792,9 +2503,10 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   overflow: hidden;
-  border: 1px solid var(--color-border);
+  border: 1px solid rgba(203, 213, 225, 0.86);
   border-radius: var(--ui-control-radius);
-  background: #ffffff;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.025);
 }
 
 .tcg-reference-type-filter button {
@@ -1819,7 +2531,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 .tcg-reference-type-filter button:hover,
 .tcg-reference-type-filter button.is-active {
   color: var(--color-primary);
-  background: var(--color-primary-soft);
+  background: linear-gradient(180deg, #f7fbff, var(--color-primary-soft));
 }
 
 .tcg-reference-sort {
@@ -1838,9 +2550,9 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 .tcg-inline-warning {
   display: flex;
   align-items: center;
-  border: 1px solid rgba(255, 122, 26, 0.16);
-  border-radius: 8px;
-  background: var(--color-warning-soft);
+  border: 1px solid rgba(255, 122, 26, 0.2);
+  border-radius: 10px;
+  background: linear-gradient(180deg, #fff7ed, var(--color-warning-soft));
   color: #b45309;
   font-size: 12px;
   font-weight: 750;
@@ -1852,7 +2564,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 .tcg-reference-list {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   overflow: visible;
   overscroll-behavior: contain;
   padding: 2px 0 0;
@@ -1864,30 +2576,33 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
   grid-template-columns: 24px 30px minmax(320px, 1fr) auto;
   grid-template-areas:
     "check icon body actions";
-  gap: 10px;
+  gap: 12px;
   align-items: center;
-  border: 1px solid var(--color-border-light);
-  border-radius: 10px;
-  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid rgba(226, 232, 240, 0.94);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(250, 252, 255, 0.98));
   color: inherit;
   font: inherit;
-  padding: 7px 9px;
+  padding: 9px 11px;
   text-align: left;
   transition:
     background-color 160ms cubic-bezier(0.2, 0, 0, 1),
     border-color 160ms cubic-bezier(0.2, 0, 0, 1),
-    box-shadow 160ms cubic-bezier(0.2, 0, 0, 1);
+    box-shadow 160ms cubic-bezier(0.2, 0, 0, 1),
+    transform 160ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 .tcg-reference-item:hover,
 .tcg-reference-item.is-selected {
   border-color: #c9d8ee;
-  background: var(--tcg-row-hover);
+  background: #ffffff;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.045);
+  transform: translateY(-1px);
 }
 
 .tcg-reference-item.is-primary {
   border-color: rgba(15, 98, 254, 0.45);
-  background: linear-gradient(180deg, rgba(239, 246, 255, 0.9), rgba(255, 255, 255, 0.96));
+  background: linear-gradient(90deg, rgba(239, 246, 255, 0.96), rgba(255, 255, 255, 0.98));
   box-shadow:
     inset 3px 0 0 var(--color-primary),
     0 6px 16px rgba(15, 98, 254, 0.08);
@@ -1911,13 +2626,16 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 .tcg-reference-item__icon {
   grid-area: icon;
   display: inline-flex;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   align-items: center;
   justify-content: center;
-  border-radius: 8px;
+  border-radius: 9px;
   color: var(--color-primary);
-  background: var(--color-primary-soft);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.64), rgba(255, 255, 255, 0)),
+    var(--color-primary-soft);
+  box-shadow: inset 0 0 0 1px rgba(15, 98, 254, 0.08);
 }
 
 .tcg-reference-item__icon.is-md {
@@ -1965,7 +2683,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 
 .tcg-reference-item__body p {
   overflow: hidden;
-  margin: 3px 0 0;
+  margin: 4px 0 0;
   color: var(--color-text-muted);
   font-size: 12px;
   line-height: 1.45;
@@ -1978,7 +2696,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
   min-width: 0;
   gap: 6px 10px;
   flex-wrap: wrap;
-  margin-top: 4px;
+  margin-top: 5px;
   color: #7b8aa0;
   font-size: 11px;
   font-weight: 650;
@@ -2149,7 +2867,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 .tcg-source-hint {
   overflow: hidden;
   margin: 0;
-  border-radius: 8px;
+  border-radius: 9px;
   background: #f8fafc;
   color: var(--color-text-muted);
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
@@ -2243,22 +2961,62 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
   overflow: visible;
 }
 
+.tcg-preview__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid var(--color-border-light);
+  border-radius: 12px 12px 0 0;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(248, 251, 255, 0.72));
+  padding: 12px 16px;
+}
+
+.tcg-preview__header h2 {
+  margin: 0;
+  color: var(--color-text-main);
+  font-size: 14px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+.tcg-preview__header p {
+  margin: 4px 0 0;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.tcg-preview__actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .tcg-preview__tabs {
   position: sticky;
   top: 0;
   z-index: 2;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 4px;
   border-bottom: 1px solid var(--color-border);
-  border-radius: 12px 12px 0 0;
-  background: #f8fbff;
+  background: #f4f8ff;
+  padding: 4px;
 }
 
 .tcg-preview__tabs button {
   position: relative;
   min-width: 0;
-  min-height: 42px;
+  min-height: 38px;
   border: 0;
+  border-radius: 9px;
   background: transparent;
   color: var(--color-text-secondary);
   cursor: pointer;
@@ -2274,22 +3032,25 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 
 .tcg-preview__tabs button::after {
   position: absolute;
-  right: 28px;
-  bottom: 0;
-  left: 28px;
-  height: 2px;
+  right: 20px;
+  bottom: 4px;
+  left: 20px;
+  height: 3px;
   border-radius: var(--radius-pill);
   background: transparent;
   content: '';
 }
 
 .tcg-preview__tabs button.is-active {
-  color: var(--color-primary);
+  color: var(--color-primary-hover);
   background: #ffffff;
+  box-shadow:
+    0 1px 2px rgba(15, 23, 42, 0.04),
+    inset 0 0 0 1px rgba(15, 98, 254, 0.08);
 }
 
 .tcg-preview__tabs button.is-active::after {
-  background: var(--color-primary);
+  background: var(--tcg-panel-rail);
 }
 
 .tcg-preview__tabs button:hover {
@@ -2304,7 +3065,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 
 .tcg-preview__toolbar {
   border-bottom: 1px solid var(--color-border-light);
-  background: rgba(255, 255, 255, 0.58);
+  background: rgba(255, 255, 255, 0.74);
   padding: 10px 16px;
 }
 
@@ -2321,6 +3082,17 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
   padding: 10px 18px;
 }
 
+.tcg-api-error {
+  margin: 0;
+  border-bottom: 1px solid rgba(220, 38, 38, 0.12);
+  background: #fef2f2;
+  color: #b91c1c;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.45;
+  padding: 10px 18px;
+}
+
 .tcg-status-strip,
 .tcg-priority-summary {
   display: inline-flex;
@@ -2330,12 +3102,164 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 }
 
 .tcg-tab-panel {
-  padding: 12px 16px 14px;
+  background: rgba(255, 255, 255, 0.54);
+  padding: 14px 16px 16px;
+}
+
+.tcg-brief-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.tcg-brief-panel__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid rgba(226, 232, 240, 0.92);
+  border-radius: var(--radius-md);
+  background: linear-gradient(180deg, #ffffff, #f8fbff);
+  padding: 11px 12px;
+}
+
+.tcg-brief-panel__header > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.tcg-brief-panel__header strong,
+.tcg-brief-state strong,
+.tcg-brief-error strong {
+  color: var(--color-text-main);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.35;
+}
+
+.tcg-brief-panel__header span,
+.tcg-brief-state span {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.45;
+}
+
+.tcg-brief-panel__actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tcg-brief-panel__notice {
+  margin: 0;
+  border: 1px solid rgba(245, 158, 11, 0.22);
+  border-radius: var(--radius-md);
+  background: var(--color-warning-soft);
+  color: #b45309;
+  font-size: 13px;
+  font-weight: 750;
+  line-height: 1.45;
+  padding: 9px 11px;
+}
+
+.tcg-brief-state,
+.tcg-brief-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: linear-gradient(180deg, #ffffff, #f8fbff);
+  color: var(--color-text-secondary);
+  padding: 14px;
+}
+
+.tcg-brief-state > div,
+.tcg-brief-error > div {
+  display: grid;
+  gap: 8px;
+}
+
+.tcg-loading-dot {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  margin-top: 5px;
+  background: var(--color-primary);
+  box-shadow: 0 0 0 5px rgba(15, 98, 254, 0.12);
+}
+
+.tcg-brief-error {
+  border-color: rgba(220, 38, 38, 0.18);
+  background: #fef2f2;
+}
+
+.tcg-brief-error .el-icon {
+  color: var(--color-danger);
+  margin-top: 2px;
+}
+
+.tcg-brief-error p {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+}
+
+.tcg-brief-markdown {
+  display: grid;
+  gap: 10px;
+}
+
+.tcg-brief-markdown pre {
+  max-height: 420px;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: linear-gradient(180deg, #ffffff, #f8fbff);
+  color: var(--color-text-secondary);
+  font-family:
+    'Inter', 'Noto Sans SC', 'SF Pro Display', 'Segoe UI', 'PingFang SC', sans-serif;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.7;
+  padding: 14px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tcg-brief-warning-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.tcg-brief-warning-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  border-radius: var(--radius-md);
+  background: var(--color-warning-soft);
+  color: #b45309;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1.45;
+  padding: 8px 10px;
 }
 
 .tcg-case-table {
   width: 100%;
   font-variant-numeric: tabular-nums;
+  border-radius: var(--radius-md);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.025);
 }
 
 .tcg-case-table :deep(.el-table) {
@@ -2344,7 +3268,7 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 
 .tcg-case-table :deep(th.el-table__cell) {
   height: 36px;
-  background: #f5f8fc !important;
+  background: linear-gradient(180deg, #f8fbff, #f3f7fc) !important;
   color: #64748b;
   font-weight: 800;
 }
@@ -2358,93 +3282,29 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
   background: var(--tcg-row-hover) !important;
 }
 
+.tcg-empty-result {
+  display: flex;
+  min-height: 118px;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed rgba(148, 163, 184, 0.62);
+  border-radius: var(--radius-md);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(248, 251, 255, 0.92)),
+    repeating-linear-gradient(-45deg, rgba(15, 98, 254, 0.035) 0 8px, transparent 8px 16px);
+  color: var(--color-text-muted);
+  font-size: 13px;
+  font-weight: 750;
+}
+
 .tcg-row-more {
   color: #64748b;
 }
 
-.tcg-snapshot-grid {
-  overflow: hidden;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-}
-
-.tcg-snapshot-row {
-  display: grid;
-  grid-template-columns: 56px repeat(4, minmax(0, 1fr));
-}
-
-.tcg-snapshot-row:first-child {
-  background: var(--color-bg-page);
-  color: #64748b;
-  font-weight: 750;
-}
-
-.tcg-snapshot-row span {
-  min-height: 42px;
-  border-right: 1px solid var(--color-border-light);
-  border-bottom: 1px solid var(--color-border-light);
-  color: var(--color-text-secondary);
-  font-size: 13px;
-  padding: 10px 12px;
-}
-
-.tcg-blueprint-list {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 12px;
-}
-
-.tcg-blueprint-card,
-.tcg-blueprint-modules article {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.96);
-  padding: 12px;
-}
-
-.tcg-blueprint-card strong,
-.tcg-blueprint-modules strong {
-  display: block;
-  color: var(--color-text-main);
-  font-size: 14px;
-  font-weight: 750;
-}
-
-.tcg-blueprint-card span,
-.tcg-blueprint-modules span {
-  display: block;
-  margin-top: 3px;
-  color: var(--color-text-muted);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.tcg-blueprint-card__icon,
-.tcg-module-icon {
-  display: inline-flex;
-  width: 40px;
-  height: 40px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border-radius: 10px;
-}
-
-.tcg-blueprint-summary,
-.tcg-warning-strip,
-.tcg-export-bar {
+.tcg-warning-strip {
   border-top: 1px solid var(--color-border-light);
+  background: rgba(255, 255, 255, 0.72);
   padding: 12px 16px;
-}
-
-.tcg-blueprint-modules {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-  margin-top: 10px;
 }
 
 .is-primary {
@@ -2486,9 +3346,9 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
 }
 
 .tcg-warning-list li {
-  border: 1px solid rgba(255, 122, 26, 0.16);
+  border: 1px solid rgba(255, 122, 26, 0.2);
   border-radius: 10px;
-  background: var(--color-warning-soft);
+  background: linear-gradient(180deg, #fff7ed, var(--color-warning-soft));
   list-style: none;
   padding: 12px 14px;
 }
@@ -2498,15 +3358,10 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   margin-top: 10px;
+  border: 1px solid rgba(255, 122, 26, 0.18);
   border-radius: 10px;
-  background: var(--color-warning-soft);
+  background: linear-gradient(180deg, #fff7ed, var(--color-warning-soft));
   padding: 10px 12px;
-}
-
-.tcg-export-bar {
-  color: var(--color-text-muted);
-  font-size: 13px;
-  font-weight: 650;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2531,9 +3386,6 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
     max-width: 320px;
   }
 
-  .tcg-blueprint-modules {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 
 @media (max-width: 1024px) {
@@ -2590,6 +3442,16 @@ updatePrimaryReferenceSheet(referenceFiles.value.find((file) => file.id === prim
   }
 
   .tcg-reference-pagination {
+    justify-content: flex-start;
+  }
+
+  .tcg-preview__header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .tcg-preview__actions {
+    width: 100%;
     justify-content: flex-start;
   }
 

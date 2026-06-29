@@ -25,6 +25,7 @@
 
 - 项目级飞书机器人配置：每个项目独立维护。
 - Shared Feishu Bot App：多个项目可共用同一 App ID，但同 App ID 的 App Secret 必须一致。
+- Project Feishu Service Identity：服务端项目自动化读取飞书来源时使用项目级 App/Bot 身份，不使用当前登录用户的个人 OAuth token 作为长期读取身份。
 - Chat-Scoped Project Routing：机器人事件按 chat 绑定路由到项目。
 - Default Bot Chat：默认主动通知群，必须属于项目 chat 绑定。
 - Feishu Sheet Authorization：项目和 source 维度的表格授权记录。
@@ -71,11 +72,21 @@
 5. 后端把机器人加入表格只读协作者并记录授权。
 6. 后续 metadata、preview 和执行复用飞书读取链路。
 
+### 8.1 Source Evidence Run 授权主体
+
+用例生成 V2 若扩展到飞书文档、图片、附件和 `Source Evidence Run`，读取主体仍以 `Project Feishu Service Identity` 为准：
+
+- 当前登录用户只触发读取、授权申请或重试，不作为长期来源读取身份。
+- 不把 QA Workspace 的本机个人 user token 模式直接迁移到当前 Web 项目。
+- 权限不足时，记录资源的待授权状态，并沿用项目级机器人/授权卡片方向申请给 App/Bot 可读取权限。
+- 授权成功后，未过期的 `Source Evidence Run` 可以重试读取资源和视觉 observation。
+
 ## 9. 权限、安全与错误规则
 
 - 普通项目成员可查看必要状态，但敏感配置由项目管理员维护。
 - App Secret、tenant token、access token 不得明文暴露。
 - 权限不足时返回业务错误或授权状态，不触发前端登录态过期。
+- 飞书来源读取不得把当前登录用户的个人 OAuth token 作为服务端长期读取凭据。
 - 查询命令的业务解析归配置表查询模块；飞书模块只负责事件、路由和消息。
 
 ## 10. 测试覆盖

@@ -8,6 +8,7 @@
 |---|---|---|
 | `/` | `frontend/src/views/MainBoard.vue` | 个人校验四步工作流。 |
 | `/fixed-rules` | `frontend/src/views/FixedRulesBoard.vue` | 项目校验配置、执行、导入和结果。 |
+| `/test-cases` | `frontend/src/views/TestCaseGeneratorView.vue` | 项目级用例生成工作台，读取策划案来源并生成、预览和导出测试用例。 |
 | `/rule-configs` | `frontend/src/views/RuleConfigsView.vue` | 规则配置工作区首页。 |
 | `/rule-configs/config_lookup/:ruleId` | `frontend/src/views/RuleConfigLookupView.vue` | 配置表查询规则编辑、发布、历史和试运行。 |
 | `/admin` | `frontend/src/views/AdminView.vue` | 项目、成员、角色、密码、飞书机器人和项目级 AI 管理。 |
@@ -61,6 +62,7 @@
 | 规则引擎与规则模型 | [specs/rule-engine.md](specs/rule-engine.md) | `rules/`、`features/rule-orchestration/`、`utils/taskTree.ts` | `rules/` |
 | 数据源 | [specs/data-sources.md](specs/data-sources.md) | `components/workbench/DataSourcePanel.vue`、`api/workbench.ts`、`api/svn.ts` | `api/source_api.py`、`loaders/` |
 | 飞书集成 | [specs/feishu-integration.md](specs/feishu-integration.md) | `components/admin/FeishuBotConfigCard.vue`、`components/workbench/DataSourcePanel.vue`、`api/admin.ts` | `admin/router.py`、`api/feishu_api.py`、`integrations/feishu_*`、`loaders/feishu_reader.py` |
+| 用例生成 | [specs/test-case-generation.md](specs/test-case-generation.md)、[specs/test-case-generation-feishu-doc-migration.md](specs/test-case-generation-feishu-doc-migration.md) | `views/TestCaseGeneratorView.vue`、`api/testCases.ts`、`types/testCases.ts` | `api/test_cases_api.py`、`test_cases/`、`loaders/feishu_reader.py`、`integrations/feishu_client.py` |
 | 规则配置工作区 / 配置表查询 | [specs/rule-configs-config-lookup.md](specs/rule-configs-config-lookup.md) | `views/RuleConfigsView.vue`、`views/RuleConfigLookupView.vue`、`api/ruleConfigs.ts`、`features/rule-configs/` | `api/rule_configs_api.py`、`rule_configs/`、`config_lookup/` |
 | 项目级 AI 能力 | [specs/ai-project-credentials.md](specs/ai-project-credentials.md) | `features/ai/providerPresets.ts`、`features/admin/projectAiConfigForm.ts`、`api/projectAiConfig.ts` | `admin/router.py`、`ai/`、`services/*ai*`、`config_lookup/ai_matcher.py` |
 | 执行任务与结果 | [specs/execution-runs-results.md](specs/execution-runs-results.md) | 个人和项目结果区、`api/fixedRules.ts`、`api/workbench.ts` | `api/execute_api.py`、`api/execute_runs_api.py`、`execution_*`、`result_*` |

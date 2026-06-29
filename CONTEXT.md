@@ -88,6 +88,10 @@ _Avoid_: Per-project secret divergence for one App ID, ambiguous bot authenticat
 A Feishu bot configuration edited from a single project's admin area. Different projects may use the same Feishu App ID or different App IDs, but each project's chat bindings, trigger allowlist, download roots, query roots, and credentials remain separately configured.
 _Avoid_: Global bot configuration, merged project settings, shared download roots
 
+**Project Feishu Service Identity**:
+The project-scoped Feishu app or bot identity used by server-side project automation to access Feishu source materials and request document permissions. It is distinct from an individual user's Feishu OAuth identity.
+_Avoid_: Personal OAuth reader, current user token, global Feishu app, QA Workspace local user identity
+
 **Chat-Scoped Project Routing**:
 A bot event routing model where the incoming Feishu chat context determines which project-scoped rule configuration should handle the command. One Feishu group chat may be bound to only one project.
 _Avoid_: App-ID-only project routing, sender-selected project fallback, cross-project rule lookup, multi-project chat binding
@@ -220,24 +224,56 @@ _Avoid_: Workbook bundle, multi-sheet source, arbitrary sheet merge, manual rang
 A bounded representation of a planning sheet prepared for test case generation, preserving the selected sheet's source identity while making content limits visible to the user.
 _Avoid_: Raw workbook, hidden truncation, user-selected range
 
+**AI-Assisted Snapshot Brief**:
+A human-readable Markdown brief organized from a planning sheet snapshot for planner and QA alignment. It may support later test case generation as auxiliary context, but the planning sheet snapshot remains the source of truth for requirements and traceability.
+_Avoid_: Requirement source, raw snapshot replacement, Test Case Blueprint, generated test case, reference test case
+
+**Source Evidence Run**:
+A short-lived, project-scoped source reading session that can hold planning document text, tables, images, attachments, and visual observations used to build or explain a test case generation input. It is supporting evidence for one generation workflow, not a generated result history or a maintained knowledge base.
+_Avoid_: Generation history, project QA knowledge library, reference test case library, permanent source archive, raw prompt log
+
+**Project Audit Retention Policy**:
+A project-level rule for retaining non-content audit metadata after sensitive source evidence or generated artifacts have been cleaned. It does not permit retaining raw planning text, images, attachments, visual observation details, prompts, or generated result history.
+_Avoid_: Source evidence TTL, permanent source archive, generation history, raw content retention
+
+**Source Evidence Cleanup Audit Summary**:
+A project-visible audit summary showing that source evidence was created, expired, or cleaned without exposing the cleaned source text, image or attachment files, visual packets, or observation details.
+_Avoid_: Evidence replay, observation detail, raw source archive, generated result history
+
+**Visual Observation Selection**:
+A user-adjustable subset of image or attachment resources from a source evidence run chosen for visual understanding. It is distinct from the full resource inventory and from unobserved resources.
+_Avoid_: Full attachment dump, automatic all-image observation, reference test case selection, generated requirement
+
+**Adopted Visual Evidence**:
+A visual observation from a source evidence run that a project member has confirmed may be used as evidence for test case generation. It is distinct from raw model observation, unobserved resources, and generated requirements.
+_Avoid_: Automatic visual truth, unconfirmed observation, raw screenshot text, generated requirement
+
 **Test Case Generation Workspace**:
 A project-member-visible workspace where users turn one planning sheet into a test-case blueprint and generated test case rows using the project's AI capability.
 _Avoid_: Personal check workspace, rule configuration workspace, manual rule editor
+
+**QA Case Method**:
+A built-in testing method for test case generation that derives a blueprint before case rows, checks coverage dimensions, records assumptions and warnings, and treats statistics as code-computed facts rather than model claims.
+_Avoid_: Editable knowledge library, raw prompt text, reference test case library, generated test case table
+
+**Project QA Knowledge Library**:
+A future project-scoped collection of reviewed QA knowledge that could supplement the QA Case Method with project-specific testing lessons. It is distinct from the reference test case library and is not required for V1 generation.
+_Avoid_: Reference test case library, planning document, unreviewed raw source dump, V1 required input
 
 **Reference Test Case Library**:
 A project-scoped collection of existing test case materials used as style, field, hierarchy, and granularity examples for test case generation. It is shared by members of one project and guides output format and testing style, but is not a planning document or source requirement.
 _Avoid_: Personal case directory, global case library, planning document, requirement source, Reference Lookup File, configuration table
 
 **Reference Test Case Category**:
-A project-scoped grouping inside the reference test case library that defines the active reference scope for one test case generation. Switching category changes the set of reference test case materials considered for generation, clears previous reference selections, and may provide that category's recommended primary reference test case as the new default. When a category has no recommended primary reference test case, no reference is selected by default.
+A project-scoped grouping inside the reference test case library that organizes optional reference test case materials for one test case generation. Switching category changes the available reference materials, clears previous reference selections, and may provide that category's recommended primary reference test case as the new default. When a category has no recommended primary reference test case, no reference is selected by default and generation can still proceed without reference enhancement.
 _Avoid_: Data source category, permission boundary, cross-category generation mix, visual-only filter, first-file default
 
 **Reference Test Case Selection**:
-The set of reference test case materials selected from the current reference test case category for one generation. A selection may include multiple reference test case materials, but it must contain exactly one primary reference test case before generation can run.
-_Avoid_: Cross-category selection, implicit first-file selection, primary-free generation, multiple primary references
+The optional set of reference test case materials selected from the current reference test case category for one generation. A selection may be empty, may include multiple supplementary references, and may designate at most one primary reference test case to guide output style.
+_Avoid_: Cross-category selection, implicit first-file selection, required reference selection, multiple primary references
 
 **Primary Reference Test Case**:
-The single reference test case material within the current reference test case selection that should most strongly influence generated test case fields, hierarchy, naming style, and case granularity.
+An optional reference test case material within the current reference test case selection that most strongly influences generated test case fields, hierarchy, naming style, and case granularity when selected. It is not a source requirement and is not required for generation.
 _Avoid_: Requirement source, generated result, lookup reference file, secondary reference, multiple primaries
 
 **Reference Test Case Profile**:
@@ -253,13 +289,17 @@ An intermediate testing outline derived from a planning sheet that names the fea
 _Avoid_: Final test case table, coverage statistics, raw planning content
 
 **Project AI Credential**:
-An administrator-managed AI provider credential owned by a project and used by project-level automation such as Feishu bot configuration-table lookups and AI-assisted validation helpers. It is the only configurable AI credential surface; individual users do not maintain separate AI provider keys.
-_Avoid_: Personal AI key, user-owned AI config, bot user key, shared admin key
+An administrator-managed AI provider credential owned by a project and used by text-oriented project automation such as Feishu bot configuration-table lookups, AI-assisted validation helpers, and structured test case generation. It is separate from visual understanding credentials; individual users do not maintain separate text AI provider keys.
+_Avoid_: Personal AI key, user-owned AI config, bot user key, shared admin key, vision AI credential
+
+**Project Vision AI Credential**:
+An administrator-managed project credential dedicated to visual understanding of source evidence such as planning screenshots, document images, prototypes, and downloaded visual attachments. It is separate from the text-oriented Project AI Credential because visual models have different cost, input, latency, and failure characteristics.
+_Avoid_: Project AI Credential, personal vision key, screenshot attachment, source evidence run, generated test case
 
 **Project AI Unavailable**:
 A project state where AI-assisted behavior cannot run because the project credential is missing, disabled, invalid, or unavailable. Automatic helpers may fall back to deterministic behavior when possible; explicit AI actions should tell the user that a project administrator must configure the project AI credential.
 _Avoid_: Personal AI missing, silent AI success, model guessed result
 
 **Project Credential Status**:
-A credential visibility state shown to project members without exposing secrets, such as whether SVN or AI credentials are configured and when they were last updated. Ordinary project members may view status but may not trigger credential connection tests.
+A credential visibility state shown to project members without exposing secrets, such as whether SVN, text AI, or vision AI credentials are configured and when they were last updated. Ordinary project members may view status but may not trigger credential connection tests.
 _Avoid_: Secret value, password display, API key display, member-triggered credential test

@@ -2,6 +2,34 @@
 
 本文档记录当前活动执行进度。2026-04-20 之前的旧分钟级记录已归档到 [docs/archive/PROJECT_RECORD.md](docs/archive/PROJECT_RECORD.md)。
 
+## 进度记录 2026-06-29 20:20
+
+### 本次目标
+
+根据已收敛的需求文档和对话，为用例生成 V1 完成后的飞书文档读取能力移植，拆分可直接交给 Codex 执行的分步骤开发提示词。
+
+### 本次完成
+
+- 阅读 `docs/specs/test-case-generation-feishu-doc-migration.md`、`docs/specs/test-case-generation.md`、飞书集成 Spec、项目级 AI Spec、当前用例生成后端/前端实现和 QA Workspace 飞书富读取参考实现。
+- 确认当前 V1 以 `PlanningSnapshotResponse` 为生成中心，适合先把 `Source Evidence Run` 转成兼容快照，再接入生成。
+- 确认当前 `feishu_reader.py` 只支持飞书电子表格，且会拒绝 docx/docs/base，因此移植不能直接改旧快照入口硬接文档 URL。
+- 新增 `docs/superpowers/plans/2026-06-29-test-case-generation-feishu-doc-migration-codex-prompts.md`，按“Source Evidence 数据模型 -> 飞书富读取 -> Source Evidence API -> 生成/导出接入 -> 前端闭环 -> Vision 凭据 -> 视觉选择 -> observation 采纳 -> TTL 清理 -> 验收”拆分提示词。
+
+### 当前项目进度
+
+- 用例生成 V1 主链路已完成后的飞书文档读取移植已有可执行切片计划。
+- 推荐先完成不依赖 Vision 的文本/表格闭环，再实现视觉凭据、观察、采纳和 TTL 审计。
+
+### 文档同步
+
+- `docs/superpowers/plans/2026-06-29-test-case-generation-feishu-doc-migration-codex-prompts.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只新增开发提示词文档，没有修改业务代码。
+- 未运行后端/前端业务测试；本次验证范围为文档结构和空白检查。
+
 ## 进度记录 2026-06-12 17:50
 
 ### 本次目标
@@ -1352,3 +1380,916 @@
 
 - 本次只更新文档，不新增业务代码。
 - 未运行测试。
+
+## 进度记录 2026-06-24 20:43
+
+### 本次目标
+
+确认用例生成 V1 中删除参考案例时，物理文件已不存在或删除失败的处理规则。
+
+### 本次完成
+
+- 明确物理文件已不存在时，删除接口按幂等成功处理，继续软删除记录并清空可复用元数据。
+- 明确物理文件存在但因权限或 IO 错误删除失败时，接口返回删除失败，记录保持 active。
+- 明确删除失败时不清空 `storage_path/profile_json/is_recommended_primary`，便于管理员修复后重试。
+- 更新 `docs/specs/test-case-generation.md` 的参考案例删除边界。
+- 更新 `docs/superpowers/plans/2026-06-22-test-case-generation.md` 的服务行为和测试覆盖。
+
+### 当前项目进度
+
+- 参考案例删除事务边界已补齐：只有物理删除成功或确认文件已不存在时，才进入软删除和元数据清理。
+- 后续实现删除接口时，应先处理物理文件删除结果，再决定是否提交数据库软删除；避免出现列表隐藏但文件仍残留的状态。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只更新文档，不新增业务代码。
+- 未运行测试。
+
+## 进度记录 2026-06-24 20:56
+
+### 本次目标
+
+确认用例生成 V1 中参考案例库与生成主链路的依赖关系，并同步文档和静态页面文案。
+
+### 本次完成
+
+- 明确生成主线以 `qa-case` 方法论为主体，先蓝图、再用例行，并覆盖完整性矩阵。
+- 明确参考案例库是可选增强输入，不是生成前置条件。
+- 明确未选择参考案例或主参考时，也必须能基于策划案快照生成高质量用例。
+- 明确未选择主参考时，导出采用标准字段顺序；选择主参考时才尽量贴近参考字段和风格。
+- 更新 `CONTEXT.md` 中参考案例选择和主参考的术语定义。
+- 更新 `docs/specs/test-case-generation.md` 的用户流程、参考选择、前端状态、验收标准。
+- 更新 `docs/superpowers/plans/2026-06-22-test-case-generation.md` 的生成契约、测试覆盖和实施顺序。
+- 调整 `frontend/src/views/TestCaseGeneratorView.vue` 静态页文案与生成可用状态，生成按钮不再依赖参考案例选择。
+- 更新 `frontend/tests/unit/TestCaseGeneratorView.test.ts` 中对应静态页面断言。
+
+### 当前项目进度
+
+- 依赖顺序已调整：可以先实现“策划案快照 → qa-case 生成 → 标准 Excel 导出”的无参考闭环，再开发参考案例库作为增强能力。
+- 后续实现 `generate` 接口时，`reference_ids` 和 `primary_reference_id` 应为可选；不得自动选最新参考案例作为主参考。
+
+### 文档同步
+
+- `CONTEXT.md`
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+- `frontend/src/views/TestCaseGeneratorView.vue`
+- `frontend/tests/unit/TestCaseGeneratorView.test.ts`
+
+### 未完成项与风险
+
+- 本次未实现后端 API。
+- 前端单测 `npm run test:unit -- TestCaseGeneratorView` 已通过。
+
+## 进度记录 2026-06-24 21:07
+
+### 本次目标
+
+确认用例生成 V1 是否实现可维护 QA 知识库，以及如何为 V2 预留扩展并记录延期项。
+
+### 本次完成
+
+- 明确 V1 不做可维护 QA 知识库。
+- 明确 V1 只内置 `QA Case Method`，包含蓝图、完整性矩阵、场景库、自检和代码统计约束。
+- 明确后端可预留内部 `knowledge_context` 或等价扩展点，但 V1 公共请求不接收用户传入知识内容；如传入则拒绝。
+- 明确 `Project QA Knowledge Library` 是 V2 候选，不等同于参考案例库。
+- 在 `CONTEXT.md` 增加 `QA Case Method` 和 `Project QA Knowledge Library` 术语。
+- 在 `docs/specs/test-case-generation.md` 增加 V1 不做知识库、V2 候选和 V1 延期清单。
+- 在 `docs/superpowers/plans/2026-06-22-test-case-generation.md` 增加 `qa_case_method.py`、`QaCaseMethodContext`、`RequirementTrace`、V2 延期项和测试要求。
+
+### 当前项目进度
+
+- V1 生成主链路收口为“策划案快照 + 内置 QA Case Method + 项目级 AI + 代码校验/统计”。
+- 参考案例库仍是可选增强；项目级 QA 知识库延期到 V2，后续需要单独设计数据模型、权限、审核和检索。
+
+### 文档同步
+
+- `CONTEXT.md`
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次未实现后端 API。
+- 未运行测试；本次只更新需求和实施计划文档。
+
+## 进度记录 2026-06-24 21:12
+
+### 本次目标
+
+罗列 `qa-case` 移植到当前产品 V1 时仍不实现的功能，并为后续升级记录扩展预留方向。
+
+### 本次完成
+
+- 在 `docs/specs/test-case-generation.md` 新增 `qa-case 移植 V1 不做清单`。
+- 明确 V1 不移植 QA Workspace preflight/setup/profile/Git 护栏。
+- 明确 V1 不创建 `tasks/<task>` 任务目录，不保存原始来源证据包。
+- 明确 V1 不做 QA 知识库读取、草案、审核、发布、检索或知识沉淀。
+- 明确 V1 不接 Jira、配置 SVN、服务器代码、Trino/Data MCP、多来源 context-reading。
+- 明确 V1 不承接 `coupling-test-point-generation` 产物作为前置输入。
+- 明确 V1 不做图片/附件视觉证据、权限申请、观察和校验流程。
+- 明确 V1 不新建 AI-owned Feishu 表，不写回 Feishu，不输出 CSV/Markdown/Feishu 文本。
+- 明确 V1 不做双层表头、模块行继承、执行版本/测试人员/设备矩阵等高级导出模板。
+- 明确 V1 不做局部补充生成、澄清问题闭环、未映射需求复核工作台、外部系统只读验证和自动覆盖检查。
+- 在实施计划中新增 `Deferred qa-case Migration Matrix`，把每个延期项对应的 V2 扩展方向写入计划。
+
+### 当前项目进度
+
+- V1 只保留 `qa-case` 的方法核心：策划案快照、蓝图先行、完整性矩阵、结构化用例、自检、warnings 和代码统计。
+- 其余 QA Workspace 运行时、来源管理、知识管理、视觉证据和多格式交付能力全部进入 V2+ 扩展池。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/superpowers/plans/2026-06-22-test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次未实现后端 API。
+- 未运行测试；本次只更新需求和实施计划文档。
+
+## 进度记录 2026-06-25 11:01
+
+### 本次目标
+
+阅读当前代码和文档，把用例生成 V1 的实现拆成可逐步交给 Codex 执行的提示词和推荐实施顺序。
+
+### 本次完成
+
+- 核对当前 V1 需求文档、实施计划、后端路由/模型/上传/Excel 读取/AI 调用入口和前端静态页面。
+- 明确推荐实施顺序调整为先打通 01/02/04 无参考生成闭环，再接入 03 参考案例库增强。
+- 新增 `docs/superpowers/plans/2026-06-25-test-case-generation-codex-prompts.md`，按 10 个可执行切片沉淀 Codex 提示词。
+- 每个提示词都包含阅读范围、实现目标、建议文件、测试命令和 V1 约束。
+
+### 当前项目进度
+
+- V1 需求文档和原实施计划仍是源文档。
+- 新增提示词文档作为执行入口，便于分会话或分阶段实施。
+- 参考案例库继续保持可选增强，不阻塞无参考生成主链路。
+
+### 文档同步
+
+- `docs/superpowers/plans/2026-06-25-test-case-generation-codex-prompts.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次未实现业务代码。
+- 未运行测试；本次只新增执行提示词文档。
+
+## 进度记录 2026-06-25 15:30
+
+### 本次目标
+
+确认是否完整迁移 QA Workspace 的飞书文档读取、图片/附件和视觉证据链路，以及来源证据是否允许短期保存。
+
+### 本次完成
+
+- 明确选择完整迁移方案，不只做飞书文档正文/表格文本读取。
+- 明确新增 `Source Evidence Run` 作为 V2 级来源证据读取会话。
+- 明确飞书文档、图片、附件和视觉证据包允许在当前项目服务器短期落盘保存。
+- 明确来源证据按项目隔离，默认 7 天 TTL 自动清理。
+- 明确 `Source Evidence Run` 不进入生成历史，也不等同于项目级 QA 知识库。
+- 在 `CONTEXT.md` 增加 `Source Evidence Run` 术语。
+- 在 `docs/specs/test-case-generation.md` 的 V2 候选、延期清单和 qa-case 移植矩阵中补充来源证据短期保存决策。
+
+### 当前项目进度
+
+- V1 已完成的用例生成主链路边界不变。
+- 飞书完整读取能力进入 V2 设计范围，需要继续确认视觉模型、权限申请、证据清理和前端交互。
+
+### 文档同步
+
+- `CONTEXT.md`
+- `docs/specs/test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次未实现业务代码。
+- 未运行测试；本次只更新领域术语和需求边界。
+
+## 进度记录 2026-06-25 15:40
+
+### 本次目标
+
+确认 V2 飞书视觉证据链路是否复用现有项目级 AI 凭据，还是新增独立视觉模型凭据。
+
+### 本次完成
+
+- 明确新增独立的项目级 `Project Vision AI Credential`。
+- 明确视觉理解不复用现有文本/结构化生成用的 `Project AI Credential`。
+- 明确没有视觉凭据时，飞书正文/表格和证据包仍可读取或准备，但图片 observation 应进入待配置或不可用状态。
+- 修正 `CONTEXT.md` 中 `Project AI Credential` “唯一 AI 凭据面”的旧表述，收窄为文本/结构化 AI 凭据。
+- 在 `CONTEXT.md` 增加 `Project Vision AI Credential` 术语。
+- 在 `docs/specs/test-case-generation.md` 的 V2 候选、延期清单和 qa-case 移植矩阵中补充独立视觉凭据决策。
+
+### 当前项目进度
+
+- V1 已实现链路继续使用现有项目级 AI 凭据。
+- V2 飞书视觉证据链路需要独立设计视觉凭据配置、状态展示、权限、测试连接、模型能力校验、成本提示和不可用降级。
+
+### 文档同步
+
+- `CONTEXT.md`
+- `docs/specs/test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次未实现业务代码。
+- 未运行测试；本次只更新领域术语和需求边界。
+
+## 进度记录 2026-06-25 11:20
+
+### 本次目标
+
+开始实现用例生成 V1 的后端基础骨架，只新增领域包、共享契约和 `/api/v1/test-cases/*` 占位接口，不实现参考案例库数据库、不实现 AI 调用。
+
+### 本次完成
+
+- 新增 `backend/app/test_cases/` 领域包。
+- 新增 `backend/app/test_cases/constants.py`，沉淀标准用例字段、中文字段名、V1 禁止公开传入的知识上下文字段和占位响应文案。
+- 新增 `backend/app/test_cases/schemas.py`，定义策划案快照、生成请求/响应、导出请求、warnings、统计、需求追踪和 QA Case Method 上下文等 Pydantic 契约。
+- 新增 `backend/app/api/test_cases_api.py`，注册 `POST /api/v1/test-cases/planning-snapshot`、`POST /api/v1/test-cases/generate`、`POST /api/v1/test-cases/export` 三个占位接口。
+- 更新 `backend/app/api/router.py`，将用例生成 router 挂载到 `/api/v1` 聚合路由。
+- 新增 `backend/tests/test_test_case_api_contracts.py`，先确认路由缺失红灯，再覆盖路由注册、登录校验、严格项目成员校验、501 占位响应和 `knowledge_context` 类字段拒绝规则。
+
+### 当前项目进度
+
+#### 已完成功能
+
+- 用例生成 V1 需求文档、实施计划和 Codex 分步提示词已形成。
+- 前端 `/test-cases` 静态页面、路由、导航和静态交互单测已存在。
+- 后端用例生成基础 API 路由骨架已注册，后续切片可以在稳定路径和共享 schema 上继续实现。
+- V1 公共请求禁止用户直接注入知识库上下文的规则已在接口入口建立测试保护。
+
+#### 已实现但未打通/占位功能
+
+- 三个用例生成接口当前只返回稳定 `501` 占位响应，尚未读取策划案、调用 AI 或生成导出文件。
+- `backend/app/test_cases/schemas.py` 已定义共享契约，但后续服务实现仍需继续校准字段粒度。
+- 前端静态页尚未接入真实后端 API。
+
+#### 未开始功能
+
+- 策划案快照读取。
+- 无参考 AI 生成主链路。
+- Excel 导出。
+- 参考案例库数据模型、迁移、上传、画像和权限 API。
+- 参考案例增强接入生成与导出。
+
+### 规范化调整
+
+- 新接口统一使用 `ctx.require_strict_project_member()`，避免 Token 指向非成员项目时静默回退。
+- 新增请求模型默认拒绝未知字段，防止 V2 输入被 V1 误接入。
+- 保持 `TaskTree`、个人校验、项目校验执行入口和统一结果结构不变。
+
+### 文档同步
+
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次只完成后端骨架，不代表用例生成业务可用。
+- 占位接口后续实现时需要继续保持“不保存生成历史”“无参考生成优先”和“项目级 AI 凭据唯一入口”的约束。
+- 参考案例库仍是可选增强，后续不要反向阻塞无参考生成闭环。
+
+### 下一步建议
+
+- 下一刀实现 `POST /api/v1/test-cases/planning-snapshot`，先支持上传 Excel 的单 Sheet 快照，再用可 monkeypatch 的方式接入飞书表格读取。
+
+## 进度记录 2026-06-25 11:32
+
+### 本次目标
+
+实现用例生成 V1 的 Planning Sheet Snapshot：读取一个策划案 Sheet，返回页面可预览并可直接传入生成接口的快照；不保存快照历史，不实现 AI 调用。
+
+### 本次完成
+
+- 新增 `backend/app/test_cases/planning_snapshot.py`，实现上传 Excel 单 Sheet 快照读取、单元格文本规范化和行/列/非空单元格/单元格长度/总字符预算控制。
+- `POST /api/v1/test-cases/planning-snapshot` 从 501 占位切换为真实快照响应，继续统一执行 `ctx.require_strict_project_member()`。
+- 本地 Excel 复用 `local_reader` 的路径 allowlist、工作簿打开和 Sheet 名解析能力。
+- 飞书读取通过 `read_feishu_planning_values()` 独立适配，复用现有飞书 Sheet 解析/授权链路，测试可 monkeypatch 外部读取。
+- 所有快照固定返回 V1 未读取图片、附件、批注或评论语义的 warning；任何超限均以 warning 显式暴露，不静默截断。
+- 继续保持快照接口 stateless，不创建 `ExecutionRunRecord` 等生成历史记录。
+- 更新 `backend/tests/test_test_case_api_contracts.py`，保留 `generate/export` 的 501 骨架断言，避免把已实现的快照接口误判为占位。
+- 新增 `backend/tests/test_test_case_planning_snapshot.py`，覆盖 Excel 指定 Sheet、空 Sheet、各类超限 warning、非法本地路径拒绝、无历史记录、飞书 monkeypatch 和飞书权限中文错误。
+
+### 验证结果
+
+- `python -m pytest backend/tests/test_test_case_planning_snapshot.py`
+- `python -m pytest backend/tests/test_test_case_planning_snapshot.py backend/tests/test_source_api_security.py`
+- `python -m pytest backend/tests/test_test_case_api_contracts.py`
+- `python -m ruff check backend/app/api/test_cases_api.py backend/app/test_cases backend/tests/test_test_case_api_contracts.py backend/tests/test_test_case_planning_snapshot.py`
+
+以上命令均通过；pytest 仅保留现有 `lark_oapi` 依赖的 2 条 deprecation warnings。
+
+## 进度记录 2026-06-25 11:54
+
+### 本次目标
+
+实现用例生成 V1 的无参考 AI 生成主链路：按内置 `QA Case Method` 先生成蓝图，再生成用例，并返回完整性矩阵、需求追踪、warnings、代码统计和方法上下文；不接入参考案例库数据库。
+
+### 本次完成
+
+- 新增 `backend/app/test_cases/qa_case_method.py`，内置 `QA Case Method` 的蓝图维度、完整性矩阵、场景库、自检规则、warning 模板和 V1 知识库说明。
+- 新增 `backend/app/test_cases/generation.py`，实现无参考生成编排：加载项目级 AI 凭据、两次调用 `call_provider_json`、校验蓝图和用例 JSON、合并 warnings、补齐缺失用例编号、生成需求追踪和代码统计。
+- `POST /api/v1/test-cases/generate` 从 501 占位切换为真实生成接口；继续拒绝公共 `knowledge_context` 类字段。
+- 项目级 AI 统一使用 `load_project_credential`、`decrypt_credential_key`、`parse_extra_headers`、`call_provider_json` 和 `sanitize_ai_error`，不新增个人 AI 或旁路配置。
+- 未配置或禁用项目 AI 时返回中文配置错误；Provider 错误返回前会脱敏完整 API Key。
+- 生成结果的 `stats.total`、`priority_counts`、`module_counts`、`case_type_counts` 和 `warning_count` 均由代码计算，不采信模型统计。
+- 无参考场景下明确不自动选择最新参考案例；本刀不读取参考案例库表。
+- 保持生成接口 stateless，不创建 `ExecutionRunRecord` 或生成历史记录。
+- 更新 `backend/tests/test_test_case_api_contracts.py`，保留 `/export` 的 501 骨架断言，`/generate` 不再按占位接口校验。
+- 新增 `backend/tests/test_test_case_generation.py`，覆盖项目 AI 缺失/禁用、Provider 成功两次调用、错误脱敏、无参考生成、代码统计、需求追踪、无历史记录和知识上下文拒绝。
+
+### 验证结果
+
+- `python -m pytest backend/tests/test_test_case_generation.py`
+- `python -m pytest backend/tests/test_test_case_generation.py backend/tests/test_project_ai_config_api.py`
+- `python -m pytest backend/tests/test_test_case_api_contracts.py backend/tests/test_test_case_planning_snapshot.py`
+- `python -m ruff check backend/app/api/test_cases_api.py backend/app/test_cases backend/tests/test_test_case_api_contracts.py backend/tests/test_test_case_planning_snapshot.py backend/tests/test_test_case_generation.py`
+
+以上命令均通过；pytest 仅保留现有 `lark_oapi` 依赖的 2 条 deprecation warnings。
+
+### 未完成项与风险
+
+- `/api/v1/test-cases/export` 仍是 501 占位。
+- 参考案例库、主参考字段顺序、参考画像和导出增强仍未实现，后续不得反向阻塞无参考生成主链路。
+- 当前生成质量依赖项目级 AI 返回的蓝图和用例内容；后续可继续增加更细的结构校验、去重和导出前校验。
+
+## 进度记录 2026-06-25 12:06
+
+### 本次目标
+
+实现用例生成 V1 的 Excel 导出：完全基于当前页面提交的 `blueprint`、`cases`、`warnings`、`stats` 生成 xlsx 文件，不依赖生成历史。
+
+### 本次完成
+
+- 新增 `backend/app/test_cases/exporter.py`，使用 openpyxl 在内存中生成导出工作簿。
+- `POST /api/v1/test-cases/export` 从 501 占位切换为 xlsx 文件响应，返回 `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` 和附件文件名。
+- 导出文件包含 `测试用例`、`用例蓝图`、`生成说明` 三个 Sheet。
+- 无主参考时使用 `STANDARD_CASE_FIELDS` 标准字段顺序和中文表头。
+- 有 `primary_reference_profile` 时，只采用能映射到标准字段的主参考字段顺序，未知列丢弃，缺失标准字段追加兜底。
+- `生成说明` 写入来源、导出字段、stats、warnings、V1 限制和安全说明。
+- 导出器不写入完整 API Key、原始 prompt、原始 provider response 或隐藏敏感元数据。
+- 保持导出接口 stateless，不创建 `ExecutionRunRecord` 或生成历史记录。
+- 更新 `backend/tests/test_test_case_api_contracts.py`，移除已经失效的 501 占位断言。
+- 新增 `backend/tests/test_test_case_exporter.py`，覆盖三个 Sheet、标准字段兜底、未知参考列忽略、图片/附件未读 warning、文件响应头和无历史持久化。
+
+### 验证结果
+
+- `python -m pytest backend/tests/test_test_case_exporter.py`
+- `python -m pytest backend/tests/test_test_case_exporter.py backend/tests/test_test_case_api_contracts.py backend/tests/test_test_case_generation.py backend/tests/test_test_case_planning_snapshot.py`
+- `python -m ruff check backend/app/api/test_cases_api.py backend/app/test_cases backend/tests/test_test_case_api_contracts.py backend/tests/test_test_case_planning_snapshot.py backend/tests/test_test_case_generation.py backend/tests/test_test_case_exporter.py`
+
+以上命令均通过；pytest 仅保留现有 `lark_oapi` 依赖的 2 条 deprecation warnings。
+
+### 未完成项与风险
+
+- 参考案例库数据库、参考画像生成与真实主参考选择仍未实现；本次只消费页面传入的 `primary_reference_profile`。
+- 前端仍未接入真实快照、生成和导出 API。
+
+## 进度记录 2026-06-25 12:25
+
+### 本次目标
+
+实现用例生成 V1 的参考案例库服务和 API：分类、上传、列表、删除、推荐主参考和确定性画像；不调用 AI 做画像。
+
+### 本次完成
+
+- 新增 `test_case_reference_categories` 和 `test_case_reference_files` 两张表及迁移 `0010_test_case_reference_library.py`，按项目隔离分类和参考文件。
+- 新增 `backend/app/test_cases/reference_profiles.py`，支持 `.xlsx/.xls/.md/.txt` 的确定性画像；Excel 读取所有 Sheet，识别可用 Sheet、默认 Sheet、标准字段映射和只读参考用例数量。
+- 新增 `backend/app/test_cases/reference_library.py`，实现独立项目级存储目录 `runtime/test-case-references/{project_id}`，不复用普通上传目录。
+- 接入参考案例库 API：分类创建/列表/重命名/删除、参考上传/列表/删除、设置推荐主参考。
+- 普通项目成员可查看、创建分类和上传；重命名/删除分类、删除参考、设置推荐主参考要求项目管理员或超级管理员。
+- 上传前校验项目、分类、后缀和 active 同名文件；同项目 + 同分类 + 同 original_filename 的 active 文件拒绝上传。
+- 分类删除会把关联参考移到未分类，并清空推荐主参考标记。
+- 推荐主参考按项目 + 分类唯一；`category_id = null` 的未分类范围独立处理。
+- 参考删除先删除物理文件；文件缺失视为成功，IO/权限失败则保留 active 状态并返回错误；成功后清空 `storage_path`、`profile_json`、`is_recommended_primary`。
+- 画像失败时拒绝上传、清理已保存文件且不创建数据库记录。
+- JSON 与 multipart 公共请求都会拒绝 `knowledge_context` 或等价字段，避免 V1 接收用户注入知识库上下文。
+- 新增 `backend/tests/test_test_case_reference_profiles.py` 和 `backend/tests/test_test_case_reference_library_api.py`，覆盖画像、权限、目录隔离、重名拒绝、推荐唯一性、删除语义和无历史记录。
+
+### 验证结果
+
+- `python -m pytest backend/tests/test_test_case_reference_profiles.py backend/tests/test_test_case_reference_library_api.py backend/tests/test_source_api_security.py`
+- `python -m ruff check backend/app/test_cases/reference_profiles.py backend/app/test_cases/reference_library.py backend/app/api/test_cases_api.py backend/app/models.py backend/tests/test_test_case_reference_profiles.py backend/tests/test_test_case_reference_library_api.py migrations/versions/0010_test_case_reference_library.py`
+
+以上命令均通过；pytest 仅保留现有 `lark_oapi` 依赖的 2 条 deprecation warnings。
+
+### 未完成项与风险
+
+- 前端尚未接入参考案例库 API。
+- 生成链路尚未读取参考案例库和推荐主参考，只完成参考资产的后端管理能力。
+
+## 进度记录 2026-06-25 12:37
+
+### 本次目标
+
+把参考案例库作为可选增强接入用例生成和导出；参考案例只影响字段顺序、层级、粒度、命名和历史风格，不作为需求来源，也不作为生成前置条件。
+
+### 本次完成
+
+- 新增生成链路参考选择解析：`reference_ids` 可为空，`primary_reference_id` 可为空，不会自动选择最新、第一条或推荐主参考。
+- `primary_reference_id` 存在时必须属于 `reference_ids`，且必须是当前项目 active 参考案例；跨项目、已删除或不存在的参考会在 AI 调用前拒绝。
+- Excel 主参考支持 `primary_reference_sheet_name`；未传时使用画像里的 `default_sheet_name`，传入时必须命中 `sheet_options`。
+- Markdown/TXT 主参考不接受非空 Sheet 名。
+- 生成 prompt 明确写入参考边界：参考案例不是需求来源，需求来源只能来自 `Planning Sheet Snapshot`。
+- 生成响应返回 `primary_reference_profile` 和 `reference_context`，并按主参考选中 Sheet 的可识别字段生成 `export_columns`，缺失标准字段后置补齐。
+- 导出器增强为可识别完整 Excel 主参考画像中的 `selected_sheet_name/sheet_options`，未知列继续忽略，缺失标准字段继续兜底。
+- 补充生成测试，覆盖无参考、只有附加参考无主参考、主参考不在已选集合、跨项目参考拒绝、Excel Sheet 选择影响参考数量和导出列、Markdown/TXT Sheet 名拒绝。
+- 补充导出测试，覆盖完整 Excel 画像按选中 Sheet 决定列序且未知列不导出。
+
+### 验证结果
+
+- `python -m pytest backend/tests/test_test_case_generation.py backend/tests/test_test_case_exporter.py backend/tests/test_test_case_reference_library_api.py`
+- `python -m ruff check backend/app/test_cases/generation.py backend/app/test_cases/exporter.py backend/app/test_cases/reference_library.py backend/app/test_cases/schemas.py backend/app/api/test_cases_api.py backend/tests/test_test_case_generation.py backend/tests/test_test_case_exporter.py`
+
+以上命令均通过；pytest 仅保留现有 `lark_oapi` 依赖的 2 条 deprecation warnings。
+
+### 未完成项与风险
+
+- 前端尚未把参考案例库选择、主参考 Sheet 和生成响应里的参考上下文接入页面状态。
+- 生成仍不读取原始参考案例文件内容；本次只使用上传时保存的确定性画像。
+
+## 进度记录 2026-06-25 13:24
+
+### 本次目标
+
+把静态 `TestCaseGeneratorView` 先接入真实用例生成 API，但只打通 01 数据源、02 生成输入、04 结果预览/导出；03 参考案例库保持静态，不阻塞无参考生成。
+
+### 本次完成
+
+- 新增 `frontend/src/types/testCases.ts`，按后端 V1 Pydantic 契约定义快照、生成、导出、warnings、stats、蓝图和用例行类型。
+- 新增 `frontend/src/api/testCases.ts`，封装 `/api/v1/test-cases/planning-snapshot`、`/generate`、`/export`，导出使用 `apiDownloadFile` 发送当前页面内存结果。
+- `TestCaseGeneratorView` 复用 `fetchSourceMetadata` 获取策划案来源 Sheet；上传来源仍通过现有 `DataSourcePanel` 复用 `uploadSourceFile`。
+- 读取快照按钮接入真实 API，快照成功后展示 Sheet 文本快照，并清空旧生成结果。
+- 生成按钮改为依赖当前 `planningSnapshot`，不依赖参考案例库；请求显式传空 `reference_ids` 和空主参考。
+- 生成结果展示后端返回的蓝图、用例、warnings、stats 和导出列；warnings 预览合并顶层 warnings 与蓝图 warnings。
+- 导出按钮基于当前页面内存中的 `blueprint/cases/warnings/stats/export_columns/source_summary` 调用导出 API，不读取或保存历史。
+- 切换策划案来源或 Sheet 时清空快照和生成结果；页面不使用 `localStorage` 保存生成结果。
+- 更新前端单测，覆盖快照前不可生成、无参考生成、结果渲染、导出 payload 和切换来源清空结果。
+
+### 验证结果
+
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView`
+- `npm run build`
+
+以上命令均通过；build 仅保留现有 chunk size 和 plugin timing 警告。
+
+### 未完成项与风险
+
+- 03 参考案例库仍是静态/页面态数据，尚未接真实分类、上传、列表和主参考画像 API。
+- 本次生成请求暂不传前端静态参考选择，符合“无参考不阻塞生成”的当前切片目标。
+
+## 进度记录 2026-06-25 13:32
+
+### 本次目标
+
+实现用例生成 V1 的 03 参考案例库持久化结构和最小服务测试；只处理数据模型与迁移，不接前端。
+
+### 本次完成
+
+- 更新 `backend/app/models.py`，补齐 `TestCaseReferenceCategoryRecord` 和 `TestCaseReferenceFileRecord` 的持久化契约。
+- 分类新增 `name_key`，由 ORM validator 从 `name.strip()` 同步，唯一索引改为 `project_id + name_key`，保证同项目内按 trim 后名称唯一。
+- 参考文件继续支持 `category_id = null` 表示未分类；删除采用 `deleted_at/deleted_by` 软删除审计，`storage_path/profile_json/is_recommended_primary` 可在删除成功后清空。
+- 更新 `migrations/versions/0010_test_case_reference_library.py`，创建参考分类和参考文件表，不新增生成历史表，不新增 `profile_status/profile_error` 半成品状态字段。
+- 更新 `backend/app/test_cases/reference_library.py`，创建分类时写入 `name_key`，分类重名检查改为基于 trim 后键。
+- 新增 `backend/tests/test_test_case_reference_models.py`，覆盖 trim 唯一、未分类软删除审计和禁止生成历史/画像半成品状态字段。
+- 更新 `backend/tests/test_alembic_migrations.py`，将 Alembic head 推进到 `0010_test_case_reference_library`，并校验参考库表结构。
+
+### 验证结果
+
+- `python -m pytest backend/tests/test_test_case_reference_models.py backend/tests/test_alembic_migrations.py`
+- `python -m pytest backend/tests/test_test_case_reference_library_api.py`
+- `python -m ruff check backend/app/models.py backend/app/test_cases/reference_library.py migrations/versions/0010_test_case_reference_library.py backend/tests/test_test_case_reference_models.py backend/tests/test_alembic_migrations.py`
+
+以上命令均通过；pytest 仅保留现有 `lark_oapi` 依赖的 2 条 deprecation warnings。
+
+### 未完成项与风险
+
+- 本次不接前端。
+- 本次不新增生成历史表，也不新增参考画像异步状态字段；参考画像仍保持后续确定性解析切片处理。
+
+## 进度记录 2026-06-25 13:42
+
+### 本次目标
+
+按 `2026-06-25-test-case-generation-codex-prompts.md` 的前八步执行顺序做复核与补正，重点处理 Prompt 5/6 实际在 Prompt 7/8 后执行造成的潜在问题。
+
+### 本次完成
+
+- 更新 `docs/superpowers/plans/2026-06-25-test-case-generation-codex-prompts.md`，明确前八步实际/补正执行顺序为 `1 → 2 → 3 → 4 → 7 → 8 → 5 → 6`，并在 Prompt 5/6/7/8 标题中标注执行顺序。
+- 识别并修复一个真实顺序风险：旧版 `0010_test_case_reference_library` 已经在开发库落库但缺少 `name_key` 时，后续只修改同一个 0010 revision 不会被 Alembic 重放。
+- 新增 `migrations/versions/0011_test_case_reference_category_name_key.py`，对旧 0010 库幂等补齐 `test_case_reference_categories.name_key` 和 `project_id + name_key` 唯一索引。
+- 更新 `backend/tests/test_alembic_migrations.py`，新增旧 0010 漂移库迁移测试，并将 Alembic head 预期推进到 `0011_test_case_reference_category_name_key`。
+- 重新回归前八步相关后端与前端测试，确认无参考生成、参考案例增强、导出、迁移、前端 01/02/04 接线没有因执行顺序产生回归。
+
+### 验证结果
+
+- `python -m pytest backend/tests/test_alembic_migrations.py::test_migrate_old_reference_library_revision_adds_category_name_key`：先红后绿，确认覆盖旧 0010 漂移。
+- `python -m pytest backend/tests/test_alembic_migrations.py backend/tests/test_test_case_reference_models.py`
+- `python -m pytest backend/tests/test_test_case_api_contracts.py backend/tests/test_test_case_planning_snapshot.py backend/tests/test_test_case_generation.py backend/tests/test_test_case_exporter.py backend/tests/test_test_case_reference_models.py backend/tests/test_test_case_reference_profiles.py backend/tests/test_test_case_reference_library_api.py backend/tests/test_project_ai_config_api.py backend/tests/test_source_api_security.py backend/tests/test_alembic_migrations.py`
+- `python -m ruff check backend/tests/test_alembic_migrations.py migrations/versions/0011_test_case_reference_category_name_key.py docs/superpowers/plans/2026-06-25-test-case-generation-codex-prompts.md`
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView`
+- `npm run build`
+
+以上命令均通过；pytest 仅保留现有 `lark_oapi` 依赖的 2 条 deprecation warnings，前端 build 仅保留既有 chunk size/plugin timing 警告。
+
+### 未完成项与风险
+
+- 前端 03 参考案例库仍未接真实 API，后续应按补正后的 Prompt 9 执行。
+- 既有开发库如果存在同项目内 trim 后重复的参考分类名，`0011` 创建唯一索引时仍会暴露数据冲突；当前服务入口会 trim 并拒绝同名，正常 API 路径不会产生这类重复。
+
+## 进度记录 2026-06-25 14:00
+
+### 本次目标
+
+把 `TestCaseGeneratorView` 的 03 参考案例库从静态数据接到真实 API，并把 02 主参考设置和 04 导出字段增强接入同一套页面内存状态。
+
+### 本次完成
+
+- 补齐 `frontend/src/types/testCases.ts` 的参考案例分类、参考文件、画像、Sheet 选项、主参考画像和参考库 API 响应类型。
+- 扩展 `frontend/src/api/testCases.ts`，封装参考分类列表/创建、参考文件列表/上传/删除、设置推荐主参考等真实后端接口。
+- `TestCaseGeneratorView` 页面加载时读取项目参考案例分类和文件列表，合成 `category_id = null` 的“未分类”展示范围。
+- 分类 pill 数量改为真实后端数量；切换分类会清空选择，仅当该分类有推荐主参考时默认勾选并设为主参考。
+- 支持多选参考案例；手动设为主参考会自动勾选；取消勾选当前主参考时清空主参考且不自动改选。
+- Excel 主参考按后端 `default_sheet_name` 默认选中并展示可选 Sheet；Markdown/TXT 主参考禁用 Sheet 选择。
+- 参考用例数量来自当前主参考画像和选中 Sheet；未选择主参考显示“未使用主参考”。
+- 生成请求改为传当前页面选中的 `reference_ids`、`primary_reference_id` 和 Excel 主参考 Sheet；无参考仍传空数组和 `null`。
+- 导出继续完全基于当前页面内存生成结果，传递后端返回的 `export_columns` 和 `primary_reference_profile`。
+- 新建分类、上传参考案例、删除参考案例、设置推荐主参考均调用真实 API；管理员动作以后端权限拒绝为准。
+- 更新前端单测，覆盖参考库加载、分类数量、无推荐分类不自动选择、推荐主参考默认选择、多选、主参考 Sheet、上传、新建分类、管理员动作、生成请求参考参数和导出增强 payload。
+
+### 验证结果
+
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView`
+- `npm run build`
+
+以上命令均通过；build 仅保留既有 chunk size 和 plugin timing 警告。
+
+### 未完成项与风险
+
+- 分类重命名/删除的前端入口仍未完整实现，当前更多操作只接入参考文件删除和设置推荐主参考。
+- 前端只做弱交互和错误展示，普通成员是否可执行管理员动作完全以后端权限校验为准。
+
+## 进度记录 2026-06-25 14:43
+
+### 本次目标
+
+对用例生成 V1 做最终验收、文档同步和风险清理，不新增新功能。
+
+### 本次完成
+
+- 按验收清单复核 V1 安全边界：不保存生成历史、无参考生成是一等路径、参考案例库只增强输出格式/粒度/历史风格、公共请求拒绝 `knowledge_context` 等知识上下文字段。
+- 复核图片/附件未读限制：策划案快照固定返回“未读取图片、附件、批注或评论语义” warning，生成 prompt 和导出说明会保留相关 warnings/备注。
+- 复核 Excel 导出：导出文件包含 `测试用例`、`用例蓝图`、`生成说明` 三个 Sheet，并且导出只基于当前页面提交的结果，不依赖历史记录。
+- 复核前端刷新行为：生成结果只存在于组件内存状态，页面不使用 `localStorage` 或 `sessionStorage` 保存生成结果，刷新不会恢复上次生成结果。
+- 清理一个验收风险：参考选择、主参考或主参考 Sheet 变更后，页面已有生成结果会标记失效，并禁用旧结果导出，要求重新生成后再导出。
+- 同步 `docs/specs/test-case-generation.md`，将状态从“静态页/后端待实现”更新为 V1 主链路已实现，并同步参考变更后结果失效与禁用导出的行为。
+- 同步 `CHANGELOG.md`，记录“用例生成”V1 用户可见主链路已交付，并修正旧静态页口径。
+
+### 验证结果
+
+- `python -m pytest backend/tests/test_test_case_api_contracts.py backend/tests/test_test_case_planning_snapshot.py backend/tests/test_test_case_generation.py backend/tests/test_test_case_exporter.py backend/tests/test_test_case_reference_models.py backend/tests/test_test_case_reference_profiles.py backend/tests/test_test_case_reference_library_api.py backend/tests/test_project_ai_config_api.py backend/tests/test_source_api_security.py backend/tests/test_alembic_migrations.py`
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView`
+- `npm run build`
+
+以上命令均通过；后端 pytest 为 70 passed，仅保留现有 `lark_oapi` 依赖的 2 条 deprecation warnings；前端单测为 31 passed，build 仅保留既有 chunk size/plugin timing 警告。
+
+### 未完成项与风险
+
+- 分类重命名和删除分类的前端入口仍未完整接入；后端 API 和权限校验已存在。
+- V1 仍不读取图片、附件、批注或评论语义；该限制已在 warnings/备注路径可见。
+- V1 不保存生成历史，后续如引入历史留存，需要重新设计策划案快照、AI 响应、导出文件和参考上下文的存储/清理/权限边界。
+
+## 进度记录 2026-06-25 15:52
+
+### 本次目标
+
+确认 V2 飞书视觉证据链路在没有 Vision AI 凭据或视觉模型不可用时是否阻断生成流程。
+
+### 本次完成
+
+- 明确允许继续读取飞书正文、表格和资源清单。
+- 明确图片、原型图和附件降级为“待观察图片/附件”，不参与语义生成。
+- 明确页面和导出说明需要提示“视觉模型未配置，图片/附件未参与语义理解”或等价 warning。
+- 明确同一个未过期 `Source Evidence Run` 可以在后续配置 Vision AI 后重新执行 observation。
+- 在 `docs/specs/test-case-generation.md` 的 V2 候选、延期清单和 qa-case 移植矩阵中补充该降级策略。
+
+### 当前项目进度
+
+- V1 已完成链路不变。
+- V2 飞书完整读取链路的 Vision 不可用分支已收口为“文本/表格 + 资源清单 + 待观察图片/附件”。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次未实现业务代码。
+- 未运行测试；本次只更新需求边界和项目记录。
+
+## 进度记录 2026-06-25 15:55
+
+### 本次目标
+
+确认 V2 `Source Evidence Run` 读取飞书文档、图片和附件时使用项目级服务身份，还是当前登录用户个人 OAuth 身份。
+
+### 本次完成
+
+- 明确采用项目级 `Project Feishu Service Identity` 作为服务端长期读取主体。
+- 明确当前登录用户只触发读取、授权申请或重试，不保存个人 OAuth token 作为长期读取凭据。
+- 明确不把 QA Workspace 的本机个人 user token 模式直接迁移到当前多用户 Web 项目。
+- 明确权限不足时记录待授权资源，并通过项目级机器人/授权卡片方向申请给 App/Bot 可读取权限。
+- 在 `CONTEXT.md` 增加 `Project Feishu Service Identity` 术语。
+- 在 `docs/specs/feishu-integration.md` 和 `docs/specs/test-case-generation.md` 同步授权主体边界。
+
+### 当前项目进度
+
+- V2 飞书完整读取链路的身份边界已收口：按项目隔离、可重试、可审计，不依赖个人用户长期 token。
+- 后续仍需确认资源观察范围、权限申请交互和 Source Evidence Run 的清理任务细节。
+
+### 文档同步
+
+- `CONTEXT.md`
+- `docs/specs/feishu-integration.md`
+- `docs/specs/test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次未实现业务代码。
+- 未运行测试；本次只更新领域术语、需求边界和项目记录。
+
+## 进度记录 2026-06-25 20:10
+
+### 本次目标
+
+在用例生成 V1 主链路已开发完成的基础上，整理 `qa-case` 飞书文档读取能力移植到当前项目的需求方案文档。
+
+### 本次完成
+
+- 新增 `docs/specs/test-case-generation-feishu-doc-migration.md`，作为用例生成飞书文档读取移植的专项方案。
+- 明确方案不是重写 V1，而是在 V1 之后新增 `Source Evidence Run`、飞书文档富读取、资源清单、视觉证据、TTL 清理和 Project Vision AI Credential。
+- 将前面对话中已确认的策略写入方案：来源证据默认 7 天 TTL、到期删除原文/图片/附件/视觉包/observation 详情、最小审计元数据按项目审计策略保留、Vision AI 独立配置、Vision 不可用时降级继续、observation 需用户采纳后才进入生成依据。
+- 对照 QA Workspace 的 `context-reading`、`rich_reader`、`docx_blocks`、`visual` 和 `source_guard`，明确只迁移读取方法和证据边界，不迁移 CLI、本地任务目录、个人 token cache、preflight 或知识库维护流。
+- 更新 `docs/specs/README.md`，新增飞书文档读取移植方案入口，并修正用例生成 V1 状态。
+- 更新 `docs/MODULES.md`，补充 `/test-cases` 路由和用例生成业务切片定位。
+
+### 当前项目进度
+
+- 用例生成 V1 主链路继续保持当前实现边界。
+- 飞书文档富读取已经形成可开发的专项方案，后续可按“数据模型与 TTL → Feishu rich reader adapter → Source Evidence API → 文本/表格生成闭环 → Vision 观察与采纳 → 前端接入”推进。
+
+### 文档同步
+
+- `docs/specs/test-case-generation-feishu-doc-migration.md`
+- `docs/specs/README.md`
+- `docs/MODULES.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次未实现业务代码。
+- 本次未运行测试；改动仅为文档和索引。
+- 后续实现时需要重点验证飞书 DOCX blocks、资源下载权限、TTL 清理和 adopted visual evidence 不自动污染生成依据。
+
+## 进度记录 2026-06-25 20:43
+
+### 本次目标
+
+确认 V2 `Source Evidence Run` 默认 7 天 TTL 到期后的证据清理策略，以及 `Adopted Visual Evidence` 在页面和导出中的可复查边界。
+
+### 本次完成
+
+- 明确默认 7 天 TTL 到期后删除原文快照、图片/附件文件、视觉证据包和 observation 详情。
+- 明确 TTL 到期后只保留最小审计元数据，例如 run id、项目、来源标识、资源文件名、状态、操作人、创建时间和清理时间。
+- 明确最小审计元数据不随 7 天 TTL 删除，按项目审计数据保留策略保留。
+- 明确 V2 不提供项目级审计保留独立配置页；只有超级管理员可配置全局默认值，项目管理员只能查看。
+- 明确项目管理员可查看本项目的清理记录摘要，但不能查看已清理内容、视觉证据包或 observation 明细。
+- 明确清理记录摘要字段限定为 run id、来源标识、资源文件名、状态、创建时间、清理时间和操作人。
+- 明确普通项目成员不能查看项目级清理记录列表，只能在自己当前页面遇到过期证据时看到“证据已清理/需重新读取来源”的状态提示。
+- 明确页面和导出文件在 TTL 内可以引用 `Adopted Visual Evidence` 做证据复查。
+- 明确 TTL 到期后不再提供证据复查或 observation 明细查看，用户需要重新读取来源。
+- 明确 TTL 清理触发采用“后台定时清理 + 访问时懒清理”双保险，避免定时任务延迟导致过期证据继续可见。
+- 明确该策略仍符合“不做生成历史”和“敏感策划案短期保存”的边界。
+- 更新 `docs/specs/test-case-generation.md` 的 V2 候选、V1 延期清单和 qa-case 移植矩阵。
+- 更新 `docs/specs/admin-auth-projects.md`，记录项目审计数据保留策略的超级管理员配置边界。
+- 更新 `CONTEXT.md`，增加 `Source Evidence Cleanup Audit Summary` 术语。
+- 更新 `CHANGELOG.md` 记录本次需求文档口径变化。
+
+### 当前项目进度
+
+- V2 飞书完整读取链路的证据留存边界已进一步收口。
+- 后续实现 `Source Evidence Run` 时，需要把后台定时清理、访问时懒清理、审计元数据模型、超级管理员全局默认配置、项目管理员清理记录摘要查看、普通成员过期状态提示、页面过期状态和导出引用失效策略作为同一切片设计。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/specs/admin-auth-projects.md`
+- `CONTEXT.md`
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次未实现业务代码。
+- 未运行测试；本次只更新需求文档和项目记录。
+
+## 进度记录 2026-06-25 20:00
+
+### 本次目标
+
+根据确认结果取消用例生成结果预览中的“原始表格/追踪视图”和“用例蓝图”前端常驻展示，同时保留后端快照、蓝图协议和 Excel 导出能力。
+
+### 本次完成
+
+- 将 `TestCaseGeneratorView.vue` 的预览页签收口为 `AI 整理稿`、`测试用例`、`限制提示`。
+- 移除前端原始快照表格页签、蓝图片签和下方用例蓝图摘要区。
+- 将生成完成状态文案从“蓝图已生成”调整为“用例已生成”，避免取消蓝图展示后造成理解偏差。
+- 保留整理稿失败时的快照摘要提示，未改动后端 `Planning Sheet Snapshot`、`Test Case Blueprint` 和 Excel `用例蓝图` 导出数据。
+- 更新 `docs/specs/test-case-generation.md`，明确蓝图是后端中间结果和导出审计数据，不是 V1 常驻前端页签。
+- 更新 `CHANGELOG.md` 记录本次前端体验变更。
+
+### 验证记录
+
+- `npm run test:unit -- TestCaseGeneratorView` 通过，34 个用例全部通过。
+- `npm run build` 通过，`vue-tsc` 与 Vite 构建均成功。
+- `git diff --check -- frontend/src/views/TestCaseGeneratorView.vue frontend/tests/unit/TestCaseGeneratorView.test.ts docs/specs/test-case-generation.md CHANGELOG.md PROJECT_RECORD.md` 通过，仅出现现有 CRLF 提示。
+
+### 当前项目进度
+
+- 用例生成 V1 前端结果区已按当前产品决策收口，页面阅读负担降低。
+- 后端仍保留快照和蓝图结构，后续 V2 若要做证据追踪、复核工作台或蓝图确认，不需要重建生成协议。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次未调整后端导出和生成协议。
+- 未做浏览器截图验证；本次通过组件单测和生产构建验证前端行为与模板类型。
+
+## 进度记录 2026-06-25 19:07
+
+### 本次目标
+
+继续定位并修复用例生成页面“AI 用例返回结构不符合用例生成契约：Input should be a valid string”的失败。
+
+### 本次完成
+
+- 使用当前项目 1 的项目级 AI 凭据和已上传 Excel `3d24a9f317364891b886a0e65d2a8d1b_upload.xlsx` 的 `详案` Sheet 真实调用生成链路。
+- 确认真实快照为 116 行、23 列、124 个非空单元格。
+- 截获真实 provider 返回并确认根因：`cases[*].steps` 返回为字符串数组，而 `GeneratedTestCase.steps` 契约要求字符串。
+- 同时发现真实返回里 `requirement_trace` 可能出现两类非契约形态：使用 `requirement_id/cases` 别名，或直接返回 `null`。
+- 在 `backend/app/test_cases/generation.py` 中补齐用例阶段归一化：
+  - `steps`、`expected_results` 等用例字符串字段若为数组，按换行合并。
+  - 数值型文本字段转为字符串。
+  - `requirement_trace` 的 `requirement_id/cases` 归一化为当前 `RequirementTrace` 结构。
+  - `requirement_trace: null` 归一化为空列表，并继续由后端已有逻辑按用例行补 trace。
+- 在用例阶段 prompt 中补充“多步骤使用换行字符串”约束，降低 provider 再次返回数组的概率。
+- 新增回归测试：
+  - `test_generation_normalizes_provider_case_lists_and_trace_aliases`
+  - `test_generation_normalizes_null_requirement_trace_to_empty_list`
+- 更新 `CHANGELOG.md` 修复记录。
+
+### 验证结果
+
+- `python -m pytest backend/tests/test_test_case_generation.py::test_generation_normalizes_provider_case_lists_and_trace_aliases -q`：先红后绿。
+- `python -m pytest backend/tests/test_test_case_generation.py::test_generation_normalizes_null_requirement_trace_to_empty_list -q`：先红后绿。
+- `python -m pytest backend/tests/test_test_case_generation.py -q`
+- `python -m ruff check backend/app/test_cases/generation.py backend/tests/test_test_case_generation.py`
+- 使用当前项目真实 AI 和同一份 `详案` 快照运行生成调试脚本，生成 16 条用例、5 条 warning、12 条 trace，`steps` 已为字符串，不再触发契约错误。
+
+以上命令均通过；pytest 仅保留现有 `lark_oapi` 依赖的 2 条 deprecation warnings。
+
+### 当前项目进度
+
+- 用例生成主链路已兼容本次真实 provider 返回的常见形态，不再因步骤数组或空 trace 直接失败。
+
+### 文档同步
+
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 如果后续 provider 在其它字段返回全新结构，仍可能触发 502；当前策略是只归一化已验证的常见形态，避免静默吞掉真正错误。
+- 本次真实 AI 调试会消耗一次项目 AI 调用额度。
+
+## 进度记录 2026-06-25 18:18
+
+### 本次目标
+
+定位并修复用例生成页面“AI 蓝图返回结构不符合用例生成契约：Input should be a valid dictionary or instance of GenerationWarning”的失败。
+
+### 本次完成
+
+- 使用当前项目已上传的 `3d24a9f317364891b886a0e65d2a8d1b_upload.xlsx`，读取 `详案` Sheet 构造真实 `Planning Sheet Snapshot`，确认快照为 116 行、23 列、124 个非空单元格。
+- 用该真实快照和模拟 provider 返回复现同一错误：蓝图阶段返回 `warnings: ["..."]` 时，`TestCaseBlueprint.warnings` 直接按 `GenerationWarning` 校验失败。
+- 确认根因不是 Excel 快照内容，而是生成链路缺少 provider warning 字符串归一化；`snapshot_brief` 已有类似兼容逻辑，`generation` 没有。
+- 在 `backend/app/test_cases/generation.py` 新增 `_normalize_provider_warnings()`，蓝图阶段默认归一化为 `source=blueprint`，用例阶段默认归一化为 `source=cases`。
+- 新增回归测试 `test_generation_normalizes_provider_warning_strings`，覆盖蓝图和用例两个阶段的字符串 warnings。
+- 同步 `CHANGELOG.md` 修复记录。
+
+### 验证结果
+
+- `python -m pytest backend/tests/test_test_case_generation.py::test_generation_normalizes_provider_warning_strings -q`：先红后绿，红时复现截图中的 502。
+- `python -m pytest backend/tests/test_test_case_generation.py -q`
+- `python -m ruff check backend/app/test_cases/generation.py backend/tests/test_test_case_generation.py`
+- 使用项目已上传 Excel `详案` 快照运行调试脚本，确认同类 provider 返回已归一化为 `snapshot / blueprint / cases` 三类 warning，不再触发蓝图契约错误。
+
+以上命令均通过；pytest 仅保留现有 `lark_oapi` 依赖的 2 条 deprecation warnings。
+
+### 当前项目进度
+
+- 用例生成主链路对 provider 字符串 warnings 更稳健，页面不应再因这一类蓝图 warnings 直接失败。
+
+### 文档同步
+
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次未调用真实 AI 生成完整用例，只用当前项目真实上传快照和模拟 provider 返回验证了失败形态。
+- 如果 provider 在其它字段返回非契约结构，仍会按现有策略返回 502，避免静默吞掉真正结构错误。
+
+## 进度记录 2026-06-25 16:10
+
+### 本次目标
+
+确认 V2 图片/附件 observation 完成后，视觉语义是否自动进入用例生成依据。
+
+### 本次完成
+
+- 明确 observation 结果不自动进入生成依据。
+- 明确 observation 完成后先展示模型观察结果、关联资源、来源位置和风险提示。
+- 明确用户确认采纳后才形成 `Adopted Visual Evidence`，并进入生成上下文、蓝图和用例追踪。
+- 明确已观察但未采纳的资源可以保留在 `Source Evidence Run` 中用于复核，但不得影响本次生成。
+- 在 `CONTEXT.md` 增加 `Adopted Visual Evidence` 术语。
+- 在 `docs/specs/test-case-generation.md` 的 V2 候选、延期清单和 qa-case 移植矩阵中补充视觉证据采纳策略。
+
+### 当前项目进度
+
+- V2 飞书完整读取链路已经区分“已观察”和“已采纳”，降低视觉模型误读直接放大为测试用例的风险。
+- 后续仍需确认 Source Evidence Run 到期清理时，已采纳视觉证据的引用和导出备注如何处理。
+
+### 文档同步
+
+- `CONTEXT.md`
+- `docs/specs/test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次未实现业务代码。
+- 未运行测试；本次只更新领域术语、需求边界和项目记录。
+
+## 进度记录 2026-06-25 16:07
+
+### 本次目标
+
+确认 V2 图片/附件视觉 observation 是默认全量执行，还是先出资源清单后选择性观察。
+
+### 本次完成
+
+- 明确采用“资源清单先出 + 系统推荐观察 + 用户可调整”的混合模式。
+- 明确不默认全量观察所有图片或附件。
+- 明确系统推荐依据包括文档位置、文件类型、文件名、附近文本、重复度和预算。
+- 明确用户可增删观察集合，只有被观察且校验通过的资源可作为图片语义依据。
+- 明确未选择或未观察的图片/附件继续保持“待观察”。
+- 在 `CONTEXT.md` 增加 `Visual Observation Selection` 术语。
+- 在 `docs/specs/test-case-generation.md` 的 V2 候选、延期清单和 qa-case 移植矩阵中补充视觉观察选择策略。
+
+### 当前项目进度
+
+- V2 飞书完整读取链路的视觉成本和依据边界已进一步收口。
+- 后续仍需确认 observation 结果是否自动参与生成，还是需要用户确认后才进入生成依据。
+
+### 文档同步
+
+- `CONTEXT.md`
+- `docs/specs/test-case-generation.md`
+- `PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次未实现业务代码。
+- 未运行测试；本次只更新领域术语、需求边界和项目记录。

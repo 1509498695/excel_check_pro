@@ -68,6 +68,7 @@ def test_migrate_empty_sqlite_database_creates_current_schema(tmp_path: Path) ->
     assert "alembic_version" in tables
     assert "ai_rule_drafts" not in tables
     assert "ai_provider_credentials" not in tables
+    assert "test_case_generation_history" not in tables
 
     assert to_sync_database_url(_async_sqlite_url(db_path)).startswith("sqlite:///")
     execution_run_columns = _column_names(inspector, "execution_runs")
@@ -197,7 +198,45 @@ def test_migrate_empty_sqlite_database_creates_current_schema(tmp_path: Path) ->
         inspector,
         "project_ai_credentials",
     )
-    assert _alembic_version(db_path) == "0009_rule_config_per_query_type"
+    assert {
+        "project_id",
+        "name",
+        "name_key",
+        "created_by",
+        "created_at",
+        "updated_at",
+    }.issubset(_column_names(inspector, "test_case_reference_categories"))
+    assert "uq_test_case_reference_categories_project_name_key" in _index_names(
+        inspector,
+        "test_case_reference_categories",
+    )
+    assert {
+        "project_id",
+        "category_id",
+        "original_filename",
+        "stored_filename",
+        "suffix",
+        "size_bytes",
+        "storage_path",
+        "profile_json",
+        "is_recommended_primary",
+        "uploaded_by",
+        "deleted_by",
+        "deleted_at",
+        "created_at",
+        "updated_at",
+    }.issubset(_column_names(inspector, "test_case_reference_files"))
+    assert "profile_status" not in _column_names(inspector, "test_case_reference_files")
+    assert "profile_error" not in _column_names(inspector, "test_case_reference_files")
+    assert "ix_test_case_reference_files_project_category" in _index_names(
+        inspector,
+        "test_case_reference_files",
+    )
+    assert "ix_test_case_reference_files_project_recommended" in _index_names(
+        inspector,
+        "test_case_reference_files",
+    )
+    assert _alembic_version(db_path) == "0011_test_case_reference_category_name_key"
 
 
 def test_migrate_legacy_sqlite_database_adds_missing_columns_and_indexes(
@@ -311,6 +350,8 @@ def test_migrate_legacy_sqlite_database_adds_missing_columns_and_indexes(
     assert "feishu_bot_bound_chats" in set(inspector.get_table_names())
     assert "project_svn_credentials" in set(inspector.get_table_names())
     assert "project_ai_credentials" in set(inspector.get_table_names())
+    assert "test_case_reference_categories" in set(inspector.get_table_names())
+    assert "test_case_reference_files" in set(inspector.get_table_names())
     assert "ai_provider_credentials" not in set(inspector.get_table_names())
     assert {
         "enabled",
@@ -331,6 +372,11 @@ def test_migrate_legacy_sqlite_database_adds_missing_columns_and_indexes(
     }.issubset(_column_names(inspector, "execution_runs"))
     assert "ix_execution_runs_execution_mode" in _index_names(inspector, "execution_runs")
     assert "ix_execution_runs_status" in _index_names(inspector, "execution_runs")
+    assert "name_key" in _column_names(inspector, "test_case_reference_categories")
+    assert "uq_test_case_reference_categories_project_name_key" in _index_names(
+        inspector,
+        "test_case_reference_categories",
+    )
 
     engine = sa.create_engine(f"sqlite:///{db_path.as_posix()}")
     try:
@@ -346,6 +392,69 @@ def test_migrate_legacy_sqlite_database_adds_missing_columns_and_indexes(
     assert row == ("sync", "success", "")
 
 
+def test_migrate_old_reference_library_revision_adds_category_name_key(
+    tmp_path: Path,
+) -> None:
+    """已执行旧 0010 的库也要补齐 trim 后唯一键，避免执行顺序漂移。"""
+    db_path = tmp_path / "old-reference-library.db"
+    engine = sa.create_engine(f"sqlite:///{db_path.as_posix()}")
+    try:
+        metadata = sa.MetaData()
+        sa.Table(
+            "alembic_version",
+            metadata,
+            sa.Column("version_num", sa.String(32), primary_key=True),
+        )
+        sa.Table(
+            "test_case_reference_categories",
+            metadata,
+            sa.Column("id", sa.Integer(), primary_key=True),
+            sa.Column("project_id", sa.Integer(), nullable=False),
+            sa.Column("name", sa.String(80), nullable=False),
+            sa.Column("created_by", sa.Integer(), nullable=True),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+        )
+        metadata.create_all(engine)
+        with engine.begin() as conn:
+            conn.execute(
+                sa.text(
+                    "INSERT INTO alembic_version (version_num) "
+                    "VALUES ('0010_test_case_reference_library')"
+                )
+            )
+            conn.execute(
+                sa.text(
+                    "INSERT INTO test_case_reference_categories "
+                    "(id, project_id, name, created_by, created_at, updated_at) "
+                    "VALUES (1, 1, '  冒烟  ', NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"
+                )
+            )
+    finally:
+        engine.dispose()
+
+    run_database_migrations(_async_sqlite_url(db_path))
+
+    inspector = _inspect_database(db_path)
+    assert "name_key" in _column_names(inspector, "test_case_reference_categories")
+    assert "uq_test_case_reference_categories_project_name_key" in _index_names(
+        inspector,
+        "test_case_reference_categories",
+    )
+
+    engine = sa.create_engine(f"sqlite:///{db_path.as_posix()}")
+    try:
+        with engine.connect() as conn:
+            name_key = conn.execute(
+                sa.text("SELECT name_key FROM test_case_reference_categories WHERE id = 1")
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+    assert name_key == "冒烟"
+    assert _alembic_version(db_path) == "0011_test_case_reference_category_name_key"
+
+
 def test_migration_can_run_twice_without_duplicate_columns(tmp_path: Path) -> None:
     """迁移重复执行应保持幂等，不重复添加历史字段。"""
     db_path = tmp_path / "idempotent.db"
@@ -359,4 +468,6 @@ def test_migration_can_run_twice_without_duplicate_columns(tmp_path: Path) -> No
     assert "status" in _column_names(inspector, "execution_runs")
     assert "project_query_roots" in set(inspector.get_table_names())
     assert "feishu_bot_bound_chats" in set(inspector.get_table_names())
-    assert _alembic_version(db_path) == "0009_rule_config_per_query_type"
+    assert "test_case_reference_categories" in set(inspector.get_table_names())
+    assert "name_key" in _column_names(inspector, "test_case_reference_categories")
+    assert _alembic_version(db_path) == "0011_test_case_reference_category_name_key"

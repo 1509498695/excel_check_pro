@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在现有 Excel Check Pro 项目内新增“用例生成”页面和后端能力：项目成员上传/使用参考案例库，读取单个策划案 Sheet 快照，通过项目级 AI 生成只读蓝图、测试用例和 warnings，并支持页面预览与 Excel 导出。V1 不保存生成历史、不编辑蓝图、不做图片理解、不写回飞书。
+**Goal:** 在现有 Excel Check Pro 项目内新增“用例生成”页面和后端能力：项目成员读取单个策划案 Sheet 快照，通过项目级 AI 按 `qa-case` 方法论生成只读蓝图、测试用例和 warnings，并可选使用项目参考案例库增强字段、粒度和历史风格，支持页面预览与 Excel 导出。V1 不保存生成历史、不编辑蓝图、不做图片理解、不写回飞书。
 
 **Architecture:** 后端新增 `test_cases` 领域包，按“参考案例库持久化 + 策划案快照内存化 + AI 生成编排 + Excel 导出”拆分服务；API 统一挂到 `/api/v1/test-cases/*`，鉴权复用当前项目成员/项目管理员依赖；前端新增独立路由 `/test-cases` 和 `TestCaseGeneratorView.vue`，只保留本次页面态和导出动作。
 
@@ -17,6 +17,8 @@
 - 快照边界：默认最多 80,000 字符、800 行、80 列、300 字符/单元格、12,000 非空单元格；超出时截断并返回 warnings。
 - AI 凭据：只使用项目级 AI 配置，不接受用户临时 API Key。
 - 生成协议：内部按“蓝图 → 用例”两段编排；接口一次返回 `blueprint + cases + warnings + stats`。
+- 生成主线：以 `qa-case` 方法论为主体，参考案例库是可选增强输入，不是生成前置条件。
+- QA 知识库：V1 不做可维护知识库；`QA Case Method` 以内置规则随代码发布，后端仅预留 V2 的 `knowledge_context` 扩展点。
 - 蓝图：作为可解释中间结果展示，只读，不作为可编辑输入。
 - 统计：总数、优先级、模块分布等由代码计算，不让模型自报。
 - 生成历史：V1 不持久化结果、蓝图和策划案快照，只保留页面预览和 Excel 导出。
@@ -107,6 +109,7 @@
 
 分类删除时将关联文件的 `category_id` 置空、`is_recommended_primary` 清空，页面展示为“未分类”。参考文件删除采用软删除，保留审计元数据但列表和生成选择只读 `deleted_at IS NULL` 的记录。
 Deleting a reference soft-deletes the row for audit but also deletes the physical file immediately. After deletion, keep only minimal metadata such as original filename, suffix, size, uploader, timestamps, deleter, and deletion timestamp; clear `storage_path`, `profile_json`, and `is_recommended_primary` so the deleted row cannot be reused for generation or export.
+If the referenced physical file is already missing during deletion, treat the file deletion step as idempotent success and still soft-delete the row with reusable metadata purged. If the physical file exists but cannot be deleted because of permission or IO errors, abort the delete operation, return a clear retryable admin-facing error, and leave the row active with `storage_path`, `profile_json`, and `is_recommended_primary` unchanged.
 V1 不做参考案例覆盖替换；同一项目、同一分类、同一 `original_filename` 的 active 参考文件只能存在一条，软删除后的同名文件允许重新上传。
 Reference profile extraction failure is treated as upload failure: delete any saved file and do not commit a reference row. V1 only stores references whose `profile_json` is ready; do not add `profile_status` or `profile_error` fields for failed half-finished references.
 For Excel reference files, `ReferenceFileResponse` exposes `sheet_options: Array<{ sheet_name: string; sheet_index: number; is_default: boolean; reference_case_count: int | null }>` and optional `default_sheet_name`; non-Excel references return an empty `sheet_options` list. Store Excel reference profile data per usable sheet, for example under `profile_json.sheet_profiles`, and resolve generation/export behavior from the selected primary reference sheet. A usable sheet is a worksheet with a reliably detected header and at least one recognizable case row.
@@ -222,6 +225,8 @@ python -m pytest backend/tests/test_alembic_migrations.py backend/tests/test_tes
   - Reject uploads when an active reference with the same `project_id`, `category_id` (including null), and `original_filename` already exists; return a Chinese message telling the member to contact a project admin to delete the old file before uploading again.
   - If profile extraction fails after the file is written, delete the written file and roll back the DB insert; return a clear Chinese upload failure message.
   - When deleting a reference, delete the physical file, set `deleted_at` and `deleted_by`, clear `storage_path`, clear `profile_json`, clear `is_recommended_primary`, and exclude the row from active lists/generation.
+  - If the physical file is already missing while deleting a reference, continue as a successful soft delete and metadata purge.
+  - If the physical file exists but cannot be deleted because of permission or IO errors, return deletion failure and leave the active row unchanged so the admin can retry.
   - Deleted reference rows only preserve audit metadata such as original filename, suffix, size, uploader, created/updated/deleted timestamps, and deleter.
   - Allow creating an empty category; category creation must not require an existing reference file.
   - When deleting a category, set affected active references' `category_id` to null and clear `is_recommended_primary`.
@@ -254,6 +259,8 @@ python -m pytest backend/tests/test_alembic_migrations.py backend/tests/test_tes
   - Upload rejects a duplicate active filename in the same project category.
   - Upload allows the same filename in a different category or after the old reference has been soft-deleted.
   - Upload profile extraction failure leaves no reference row and no saved file.
+  - Delete reference succeeds when the physical file is already missing, while still clearing reusable metadata.
+  - Delete reference returns failure and keeps the row active when an existing physical file cannot be removed due to permission or IO errors.
   - Runtime cleanup candidate collection does not include active reference library files.
   - Excel upload exposes every usable worksheet in `sheet_options`, selects `测试用例`/`用例`/`TestCases` by priority as default, and falls back to the first usable worksheet when none match.
   - Excel upload succeeds when at least one usable worksheet exists and skips non-usable worksheets with warnings.
@@ -327,6 +334,17 @@ python -m pytest backend/tests/test_test_case_planning_snapshot.py backend/tests
 ## Phase 4: AI 生成编排
 
 - [ ] Create `backend/app/test_cases/generation.py`.
+- [ ] Create `backend/app/test_cases/qa_case_method.py`.
+  - Define the built-in `QA Case Method` constants:
+    - blueprint dimensions,
+    - completeness matrix,
+    - scenario library,
+    - standard case fields,
+    - self-check rules,
+    - warning templates.
+  - Keep this module deterministic and versioned with code.
+  - Do not read a maintainable knowledge database in V1.
+  - Expose a future-compatible internal `knowledge_context` helper that returns an empty context plus a visible “V1 未接入项目级 QA 知识库” note.
 
 - [ ] Define generation schemas in `schemas.py`.
   - `TestCaseGenerationRequest`
@@ -337,18 +355,23 @@ python -m pytest backend/tests/test_test_case_planning_snapshot.py backend/tests
   - `GeneratedCaseStats`
   - `GenerationWarning`
   - `ReferenceSelection`
+  - `QaCaseMethodContext`
+  - `RequirementTrace`
   - Request includes:
     - `planning_snapshot`,
-    - `reference_ids`,
-    - `primary_reference_id`,
+    - optional `reference_ids`,
+    - optional `primary_reference_id`,
     - optional `primary_reference_sheet_name` for Excel primary references,
+    - no public `knowledge_context` request field in V1; if a client submits `knowledge_context` or equivalent user-supplied knowledge content, reject it with HTTP 400-compatible domain error,
     - optional `generation_options` for priority preference and output style only; do not include a case count target in V1 because the UI count is read from the reference profile.
   - Response includes:
     - `blueprint`,
     - `cases`,
     - `warnings`,
     - `stats`,
-    - `export_columns`.
+    - `export_columns`,
+    - `requirement_trace`,
+    - `method_context`.
 
 - [ ] Implement project AI credential loading.
   - Use `load_project_credential`.
@@ -360,14 +383,19 @@ python -m pytest backend/tests/test_test_case_planning_snapshot.py backend/tests
 - [ ] Implement blueprint prompt builder.
   - Inputs:
     - bounded planning snapshot text,
-    - selected reference profiles,
-    - primary reference profile,
+    - optional selected reference profiles,
+    - optional primary reference profile,
     - V1 constraints.
+  - Use `qa-case` as the canonical generation method: extract module tree, flows, states, roles, time refresh points, data/config rules, external coupling, risks, open questions, and warnings before generating case rows.
+  - Include the built-in method context from `qa_case_method.py`; include a knowledge-library note that V1 has no maintainable project QA knowledge library.
   - Output JSON schema requires:
     - `modules`,
     - `flows`,
+    - `requirement_traces`,
     - `coverage_dimensions`,
     - `risks`,
+    - `unmapped_requirements`,
+    - `unsupported_or_unfounded_test_points`,
     - `open_questions`,
     - `warnings`.
   - The prompt must state that images/attachments were not read and should be reflected in warnings when relevant.
@@ -376,9 +404,11 @@ python -m pytest backend/tests/test_test_case_planning_snapshot.py backend/tests
   - Inputs:
     - same planning snapshot,
     - readonly blueprint from stage 1,
-    - selected reference profiles,
-    - primary reference field order.
+    - optional selected reference profiles,
+    - optional primary reference field order.
   - Output JSON schema requires `cases` array using standard field keys.
+  - If no reference profile is selected, generate from the `qa-case` completeness matrix and standard case fields.
+  - Every generated case should carry `source_requirement` or a clear assumption/warning when no direct source line can be mapped.
   - The prompt must prohibit invented statistics and external persistence claims.
   - The prompt must prefer explicit source requirement text from the snapshot and put uncertain interpretation in `remarks`.
 
@@ -395,12 +425,13 @@ python -m pytest backend/tests/test_test_case_planning_snapshot.py backend/tests
     - warning count.
 
 - [ ] Implement reference selection rules.
-  - All selected references must be active and belong to current project.
-  - `primary_reference_id` must be one of selected references.
+  - Empty `reference_ids` and empty `primary_reference_id` are valid; generation must proceed with planning snapshot plus `qa-case` standard logic.
+  - All selected references, when present, must be active and belong to current project.
+  - `primary_reference_id`, when present, must be one of selected references.
   - If the primary reference is Excel, `primary_reference_sheet_name` must match one of that reference's `sheet_options`; if omitted, use `default_sheet_name`.
   - If the primary reference is Markdown/TXT, ignore an empty `primary_reference_sheet_name` and reject non-empty sheet names.
-  - If request omits primary id, use the selected category's recommended primary if it is among the selected references; for uncategorized references, use the uncategorized recommended primary; otherwise use newest selected reference.
-  - Export column order follows the selected primary reference sheet's mapped columns first, then missing standard fields.
+  - Do not implicitly pick newest selected reference as primary. If request omits primary id, treat all selected references as supplementary references only.
+  - Export column order follows the selected primary reference sheet's mapped columns first, then missing standard fields; without primary reference, use the standard field order.
 
 - [ ] Add API endpoint.
   - `POST /api/v1/test-cases/generate`
@@ -413,10 +444,15 @@ python -m pytest backend/tests/test_test_case_planning_snapshot.py backend/tests
   - Provider is called twice in successful flow.
   - Generated stats are computed from returned cases, not copied from provider payload.
   - Invalid reference from another project is rejected.
-  - Omitted primary reference falls back to the selected category's recommended primary.
+  - Omitted primary reference does not block generation and does not auto-pick newest selected reference.
+  - Empty reference selection still generates blueprint and cases using standard `qa-case` logic.
   - Blueprint is returned but no editable draft or history record is created.
   - Provider error is sanitized and does not expose API key.
   - Snapshot warnings are preserved.
+  - Built-in QA Case Method context is included in blueprint/case prompts.
+  - Empty V1 knowledge context is surfaced as a warning or method note, not as a hard failure.
+  - User-supplied knowledge content is rejected in V1 instead of being silently injected into prompts.
+  - Requirement trace maps cases back to snapshot rows/fragments where available.
 
 - [ ] Verification command:
 
@@ -521,8 +557,8 @@ python -m pytest backend/tests/test_test_case_exporter.py
     - primary reference sheet selector shown under primary reference; disabled with “当前参考案例无 Sheet” for Markdown/TXT references,
     - admin-only rename/delete/set recommended actions gated by backend failures and optional frontend role state if available.
   - Generation controls:
-    - generate button disabled until snapshot and at least one reference are selected,
-    - show read-only reference case count from the selected primary reference profile/sheet; do not render it as an editable target count,
+    - generate button disabled until snapshot is read; reference selection is optional,
+    - show read-only reference case count from the selected primary reference profile/sheet; when no primary reference is selected, show “未使用主参考” or equivalent and do not render it as an editable target count,
     - show project AI missing errors inline,
     - show progress state for snapshot/generation/export separately.
   - Preview:
@@ -533,8 +569,7 @@ python -m pytest backend/tests/test_test_case_exporter.py
   - State:
     - keep only current page state,
     - clearing source clears snapshot/result,
-    - changing primary reference clears generated result and requires regeneration,
-    - changing primary reference sheet clears generated result and requires regeneration,
+    - changing reference selection, primary reference, or primary reference sheet clears generated result and requires regeneration,
     - no local storage for generated cases.
 
 - [ ] Add styling inside the Vue SFC or existing page style conventions.
@@ -601,6 +636,7 @@ npm run build
 
 - [ ] Manual UI verification:
   - Start backend and frontend dev servers using the repository's existing commands.
+  - Generate after reading a planning snapshot with no reference selected; confirm blueprint, cases, warnings, and standard export columns are produced.
   - Log in as project member and confirm view/upload/use/generate/export works.
   - Log in as normal project member and confirm category rename/delete/recommend actions are rejected.
   - Log in as project admin and confirm category rename/delete/recommend actions succeed.
@@ -610,18 +646,50 @@ npm run build
 
 ## Execution Order
 
-1. 数据模型/迁移
-2. 参考案例库和画像
-3. 策划案快照
-4. AI 生成编排
-5. Excel 导出
-6. 前端页面
-7. 文档同步与最终验证
+1. 架构契约和 `/api/v1/test-cases/*` router skeleton
+2. 策划案快照读取，对应页面 01/02 的必需输入
+3. AI 生成编排的无参考主链路，按 `qa-case` 蓝图和完整性矩阵生成
+4. Excel 标准字段导出，对应页面 04 的无参考闭环
+5. 参考案例库和画像，对应页面 03 的可选增强能力
+6. 主参考 Sheet、字段顺序和参考风格增强接入 02/04
+7. 前端真实 API 接线、文档同步与最终验证
+
+## Deferred V2 Items
+
+- Project QA Knowledge Library data model, maintenance UI, and permissions.
+- Knowledge review, publish status, version history, rollback, and expiration policy.
+- Import path from QA Workspace `knowledge_base/knowledge/` with source, reviewer, and update metadata.
+- Knowledge retrieval, relevance ranking, hit explanation, and no-hit reporting.
+- Conflict handling between built-in QA Case Method, project knowledge, planning snapshot, and reference case profiles.
+- Prompt budget rules for injecting knowledge and protecting sensitive source text.
+- Whether knowledge usage is shown only on page, included in Excel export, or auditable in a future generation history.
+- How image/attachment understanding can produce reusable knowledge after V2 visual support exists.
+
+## Deferred qa-case Migration Matrix
+
+- QA Workspace runtime guard: do not port preflight, setup profile, role switching, or Git remote checks into V1; reserve an external workspace adapter if V2 ever integrates QA Workspace.
+- Task workspace: do not create `tasks/<task>` directories or persist manifest/source files in V1; reserve generation history/source artifact models for V2.
+- Knowledge base: do not read or maintain `knowledge_base/knowledge/` or `knowledge_local/drafts` in V1; reserve Project QA Knowledge Library with review/version/search.
+- Context readers: do not port Jira, config SVN, server-code, Trino/Data MCP, or multi-source task ingestion in V1; reserve source connector interfaces.
+- Coupling test points: do not require `coupling-test-point-generation` output in V1; reserve `confirmed_test_points` import as a future generation input.
+- Visual evidence: do not port image packet, observation, or validation workflow in V1; reserve visual evidence and observation schemas.
+- Feishu write targets: do not create AI-owned Feishu sheets or write back existing sheets in V1; reserve export target abstraction.
+- Export formats: do not output CSV, Markdown, or Feishu-friendly text in V1; reserve `export_format` expansion on top of the structured cases payload.
+- Advanced workbook layout: do not force double headers, module rows, inherited blank-cell semantics, tester/device/version execution matrices in V1; reserve export template/profile.
+- Partial generation: do not support “only supplement this module/change range” in V1; reserve `scope_mode` and selected blueprint modules.
+- Clarification loop: do not save pending questions or support answer-then-regenerate in V1; reserve blueprint review and second-pass generation protocol.
+- Evidence package: do not store full original docs/images/attachments in V1; reserve source artifact retention, cleanup, and permission rules.
+- Review workbench: do not build manual handling state for unmapped requirements or unfounded test points in V1; reserve review statuses.
+- External read-only checks: do not execute external system validation steps in V1; reserve plugin-like read-only validators.
+- Coverage check after generation: do not run automatic coverage statistics in V1; reserve integration with coverage summary on generated cases.
+- Direct CLI reuse: do not shell out to `uv run qa ...` from Web requests in V1; any future reuse must go through a controlled service adapter.
 
 ## Risk Notes
 
 - Feishu image/attachment unread warning should be explicit because users may assume screenshots in 策划案 were considered.
 - Project AI errors must never expose full API keys or provider raw secrets.
+- Reference-free generation must remain first-class; do not regress into requiring a primary reference before calling the provider.
+- Do not let the future `knowledge_context` extension become an unreviewed free-form prompt input in V1; public requests must reject user-supplied knowledge content.
 - Reference profile extraction is deterministic by design; adding AI here would expand cost, latency, and failure modes beyond V1.
 - Deleting reference files should not retain the original file or profile JSON. V1 keeps only minimal audit metadata to reduce sensitive planning/test-case retention.
 - Export remains stateless by carrying current page result in the request; this preserves the V1 “不保存历史” decision.
