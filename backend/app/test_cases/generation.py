@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -41,10 +42,42 @@ from backend.app.test_cases.schemas import (
     TestCaseGenerationRequest,
     TestCaseGenerationResponse,
 )
+from backend.app.test_cases.source_evidence import (
+    SourceEvidenceError,
+    SourceEvidenceSafeContext,
+    build_source_evidence_safe_context,
+    ensure_no_forbidden_visual_refs,
+    sanitize_forbidden_visual_refs,
+)
 
 
 class TestCaseGenerationPayloadError(ValueError):
     """AI 返回结构无法通过用例生成契约校验。"""
+
+
+GENERATION_SNAPSHOT_MAX_CHARS = 60_000
+GENERATION_SNAPSHOT_MAX_FACT_ROWS = 1_500
+GENERATION_SNAPSHOT_TRUNCATION_WARNING = (
+    "生成输入超过预算，已限制为前 {rows} 条文本/表格事实或约 {chars} 个字符；"
+    "请缩小来源范围或拆分生成。"
+)
+
+_BLUEPRINT_LIST_FIELDS = (
+    "modules",
+    "flows",
+    "coverage_dimensions",
+    "risks",
+    "unmapped_requirements",
+    "unsupported_or_unfounded_test_points",
+    "open_questions",
+)
+
+
+@dataclass(frozen=True)
+class _SnapshotRenderResult:
+    text: str
+    truncated: bool
+    rendered_fact_rows: int
 
 
 class _CaseGenerationStagePayload(BaseModel):
@@ -65,6 +98,19 @@ async def generate_test_case_response(
 ) -> TestCaseGenerationResponse:
     """按 QA Case Method 执行蓝图先行、再生成用例的无参考主链路。"""
     method_context = build_method_context()
+    if payload.adopted_visual_evidence_ids and payload.source_evidence_run_id is None:
+        raise SourceEvidenceError(400, "adopted_visual_evidence_ids 必须搭配 source_evidence_run_id 使用。")
+    source_evidence_context = (
+        await build_source_evidence_safe_context(
+            db,
+            project_id=project_id,
+            run_id=payload.source_evidence_run_id,
+            planning_snapshot=payload.planning_snapshot,
+            adopted_visual_evidence_ids=payload.adopted_visual_evidence_ids,
+        )
+        if payload.source_evidence_run_id is not None
+        else None
+    )
     reference_context = await resolve_generation_reference_context(
         db,
         project_id=project_id,
@@ -76,28 +122,51 @@ async def generate_test_case_response(
     api_key = decrypt_credential_key(credential)
     extra_headers = parse_extra_headers(credential.extra_headers_json)
 
+    blueprint_prompt = _build_blueprint_prompt(
+        payload,
+        reference_context,
+        source_evidence_context,
+    )
+    _ensure_prompt_has_no_forbidden_visual_refs(blueprint_prompt, source_evidence_context)
     blueprint_payload = await _call_generation_provider(
         credential=credential,
         api_key=api_key,
         system_prompt=_build_system_prompt(),
-        user_prompt=_build_blueprint_prompt(payload, reference_context),
+        user_prompt=blueprint_prompt,
         json_schema=TestCaseBlueprint.model_json_schema(),
         extra_headers=extra_headers,
     )
     blueprint = _validate_blueprint_payload(blueprint_payload)
+    _ensure_provider_output_has_no_forbidden_visual_refs(
+        blueprint.model_dump(mode="json"),
+        source_evidence_context,
+        stage="AI 蓝图返回",
+    )
 
+    cases_prompt = _build_cases_prompt(
+        payload,
+        blueprint,
+        reference_context,
+        source_evidence_context,
+    )
+    _ensure_prompt_has_no_forbidden_visual_refs(cases_prompt, source_evidence_context)
     case_payload = await _call_generation_provider(
         credential=credential,
         api_key=api_key,
         system_prompt=_build_system_prompt(),
-        user_prompt=_build_cases_prompt(payload, blueprint, reference_context),
+        user_prompt=cases_prompt,
         json_schema=_CaseGenerationStagePayload.model_json_schema(),
         extra_headers=extra_headers,
     )
     case_stage = _validate_case_payload(case_payload)
     cases = _normalize_cases(case_stage.cases)
+    snapshot_warnings = _snapshot_warnings_for_generation(
+        payload.planning_snapshot,
+        source_evidence_context,
+    )
     warnings = [
-        *payload.planning_snapshot.warnings,
+        *snapshot_warnings,
+        *((source_evidence_context.warnings if source_evidence_context is not None else [])),
         *blueprint.warnings,
         *case_stage.warnings,
     ]
@@ -105,6 +174,15 @@ async def generate_test_case_response(
         case_stage.requirement_trace,
         cases=cases,
         snapshot=payload.planning_snapshot,
+    )
+    _ensure_provider_output_has_no_forbidden_visual_refs(
+        {
+            "cases": [case.model_dump(mode="json") for case in cases],
+            "warnings": [warning.model_dump(mode="json") for warning in warnings],
+            "requirement_trace": [trace.model_dump(mode="json") for trace in requirement_trace],
+        },
+        source_evidence_context,
+        stage="AI 用例返回",
     )
 
     return TestCaseGenerationResponse(
@@ -155,7 +233,7 @@ async def _call_generation_provider(
 def _validate_blueprint_payload(payload: dict[str, Any]) -> TestCaseBlueprint:
     try:
         return TestCaseBlueprint.model_validate(
-            _normalize_provider_warnings(payload, default_source="blueprint")
+            _normalize_blueprint_payload(payload)
         )
     except ValidationError as error:
         raise TestCaseGenerationPayloadError(
@@ -199,9 +277,66 @@ def _normalize_provider_warnings(
                     }
                 )
             continue
+        if isinstance(warning, dict):
+            message = _coerce_provider_string(
+                warning.get("message")
+                or warning.get("description")
+                or warning.get("detail")
+                or warning.get("content")
+                or warning.get("text")
+            ).strip()
+            if message:
+                level = _coerce_provider_string(warning.get("level")).strip() or "warning"
+                if level not in {"info", "warning", "error"}:
+                    level = "warning"
+                normalized_warnings.append(
+                    {
+                        "source": _coerce_provider_string(
+                            warning.get("source")
+                        ).strip()
+                        or default_source,
+                        "level": level,
+                        "message": message,
+                    }
+                )
+            continue
         normalized_warnings.append(warning)
     normalized["warnings"] = normalized_warnings
     return normalized
+
+
+def _normalize_blueprint_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """归一化蓝图阶段常见返回形态，再交给严格契约校验。"""
+    normalized = _normalize_provider_warnings(payload, default_source="blueprint")
+    for field_name in _BLUEPRINT_LIST_FIELDS:
+        normalized[field_name] = _normalize_blueprint_list_field(
+            normalized.get(field_name)
+        )
+    return normalized
+
+
+def _normalize_blueprint_list_field(value: Any) -> Any:
+    if value is None:
+        return []
+    if isinstance(value, dict):
+        items: list[dict[str, Any]] = []
+        for key, item in value.items():
+            name = str(key)
+            if isinstance(item, dict):
+                normalized_item = dict(item)
+                normalized_item.setdefault("key", name)
+                normalized_item.setdefault("name", name)
+                items.append(normalized_item)
+                continue
+            items.append(
+                {
+                    "key": name,
+                    "name": name,
+                    "description": _coerce_provider_string(item),
+                }
+            )
+        return items
+    return value
 
 
 def _normalize_case_stage_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -312,6 +447,7 @@ def _build_system_prompt() -> str:
 def _build_blueprint_prompt(
     payload: TestCaseGenerationRequest,
     reference_context: ReferenceGenerationContext,
+    source_evidence_context: SourceEvidenceSafeContext | None = None,
 ) -> str:
     snapshot = payload.planning_snapshot
     method_context = build_method_context()
@@ -334,10 +470,15 @@ def _build_blueprint_prompt(
     ]
     if snapshot_brief_context:
         lines.append(snapshot_brief_context)
+    if source_evidence_context is not None:
+        lines.append(source_evidence_context.prompt_context)
     lines.extend(
         [
             "Planning Sheet Snapshot：",
-            _render_snapshot_text(snapshot),
+            _render_snapshot_text(
+                snapshot,
+                source_evidence_context=source_evidence_context,
+            ),
         ]
     )
     return "\n".join(lines)
@@ -361,6 +502,7 @@ def _build_cases_prompt(
     payload: TestCaseGenerationRequest,
     blueprint: TestCaseBlueprint,
     reference_context: ReferenceGenerationContext,
+    source_evidence_context: SourceEvidenceSafeContext | None = None,
 ) -> str:
     method_context = build_method_context()
     snapshot_brief_context = _build_snapshot_brief_context(payload)
@@ -379,10 +521,15 @@ def _build_cases_prompt(
     ]
     if snapshot_brief_context:
         lines.append(snapshot_brief_context)
+    if source_evidence_context is not None:
+        lines.append(source_evidence_context.prompt_context)
     lines.extend(
         [
             "Planning Sheet Snapshot：",
-            _render_snapshot_text(payload.planning_snapshot),
+            _render_snapshot_text(
+                payload.planning_snapshot,
+                source_evidence_context=source_evidence_context,
+            ),
             "只读 Test Case Blueprint：",
             json.dumps(blueprint.model_dump(mode="json"), ensure_ascii=False),
         ]
@@ -466,26 +613,117 @@ def _format_reference_summaries(summaries: list[dict[str, object]]) -> str:
     return "\n".join(lines)
 
 
-def _render_snapshot_text(snapshot: PlanningSnapshotResponse) -> str:
+def _render_snapshot_text(
+    snapshot: PlanningSnapshotResponse,
+    *,
+    source_evidence_context: SourceEvidenceSafeContext | None = None,
+) -> str:
+    return _render_snapshot_text_for_generation(
+        snapshot,
+        source_evidence_context=source_evidence_context,
+    ).text
+
+
+def _render_snapshot_text_for_generation(
+    snapshot: PlanningSnapshotResponse,
+    *,
+    source_evidence_context: SourceEvidenceSafeContext | None = None,
+) -> _SnapshotRenderResult:
+    forbidden_refs = (
+        source_evidence_context.forbidden_visual_refs
+        if source_evidence_context is not None
+        else frozenset()
+    )
     lines = [
         f"来源：{snapshot.source_summary}",
         f"Sheet：{snapshot.sheet_name}",
         f"列：{', '.join(snapshot.columns)}",
         f"非空单元格：{snapshot.non_empty_cell_count}",
     ]
+    rendered_fact_rows = 0
+    char_count = sum(len(line) + 1 for line in lines)
+    truncated_by_budget = False
     for row in snapshot.rows:
+        if _snapshot_row_evidence_status(row) == "pending_visual":
+            continue
         fragments = []
         for cell in row.cells:
             if not cell.value.strip():
                 continue
             column_name = cell.column_name or f"Column {cell.column_index}"
-            fragments.append(f"{column_name}={cell.value}")
+            value = sanitize_forbidden_visual_refs(cell.value, forbidden_refs)
+            fragments.append(f"{column_name}={value}")
         if fragments:
-            lines.append(f"行 {row.row_index}: " + " | ".join(fragments))
+            if rendered_fact_rows >= GENERATION_SNAPSHOT_MAX_FACT_ROWS:
+                truncated_by_budget = True
+                break
+            line = f"行 {row.row_index}: " + " | ".join(fragments)
+            projected_chars = char_count + len(line) + 1
+            if projected_chars > GENERATION_SNAPSHOT_MAX_CHARS:
+                remaining_chars = GENERATION_SNAPSHOT_MAX_CHARS - char_count - 1
+                if remaining_chars > 80:
+                    lines.append(line[:remaining_chars] + "...[已截断]")
+                    char_count = GENERATION_SNAPSHOT_MAX_CHARS
+                    rendered_fact_rows += 1
+                truncated_by_budget = True
+                break
+            lines.append(line)
+            char_count = projected_chars
+            rendered_fact_rows += 1
+    if truncated_by_budget:
+        lines.append(
+            GENERATION_SNAPSHOT_TRUNCATION_WARNING.format(
+                rows=rendered_fact_rows,
+                chars=GENERATION_SNAPSHOT_MAX_CHARS,
+            )
+        )
     if snapshot.warnings:
         lines.append("快照 warnings：")
-        lines.extend(f"- {warning.message}" for warning in snapshot.warnings)
-    return "\n".join(lines)
+        lines.extend(
+            f"- {sanitize_forbidden_visual_refs(warning.message, forbidden_refs)}"
+            for warning in snapshot.warnings
+        )
+    return _SnapshotRenderResult(
+        text="\n".join(lines),
+        truncated=truncated_by_budget,
+        rendered_fact_rows=rendered_fact_rows,
+    )
+
+
+def _snapshot_warnings_for_generation(
+    snapshot: PlanningSnapshotResponse,
+    source_evidence_context: SourceEvidenceSafeContext | None,
+) -> list[GenerationWarning]:
+    if source_evidence_context is None:
+        warnings = list(snapshot.warnings)
+    else:
+        warnings = [
+            warning.model_copy(
+                update={
+                    "message": sanitize_forbidden_visual_refs(
+                        warning.message,
+                        source_evidence_context.forbidden_visual_refs,
+                    )
+                }
+            )
+            for warning in snapshot.warnings
+        ]
+    render_result = _render_snapshot_text_for_generation(
+        snapshot,
+        source_evidence_context=source_evidence_context,
+    )
+    if render_result.truncated:
+        warnings.append(
+            GenerationWarning(
+                source="snapshot",
+                level="warning",
+                message=GENERATION_SNAPSHOT_TRUNCATION_WARNING.format(
+                    rows=render_result.rendered_fact_rows,
+                    chars=GENERATION_SNAPSHOT_MAX_CHARS,
+                ),
+            )
+        )
+    return warnings
 
 
 def _normalize_cases(cases: list[GeneratedTestCase]) -> list[GeneratedTestCase]:
@@ -537,10 +775,49 @@ def _snapshot_row_fragments(
 ) -> list[tuple[int, str]]:
     fragments: list[tuple[int, str]] = []
     for row in snapshot.rows:
+        if _snapshot_row_evidence_status(row) == "pending_visual":
+            continue
         values = [cell.value.strip() for cell in row.cells if cell.value.strip()]
         if values:
             fragments.append((row.row_index, " | ".join(values)))
     return fragments
+
+
+def _snapshot_row_evidence_status(row) -> str:
+    for cell in row.cells:
+        if cell.column_name == "证据状态":
+            return cell.value.strip()
+    return ""
+
+
+def _ensure_prompt_has_no_forbidden_visual_refs(
+    prompt: str,
+    source_evidence_context: SourceEvidenceSafeContext | None,
+) -> None:
+    if source_evidence_context is None:
+        return
+    ensure_no_forbidden_visual_refs(
+        prompt,
+        forbidden_refs=source_evidence_context.forbidden_visual_refs,
+        status_code=500,
+        message="Source Evidence visual validate 发现生成 prompt 引用了未采纳视觉证据。",
+    )
+
+
+def _ensure_provider_output_has_no_forbidden_visual_refs(
+    payload: Any,
+    source_evidence_context: SourceEvidenceSafeContext | None,
+    *,
+    stage: str,
+) -> None:
+    if source_evidence_context is None:
+        return
+    ensure_no_forbidden_visual_refs(
+        payload,
+        forbidden_refs=source_evidence_context.forbidden_visual_refs,
+        status_code=502,
+        message=f"{stage}引用了未采纳视觉证据。",
+    )
 
 
 def _compute_stats(

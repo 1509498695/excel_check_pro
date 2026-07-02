@@ -32,9 +32,10 @@ const classes = computed(() => [
     class="ui-button"
     :class="classes"
     :disabled="disabled || loading"
+    :aria-busy="loading ? 'true' : undefined"
   >
-    <span v-if="loading" class="ui-button__spinner"></span>
-    <span v-else-if="$slots.icon" class="ui-button__icon">
+    <span v-if="loading" class="ui-button__spinner" aria-hidden="true"></span>
+    <span v-else-if="$slots.icon" class="ui-button__icon" aria-hidden="true">
       <slot name="icon" />
     </span>
     <span class="ui-button__label">

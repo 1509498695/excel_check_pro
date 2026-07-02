@@ -2,6 +2,592 @@
 
 本文档记录当前活动执行进度。2026-04-20 之前的旧分钟级记录已归档到 [docs/archive/PROJECT_RECORD.md](docs/archive/PROJECT_RECORD.md)。
 
+## 进度记录 2026-07-02 12:21
+
+### 本次目标
+
+修复 Project Vision AI Credential 连接测试使用 1x1 图片导致 Qwen 视觉模型返回尺寸限制错误的问题。
+
+### 本次完成
+
+- 定位到 `backend/app/ai/providers.py` 的 `test_provider_vision_connection` 使用 1x1 PNG 作为测试图片。
+- 将 Vision 连接测试探针改为 32x32 PNG，满足 Qwen/GLM-V 等常见视觉模型的最小宽高限制。
+- 新增测试断言连接测试发送的 PNG 宽高均大于 10，避免回退为 1x1 探针。
+- 同步 `docs/specs/ai-project-credentials.md` 和 `CHANGELOG.md`。
+
+### 测试验证
+
+- `python -m pytest backend/tests/test_ai_provider_presets.py backend/tests/test_project_vision_ai_config_api.py`
+  - 结果：6 passed, 2 warnings。
+
+### 当前项目进度
+
+- Project Vision AI Credential 连接测试不再因测试探针图片尺寸过小被 Qwen 视觉模型拒绝。
+
+### 未完成项与风险
+
+- 真实连接是否成功仍取决于模型名、Base URL、API Key 权限和供应商账号是否开通对应视觉模型。
+
+## 进度记录 2026-07-02 12:14
+
+### 本次目标
+
+修复管理后台 Project Vision AI Credential 保存后连接测试失败时仍提示“配置未保存”的误导问题。
+
+### 本次完成
+
+- 定位到前端 `SourceEvidenceAdminConfigCard.vue` 使用同一个 `visionErrors` 错误框承载保存失败和连接测试失败，但标题固定为“Vision AI 配置未保存”。
+- 将 Vision AI 错误标题拆分为校验失败、保存失败和连接测试失败；连接测试失败时不再提示“未保存”。
+- 连接测试失败时读取后端返回的失败 payload，将 `last_test_status/last_test_at/last_test_error_summary` 写回页面状态。
+- `apiFetch` 支持读取后端非 2xx JSON 的顶层 `msg`，避免 `{code,msg,data}` 形态退回泛化“请求失败，请稍后重试。”。
+- 补充 `apiFetch` 和 Source Evidence 管理卡单测，覆盖顶层 `msg` 与连接测试失败展示。
+- 同步 `CHANGELOG.md` 修复项。
+
+### 测试验证
+
+- `npm run test:unit -- apiFetch SourceEvidenceAdminConfigCard adminFeishuBotApi`
+  - 结果：3 passed / 16 tests passed。
+- `npm run build`
+  - 结果：构建成功；仍有既有 Vite chunk size warning。
+
+### 当前项目进度
+
+- Project Vision AI Credential 的保存状态和连接测试状态已在前端区分展示，用户可直接看到连接测试失败原因。
+
+### 未完成项与风险
+
+- 真实连接是否成功仍取决于模型名、Base URL、API Key 权限和供应商是否支持图片输入；本次只修复错误展示和状态刷新。
+
+## 进度记录 2026-07-02 11:13
+
+### 本次目标
+
+阅读通义千问百炼和智谱官方 API 文档，更新项目级 AI / Vision AI 相关配置默认值和文档口径。
+
+### 本次完成
+
+- 对照百炼 OpenAI-compatible API 文档，更新通义千问 provider 文案和文本默认模型为 `qwen3.6-plus`；Base URL 继续保留兼容的 `https://dashscope.aliyuncs.com/compatible-mode/v1`，文档说明可手动改成业务空间专属域名。
+- 对照智谱 API 文档，更新智谱文本默认模型为 `glm-5.2`，继续使用 `https://open.bigmodel.cn/api/paas/v4`。
+- 更新管理后台 Source Evidence Vision 推荐列表：Qwen 视觉默认 `qwen3.7-plus`，新增智谱 GLM-V 入口 `glm-5v-turbo`。
+- 将 `qwen-plus`、`qwen3.6-plus`、`glm-5.2` 等文本默认模型纳入 Vision 配置风险提示，避免误当作图片 observation 模型。
+- 新增 `backend/tests/test_ai_provider_presets.py`，锁定后端 provider 默认值，避免前后端配置再次漂移。
+- 同步 `docs/specs/ai-project-credentials.md`、`docs/specs/test-case-generation-v2-source-evidence.md` 和 `CHANGELOG.md`。
+
+### 测试验证
+
+- `python -m pytest backend/tests/test_ai_provider_presets.py backend/tests/test_project_ai_config_api.py backend/tests/test_project_vision_ai_config_api.py`
+  - 结果：13 passed, 2 warnings。
+- `npm run test:unit -- providerPresets projectAiConfigForm SourceEvidenceAdminConfigCard`
+  - 结果：3 passed / 14 tests passed。
+- `npm run build`
+  - 结果：构建成功；仍有既有 Vite chunk size 和 plugin timing warning。
+
+### 当前项目进度
+
+- Qwen/智谱的项目级文本 AI 默认值和 Source Evidence Vision 推荐值已按官方 API 文档刷新。
+- Project Vision AI Credential 仍保持独立凭据，不静默复用文本 Project AI Credential。
+
+### 未完成项与风险
+
+- 百炼业务空间专属域名依赖用户自己的 WorkspaceId，项目不会把占位域名写成默认值；需要管理员按实际账号手动替换。
+- 真实连接测试仍取决于用户账号是否开通对应模型和 API Key 权限。
+
+## 进度记录 2026-07-02 10:59
+
+### 本次目标
+
+修正管理后台 Project Vision AI Credential 配置体验，避免项目级文本 AI provider/model 被误当作 Source Evidence 图片 observation 的视觉模型。
+
+### 本次完成
+
+- `frontend/src/components/admin/SourceEvidenceAdminConfigCard.vue` 改为使用独立的 Vision provider 推荐列表，不再直接复用文本 AI 的完整 OpenAI-compatible provider 列表。
+- Vision 配置默认推荐明确的视觉模型入口：OpenAI、Qwen-VL、OpenRouter 视觉模型和自定义 OpenAI 兼容视觉模型。
+- 已保存的旧文本 provider（例如 DeepSeek）仍可兼容展示，但页面给出“不推荐/需确认视觉能力”的风险提示。
+- 切换通义千问 Vision provider 时默认填入 `qwen-vl-plus`，不再落到文本默认模型 `qwen-plus`。
+- 同步 `docs/specs/ai-project-credentials.md`、`docs/specs/test-case-generation-v2-source-evidence.md` 和 `CHANGELOG.md`。
+
+### 测试验证
+
+- `npm run test:unit -- SourceEvidenceAdminConfigCard`
+  - 结果：1 passed / 5 tests passed。
+- `npm run test:unit -- adminFeishuBotApi SourceEvidenceAdminConfigCard`
+  - 结果：2 passed / 13 tests passed。
+- `npm run build`
+  - 结果：构建成功；仍有既有 Vite chunk size 和 plugin timing warning。
+
+### 当前项目进度
+
+- Project Vision AI Credential 仍保持独立凭据，不静默复用 Project AI Credential；这是为了维持生成文本模型与图片 observation 模型的协议和审计边界。
+
+### 未完成项与风险
+
+- 真实 Vision AI 连接测试仍需要用户提供支持 image input 的模型、可用 API Key 和可访问 Base URL。
+
+## 进度记录 2026-07-02 10:35
+
+### 本次目标
+
+修复用例生成页 Source Evidence 运行能力提示指向 `/admin`，但管理后台缺少 Project Vision AI Credential 和 Source Evidence SVN Root 配置入口的问题。
+
+### 本次完成
+
+- 新增 `frontend/src/components/admin/SourceEvidenceAdminConfigCard.vue`，在管理后台项目配置区展示 Source Evidence 运行配置。
+- 新增 Source Evidence SVN Root 管理入口：项目管理员可新增、编辑、启停、删除并保存 root，调用 `GET/PUT /api/v1/admin/projects/{project_id}/source-evidence-svn-roots`。
+- 新增 Project Vision AI Credential 管理入口：项目管理员可保存、测试和清除视觉模型凭据，调用 `/api/v1/admin/projects/{project_id}/vision-ai-config*`。
+- 将 Source Evidence 配置卡挂到 `frontend/src/views/AdminView.vue`，避免生成页提示用户去 `/admin` 后找不到配置入口。
+- 补充 `frontend/src/api/admin.ts` 和 `frontend/src/types/admin.ts` 的 Source Evidence SVN Root / Vision AI 契约。
+- 同步 `docs/specs/ai-project-credentials.md`、`docs/specs/test-case-generation-v2-source-evidence.md` 和 `CHANGELOG.md`。
+
+### 当前项目进度
+
+- Source Evidence 运行能力状态中的 SVN Root 和 Vision AI 两类“管理员配置建议”现在有对应后台入口。
+- `SOURCE_EVIDENCE_SOFFICE_EXECUTABLE` 仍是服务端环境配置，不做后台页面表单。
+
+### 测试验证
+
+- `npm run test:unit -- adminFeishuBotApi SourceEvidenceAdminConfigCard`
+  - 结果：2 passed / 11 tests passed。
+- `npm run test:unit -- adminFeishuBotApi SourceEvidenceAdminConfigCard testCasesApi TestCaseGeneratorView`
+  - 结果：4 passed / 87 tests passed。
+- `npm run build`
+  - 结果：构建成功；仍有既有 Vite chunk size 和 plugin timing warning。
+
+### 未完成项与风险
+
+- 真实 Vision AI 连接测试仍依赖用户提供可用的视觉模型 API Key 和可访问 Base URL。
+- Source Evidence SVN Root 保存仍依赖服务端 `SVN_URL_ALLOWLIST` 和项目级 SVN 凭据，后台入口只负责维护 root，不绕过后端校验。
+
+## 进度记录 2026-07-02 10:24
+
+### 本次目标
+
+阅读当前项目代码和文档，更新项目内文档与代码事实不一致的地方；不新增业务功能。
+
+### 本次完成
+
+- 对照后端 `test_cases_api.py` / `admin/router.py` 实际路由，补齐 V2 Source Evidence 主规格中的飞书授权申请、OAuth callback、授权审计和失效接口。
+- 将 V2 需求文档中的“建议接口形态”改为“当前接口形态”，避免把已实现路由误读为设计建议。
+- 修正 Source Evidence Sheet 范围描述：当前 V2 Source Evidence 不显示 V1 Sheet 下拉，snapshot 读取已解析的可见 Sheet/章节全集，只展示纳入范围摘要。
+- 更新 `docs/ARCHITECTURE.md` 和 `docs/specs/data-sources.md`：全局 SVN cache 已由 `runtime_cleanup` 按 `SVN_CACHE_RETENTION_DAYS` 清理；Source Evidence run 内 SVN 副本仍按 Source Evidence TTL 清理。
+- 更新 `docs/specs/ai-project-credentials.md`：Project Vision AI Credential 已有后端管理 API 和生成页运行能力状态展示，但后台前端管理表单仍未接入；Source Evidence 视觉观察属于当前 AI 使用场景。
+
+### 当前项目进度
+
+- 本轮只改稳定文档和进度记录，未改业务代码。
+- 历史 `PROJECT_RECORD.md` 中早期“暂无/占位”描述保留为当时记录，不回写成当前事实。
+
+### 测试验证
+
+- 文档复扫：未再命中 `暂无定时清理策略`、旧 Vision AI 前端状态、Source Evidence snapshot `GET` 或 V2 Sheet 下拉旧描述。
+- `git diff --check -- docs/ARCHITECTURE.md docs/specs/data-sources.md docs/specs/ai-project-credentials.md docs/specs/test-case-generation-v2-requirements.md docs/specs/test-case-generation-v2-source-evidence.md PROJECT_RECORD.md CHANGELOG.md CONTEXT.md`
+  - 结果：通过；仅输出既有 LF/CRLF 换行提示。
+
+### 未完成项与风险
+
+- 本轮未复跑后端/前端自动化测试，因为没有修改业务代码。
+
+## 进度记录 2026-07-01 21:40
+
+### 本次目标
+
+对用例生成 V2 Source Evidence 做全链路验收和文档同步；不新增功能，只在验收发现缺陷时修复。
+
+### 本次完成
+
+- 复跑 Source Evidence 后端全链路自动化验收，覆盖 API、snapshot、本地文件、Excel reader、SVN file/root、视觉候选、observation、生成、TTL cleanup、runtime cleanup、导出和 Alembic migration。
+- 复跑前端 `testCasesApi` 与 `TestCaseGeneratorView` 单测，并完成前端生产构建。
+- 使用用户上传的 `C:/Users/chenzhen/Downloads/【前期】重塑活动改系统功能.xlsx` 做本地 reader 样例验收：可读取 6 个可见 Sheet、55 个图片资源、写出 55 个图片文件；该样例没有隐藏 Sheet，不能覆盖隐藏 Sheet 真实验收项。
+- 使用 `C:/Users/chenzhen/Downloads/world_cup.xls` 做 `.xls` 文本降级样例验收：可读取 3 个 Sheet 文本；当前机器未配置 `soffice`，触发 `.xls` 图片转换失败 warning，未登记伪造图片资源。
+- 使用 Downloads 中独立 PNG 做独立图片 reader 样例验收：生成 `local_img_001` image resource，并输出“缺少文本主体，需先观察并采纳视觉证据”warning。
+- 同步 `docs/specs/test-case-generation-v2-requirements.md` 的当前实现状态、实际 Source Evidence API 方法和 `local_file` 只能通过 upload 创建的契约。
+- 同步 `docs/specs/test-case-generation-v2-source-evidence.md` 的实际 API 表、snapshot `POST` 方法、`.xls` 转换失败不伪造图片资源和真实环境验收范围。
+
+### 当前项目进度
+
+- 自动化测试覆盖显示 Source Evidence V2 主体链路可用；本轮未发现需要修复的代码缺陷。
+- 真实环境验收仍受外部配置和样例限制，不能把未提供的 Feishu/SVN/Vision/soffice 项冒充为通过。
+
+### 测试验证
+
+- `python -m pytest backend/tests/test_source_evidence_api.py backend/tests/test_source_evidence_snapshot.py backend/tests/test_source_evidence_local_file.py backend/tests/test_source_evidence_excel_reader.py backend/tests/test_source_evidence_svn_file.py backend/tests/test_source_evidence_svn_root.py backend/tests/test_source_evidence_visual_candidates.py backend/tests/test_source_evidence_observations.py backend/tests/test_source_evidence_generation.py backend/tests/test_source_evidence_cleanup.py backend/tests/test_runtime_cleanup.py backend/tests/test_test_case_exporter.py backend/tests/test_alembic_migrations.py`
+  - 结果：85 passed, 1 skipped, 3 warnings。
+  - skipped：Windows 当前环境无法创建目录 symlink 的 cleanup 安全测试。
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView`
+  - 结果：2 passed / 76 tests passed。
+- `npm run build`
+  - 结果：构建成功；仍有既有 Vite chunk size 和 plugin timing warning。
+
+### 未完成项与风险
+
+- 当前机器未配置 `SOURCE_EVIDENCE_SOFFICE_EXECUTABLE`，无法真实验收 `.xls` 内嵌图片转换提取，只验收了未配置降级路径。
+- 用户上传 `.xlsx` 没有隐藏 Sheet；隐藏 Sheet 真实样例仍需另行提供或在后续验收中补齐。
+- 未提供 Source Evidence SVN Root 内的真实 `.xls` 文件 URL 和项目级 SVN 凭据，无法跑真实 SVN `.xls` 图片提取。
+- 未提供含正文/表格/图片且项目 Feishu 服务身份可读的飞书文档 URL，无法跑真实飞书文档验收。
+- 未配置 Project Vision AI Credential，无法跑真实 observation、adoption、generation、export 的 Vision 闭环验收。
+- 建议命令中的 `backend/tests/test_source_evidence_xls_converter.py` 当前不存在；现有 converter 自动化覆盖分布在 `test_source_evidence_excel_reader.py` 和 `test_source_evidence_svn_file.py`。
+
+## 进度记录 2026-07-01 21:25
+
+### 本次目标
+
+硬化 Source Evidence TTL 清理，确保本地上传文件、SVN run 内副本、`.xls` 转换产物、图片、视觉包和 observation/adopted 详情都按 V2 规则清理，同时保留最小审计元数据。
+
+### 本次完成
+
+- 强化 `source_evidence_storage.clear_source_evidence_run_dir`：清理范围固定为 `source_evidence_dir/<project_id>/<run_id>` 的直接子项，保留 run 目录本身。
+- run 目录内 symlink/junction 只删除链接本身，不跟随删除目标；普通目录删除前再次确认 resolved path 仍在当前 run 目录内。
+- `cleanup_source_evidence_run` 捕获存储层不安全路径或删除错误，写入脱敏后的最小 `error_summary`，并继续 scrub DB 到 cleaned 状态，避免 API 继续暴露敏感证据。
+- 最小错误摘要补充 URL、Windows/Unix 本地路径脱敏，继续屏蔽 token/API key/Authorization/Bearer 类敏感字段。
+- 扩展测试覆盖 local_file 上传原件、`.xls` 转换产物、run 内 SVN cache、全局 SVN cache 保留、visual_evidence/images、observations detail、adopted detail、懒清理响应脱敏和 runtime cleanup 报告边界。
+
+### 当前项目进度
+
+- Source Evidence TTL 清理已覆盖当前 V2 真实目录结构：`raw/upload`、`raw/svn-cache`、`raw/converted`、`images`、`attachments` 和 `visual_evidence`。
+- runtime cleanup 仍只通过 Source Evidence cleanup service 清理过期 run，不把 run 内敏感文件列为普通 runtime file candidate。
+
+### 测试验证
+
+- `python -m pytest backend/tests/test_source_evidence_cleanup.py backend/tests/test_runtime_cleanup.py backend/tests/test_source_evidence_permissions.py`
+- `python -m compileall -q backend/app/test_cases/source_evidence_cleanup.py backend/app/test_cases/source_evidence_storage.py backend/app/services/runtime_cleanup.py`
+
+### 未完成项与风险
+
+- 当前 Windows 环境不支持测试用例创建目录 symlink 时，对应 symlink 用例被 pytest skip；实现仍显式处理 symlink/junction。
+- 清理文件失败时 DB 会进入 cleaned 并记录脱敏错误摘要，可能需要运维后续处理残留文件；API 不再返回敏感详情。
+
+## 进度记录 2026-07-01 20:50
+
+### 本次目标
+
+补齐用例生成 V2 Source Evidence 运行能力状态，让普通成员在生成页看到 SVN、Vision AI、LibreOffice/soffice 的可用性和处理建议，让项目管理员看到配置入口与脱敏检测摘要。
+
+### 本次完成
+
+- 新增 `GET /api/v1/test-cases/source-evidence-capabilities`，按当前项目成员身份返回 Source Evidence 运行能力状态。
+- 后端聚合项目级 SVN 凭据、Source Evidence SVN Root、Project Vision AI Credential 和服务端 `SOURCE_EVIDENCE_SOFFICE_EXECUTABLE` 检测结果；soffice 检测只使用服务端配置和固定 `--version`，不接受用户传入命令。
+- 普通成员响应只包含可用性、中文建议和脱敏 warnings；项目管理员/超管额外获得 `/admin` 配置入口、root 数量、Vision 最近测试摘要和 soffice 检测摘要。
+- 用例生成页挂载时读取运行能力状态，在 Source Evidence 面板展示降级提示；SVN 凭据或 Source Evidence SVN Root 缺失时禁用 SVN 文件读取，Vision 未配置时禁用视觉观察但不阻断文本/表格 snapshot、生成和导出。
+- 前端 Source Evidence 生成和导出请求在 V2 run 路径下始终携带当前 `adopted_visual_evidence_ids`，空数组也保留，避免前后端契约分叉。
+- 同步 `docs/specs/test-case-generation-v2-source-evidence.md`、`docs/specs/ai-project-credentials.md` 和 `CHANGELOG.md`。
+
+### 当前项目进度
+
+- Source Evidence V2 已具备后端来源读取、通用 snapshot、visual validate、前端三入口统一和运行能力可见性。
+- 运行能力状态只做配置/本机可用性读取，不替代管理员显式的 SVN/Vision 测试接口。
+
+### 测试验证
+
+- `python -m pytest backend/tests/test_source_evidence_capabilities.py backend/tests/test_project_vision_ai_config_api.py backend/tests/test_source_evidence_permissions.py`
+- `python -m compileall -q backend/app/test_cases/source_evidence_capabilities.py backend/app/test_cases/schemas.py backend/app/api/test_cases_api.py`
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView`
+- `npm run build`
+
+### 未完成项与风险
+
+- 本刀不新增后台配置表单；管理员仍通过既有后台/API 配置项目级 SVN 凭据、Source Evidence SVN Root 和 Vision AI。
+- 真实 LibreOffice/soffice 可用性仍取决于部署环境的服务端配置；状态接口会提示不可用但不阻断 `.xls` 文本读取。
+
+## 进度记录 2026-07-01 17:44
+
+### 本次目标
+
+实现用例生成 V2 Source Evidence 通用来源契约和 API 骨架，让创建、重试和 snapshot 不再直接绑定 Feishu reader；本刀不实现 `.xlsx/.xls` 图片提取，不接前端页面，不改旧 `/planning-snapshot` 主体逻辑。
+
+### 本次完成
+
+- `SourceEvidenceRunCreateRequest.source_type` 扩展为 `feishu | svn_file`，并保留 `local_file` 只能走上传入口的契约。
+- 新增 `POST /api/v1/test-cases/source-evidence-runs/upload` 骨架，当前通过项目成员校验后返回“本地文件 Source Evidence reader 尚未实现。”。
+- Source Evidence service 新增 `read_and_persist_source_evidence_run` dispatcher，`feishu` 分支沿用既有 adapter，`local_file` 和 `svn_file` 返回明确未实现错误。
+- 创建和 retry 路径改为走 dispatcher；`svn_file` 和 `local_file` reader 未实现时回滚事务，不留下不可用 run。
+- 新增通用 `ParsedSource` 模型，`ParsedFeishuSource` 保留为兼容类型；snapshot 和生成/export 安全上下文读取通用 parsed source。
+- 仅同步前端 `SourceEvidenceRunCreateRequest` 类型为 `feishu | svn_file`，未新增前端 API wrapper 或页面行为。
+- 补充后端测试，覆盖 Feishu 不回归、`svn_file` 未实现、upload 骨架、retry 走 dispatcher、非法 `source_type` 拒绝和 API route 注册。
+
+### 当前项目进度
+
+#### 已完成功能
+
+- Source Evidence Run 已具备 Feishu 富读取、资源清单、snapshot、视觉候选、observation、采纳、生成/export 接入、TTL 清理和审计摘要能力。
+- V2 Source Evidence 后端入口已开始从 Feishu-only 读取链路收敛到通用 dispatcher 边界。
+
+#### 已实现但未打通/占位功能
+
+- `local_file` 上传入口和 `svn_file` JSON 创建契约已存在，但 reader 仍为明确 501 占位。
+- 通用 `ParsedSource` 模型已落地，后续本地/SVN reader 可复用同一 `raw/parsed_source.json` 契约。
+
+#### 未开始功能
+
+- 本地 `.xlsx/.xls` 文本和图片提取、LibreOffice `.xls` 转换、SVN Source Evidence Root/项目凭据校验、前端三入口统一接入 Source Evidence 均未在本刀实现。
+
+### 规范化调整
+
+- 保持旧 `/planning-snapshot` 主体逻辑不变。
+- 未新增长期数据源配置，不保存未实现 reader 的失败 run。
+
+### 文档同步
+
+- `PROJECT_RECORD.md`
+
+### 测试验证
+
+- `python -m pytest backend/tests/test_source_evidence_api.py::test_svn_file_create_enters_dispatcher_and_rolls_back_unimplemented_run backend/tests/test_source_evidence_api.py::test_local_file_upload_endpoint_returns_unimplemented_and_rolls_back_run backend/tests/test_source_evidence_api.py::test_retry_uses_source_evidence_dispatcher backend/tests/test_test_case_api_contracts.py::test_test_case_api_routes_are_registered -q`
+- `python -m pytest backend/tests/test_source_evidence_api.py backend/tests/test_source_evidence_snapshot.py backend/tests/test_test_case_api_contracts.py`
+
+### 未完成项与风险
+
+- 未做真实 SVN 或本地文件读取；当前 `svn_file` / `local_file` 只验证契约和分发边界。
+- 前端只同步类型，页面创建入口仍在后续切片接入。
+- 测试输出存在既有 `lark_oapi` deprecation warnings 和 Pydantic 测试类收集 warning，本刀未处理。
+
+### 下一步建议
+
+- 下一刀优先实现 `local_file` reader 的最小文本/manifest 切片，再接 `.xlsx` 图片、`.xls` 转换和 SVN root 校验。
+
+## 进度记录 2026-07-01 15:40
+
+### 本次目标
+
+验收 `/test-cases` 与三张数据源设计图的视觉贴合度，修正明显响应式问题，并同步用户可见记录；不新增功能、不改后端、不改生成 prompt。
+
+### 本次完成
+
+- 使用浏览器截图复核 `/test-cases` 本地文件、SVN 文件、飞书文档三种 01 选中态，确认桌面端保持顶部统计卡、侧边栏、页面标题和 01/02/03/04 顺序。
+- 复核 01 不再展示旧大数据源表格，三段来源切换、来源 chips、本地上传/状态/流程、SVN 内联列表/凭据/流程、飞书读取/授权/证据流水线均按当前设计方向呈现。
+- 复核 02 跟随当前来源，03 为 Excel-only 三栏参考案例库，04 保留 AI 整理稿、测试用例和限制提示，不恢复旧结果视图。
+- 修正窄屏下 01 本地/SVN 来源布局和 03 参考案例库被挤压的问题，移动端改为单列/卡片化展示，避免横向溢出和竖排文本。
+- 同步 `CHANGELOG.md` 的 `[Unreleased]` 前端体验记录，说明 `/test-cases` 已完成本轮设计贴合验收并继续隐藏敏感信息。
+
+### 当前项目进度
+
+- `/test-cases` 数据源、生成输入、参考案例库和结果预览已经完成本轮设计图贴合验收。
+- 本轮只处理明显视觉与响应式差异，未改变读取、生成、导出、授权或参考案例参与生成的业务链路。
+
+### 测试验证
+
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView`
+- `npm run build`
+- `rg -n "原始表格|追踪视图|用例蓝图|doc_token|wiki_token|file_token|open_id|OAuth code|Authorization|Bearer|原始 prompt" frontend/src/views/TestCaseGeneratorView.vue frontend/tests/unit/TestCaseGeneratorView.test.ts`
+- `git diff --check -- frontend/src/views/TestCaseGeneratorView.vue frontend/tests/unit/TestCaseGeneratorView.test.ts CHANGELOG.md PROJECT_RECORD.md`
+
+### 未完成项与风险
+
+- 本次视觉截图使用前端 mock 数据，不替代真实 SVN 目录、真实飞书租户和真实资源下载链路联调。
+- 临时截图仅用于本次验收，不作为仓库资产提交。
+- 敏感词静态扫查会命中测试 fixture、脱敏规则和授权状态标识，需要按上下文人工判定。
+
+## 进度记录 2026-06-30 18:52
+
+### 本次目标
+
+验收 Source Evidence 飞书授权能力，并同步授权主体、权限范围、TTL、wiki resolve、错误脱敏和前端申请入口的文档口径；不新增功能。
+
+### 本次完成
+
+- 复核 V1 飞书电子表格单 Sheet 授权仍保持 `view`，Source Evidence 整篇源文档协作者授权使用 `edit`，授权卡说明明确“不修改源文档”。
+- 复核授权主体为项目 App/Bot；OAuth callback 只临时使用一次性 `user_access_token` 添加项目 App/Bot 为协作者，不保存个人 token。
+- 复核 owner/creator 优先直发、全部直发失败才默认群；`authorization-request` 不自动发送、不自动 retry、不自动轮询。
+- 同步 `feishu-integration.md` 与 `test-case-generation-feishu-doc-migration.md`：授权申请触发条件包含 run/resource `pending_permission` 和资源 `download_failed`；授权复用 key 统一为 `project_id + app_id + resolved obj_token hash + permission=edit`；wiki token 只作为 alias/audit hash。
+- 确认 Source Evidence 授权记录默认 90 天 TTL，不跟 Source Evidence Run 7 天 TTL 绑定；TTL 清理只清理 run 证据内容，不删除授权记录，清理后 callback/retry 不能复用旧证据内容。
+
+### 当前项目进度
+
+- Source Evidence 飞书授权闭环已完成后端、前端入口、文档口径和回归测试验收。
+- 管理员授权审计仍为 API 能力，未新增独立前端管理页。
+
+### 测试验证
+
+- `python -m pytest backend/tests/test_source_evidence_authorization.py backend/tests/test_source_evidence_permissions.py backend/tests/test_alembic_migrations.py backend/tests/test_feishu_client.py backend/tests/test_feishu_bot_client.py backend/tests/test_feishu_permission_api.py backend/tests/test_source_evidence_api.py backend/tests/test_source_evidence_cleanup.py`
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView`
+- `npm run build`
+- `git diff --check -- docs/specs/feishu-integration.md docs/specs/test-case-generation-feishu-doc-migration.md PROJECT_RECORD.md CHANGELOG.md`
+
+### 未完成项与风险
+
+- 本次未做真实飞书租户联调；OpenAPI 权限、owner/creator metadata 可达性、真实 wiki/base/docx 分享权限仍需在租户环境验证。
+- 前端构建仍有既有大 chunk / plugin timing 警告，本次未处理分包。
+- 敏感词扫查会命中测试 fixture、脱敏规则和安全说明中的模拟 token/code/prompt 文本，需要人工判定上下文。
+
+## 进度记录 2026-06-30 18:29
+
+### 本次目标
+
+接入 `/test-cases` 页面内 Source Evidence 授权申请前端；不新增独立授权管理页，不改生成 prompt，不恢复旧预览页签，不调整 01/02/03/04 模块顺序。
+
+### 本次完成
+
+- `testCases` 前端类型和 API client 新增 Source Evidence 授权申请响应契约与 `requestSourceEvidenceAuthorization(runId)`。
+- `TestCaseGeneratorView` 在 Source Evidence 状态区新增“申请授权”按钮，支持 run `pending_permission` 和资源 `pending_permission`/`download_failed` 时显式申请授权。
+- 创建 run、retry 后 best-effort 刷新资源状态缓存，用于判断 ready run 中仍存在资源下载权限失败的场景；失败只展示安全提示，不阻断旧读取流程。
+- 前端按后端最小安全摘要映射 `authorization_sent`、`already_sent`、`already_authorized`、`already_readable`、`send_failed`、`bot_not_configured`、`expired_or_cleaned` 和 `invalid_run_state`。
+- `expired_or_cleaned` 授权结果会禁用申请、读取快照、生成和导出，并提示重新读取来源；页面不展示完整 URL、doc/wiki/file token 或 open_id 明细。
+
+### 当前项目进度
+
+- Source Evidence 授权申请已接入现有用例生成页面，用户可在权限不足时显式向文档作者申请授权，授权后仍需手动点击重试读取。
+- 授权审计管理仍只保留后端 API，本次没有新增前端管理页。
+
+### 测试验证
+
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView`
+- `npm run build`
+
+### 未完成项与风险
+
+- 本次未做真实飞书租户联调；前端按后端现有 API 契约和单测 fixture 验证。
+- 前端构建仍有既有大 chunk / plugin timing 警告，本次未处理代码分包。
+
+## 进度记录 2026-06-29 17:26
+
+### 本次目标
+
+把 Source Evidence Run 接入现有用例生成前端页面，使飞书富文档读取后的文本/表格 snapshot、资源清单和证据状态能进入 V1 生成/导出闭环；不接 Vision，不恢复旧预览页签，不改 01/02/03/04 模块顺序。
+
+### 本次完成
+
+- `testCases` 前端类型和 API client 新增 Source Evidence Run 创建、摘要读取、资源清单、snapshot、retry 契约。
+- `TestCaseGeneratorView` 在 01 数据源中新增独立“飞书文档 URL”短期入口，不写入 DataSourcePanel 来源列表，也不持久化到 workbench config。
+- 创建 run 后展示来源标题、状态、TTL、warnings 和资源数量；页面不展示后端返回的 source identifier。
+- 读取快照时按当前来源分流：Source Evidence Run 走 `/source-evidence-runs/{run_id}/snapshot`，旧 Excel/飞书电子表格单 Sheet 继续走 `/planning-snapshot`。
+- 生成和导出在当前 snapshot 来自 Source Evidence Run 时携带 `source_evidence_run_id`；旧 V1 导出不额外提交 null 字段。
+- 02 生成输入和 04 结果预览新增“文本/表格可继续，图片/附件待观察”的证据状态提示。
+- 资源清单通过抽屉只读展示 ref、类型、位置、下载状态和采纳状态，不塞进主预览表格。
+- `expired`/`cleaned` run 会禁用 snapshot/generate/export 并提示重新读取来源。
+
+### 当前项目进度
+
+- 前端已能使用后端 Source Evidence Run API 完成飞书富文档读取、兼容 snapshot、生成和导出闭环。
+- Vision observation、资源选择和 adopted visual evidence 仍未接入；资源清单只作为待观察限制。
+
+### 测试验证
+
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView`
+- `npm run build`
+
+### 未完成项与风险
+
+- 本次未做真实飞书租户联调；前端按后端现有 API 契约和单测 fixture 验证。
+- 大体积前端 chunk 警告仍为既有构建提示，本次未处理代码分包。
+
+## 进度记录 2026-06-29 17:08
+
+### 本次目标
+
+把已读取的 Source Evidence Run 接入现有 generate/export，使飞书富文档读取后的文本/表格 snapshot 能用于高质量用例生成；不接 Vision observation，不改参考案例边界，不保存生成历史。
+
+### 本次完成
+
+- `TestCaseGenerationRequest` 新增可选 `source_evidence_run_id`，`TestCaseExportRequest` 新增 `source_evidence_run_id`、`source_evidence_summary` 和 `evidence_summary`。
+- 生成链路在调用 provider 前校验 Source Evidence Run 属于当前项目、未过期、未 cleaned，并轻量校验提交的 snapshot 与 run 摘要一致。
+- 新增生成/导出用 Source Evidence 安全上下文：只输出读取范围、排除项、资源统计、TTL 状态和未观察/未采纳限制，不暴露 token、file token、本地路径、raw content、prompt 或 provider response。
+- 蓝图 prompt 和用例 prompt 都加入 Source Evidence 读取上下文，并明确文本/表格事实与待观察图片/附件的边界。
+- 导出 API 支持 run 校验并在 `生成说明` Sheet 写入服务端构造的 Source Evidence 摘要；未传 run id 时仅写入脱敏后的客户端摘要。
+- 新增 Source Evidence 生成测试，并扩展生成、导出测试覆盖兼容、TTL 拒绝、脱敏和参考案例边界。
+
+### 当前项目进度
+
+- Source Evidence Run 已能作为现有 V1 generate/export 的受控证据上下文使用。
+- 生成仍以 `PlanningSnapshotResponse` 的文本/表格内容为事实来源；资源清单只作为待观察限制和风险提示。
+
+### 测试验证
+
+- `python -m pytest backend/tests/test_source_evidence_generation.py backend/tests/test_test_case_generation.py backend/tests/test_test_case_exporter.py`
+- `python -m pytest backend/tests/test_source_evidence_api.py backend/tests/test_source_evidence_snapshot.py backend/tests/test_source_evidence_permissions.py backend/tests/test_test_case_api_contracts.py`
+- `python -m compileall backend/app/test_cases/generation.py backend/app/test_cases/exporter.py backend/app/test_cases/source_evidence.py backend/app/api/test_cases_api.py backend/app/test_cases/schemas.py`
+
+### 未完成项与风险
+
+- 本次未接 Vision observation，未实现 adopted visual evidence，也未修改生成 prompt 以使用视觉语义。
+- 导出中的 Source Evidence 摘要是安全复查说明，不是原文归档或生成历史。
+
+## 进度记录 2026-06-29 16:52
+
+### 本次目标
+
+把飞书富文档 reader 接入 Source Evidence Run 后端 API，形成“文本/表格 + 资源清单 + 待观察图片/附件”的闭环；不接 Vision、不改生成 prompt、不改变 V1 `/planning-snapshot` 的单 Sheet 行为。
+
+### 本次完成
+
+- 新增 Source Evidence Run API：创建、读取摘要、读取资源清单、生成 snapshot、retry。
+- API 统一走严格项目成员校验；跨项目 run/resource 按项目过滤返回 404；公共 POST 请求继续拒绝 `knowledge_context`、`qa_knowledge_context`、`project_qa_knowledge`。
+- 扩展 Source Evidence service：同步调用飞书富 reader，写入 `source.md`、`source.meta.json`、`manifest.json`、`resources.json`、`tables.json`、`raw/parsed_source.json`、`raw/raw_manifest.json`。
+- 资源下载做 best-effort：成功写入 `images/` 或 `attachments/`，失败标记 `download_failed`/`pending_permission` 并进入 warnings，不阻断文本/表格 ready 和 snapshot。
+- 新增 Source Evidence Snapshot 转换，输出兼容 `PlanningSnapshotResponse` 的固定列：`来源类型`、`位置`、`标题/页签`、`内容`、`证据状态`。
+- `expired`/`cleaned` run 的 snapshot/retry 返回 409，提示重新读取来源。
+
+### 当前项目进度
+
+- 后端已能把飞书富文档读取结果落成短期证据文件、资源 DB 行和可提交给现有 brief/generate schema 的 snapshot。
+- `/generate` 仍只接收页面提交的 `PlanningSnapshotResponse`；本刀未新增生成历史表，也未保存 prompt/provider response。
+
+### 测试验证
+
+- `python -m pytest backend/tests/test_source_evidence_api.py backend/tests/test_source_evidence_snapshot.py backend/tests/test_source_evidence_permissions.py backend/tests/test_test_case_api_contracts.py`
+- `python -m pytest backend/tests/test_source_evidence_models.py backend/tests/test_source_evidence_storage.py backend/tests/test_alembic_migrations.py backend/tests/test_feishu_client.py backend/tests/test_test_case_feishu_source_parser.py backend/tests/test_test_case_feishu_rich_reader_docx.py backend/tests/test_test_case_feishu_rich_reader_sheets.py backend/tests/test_feishu_reader.py`
+
+### 未完成项与风险
+
+- 本次未接前端、未接 Vision observation、未改生成 prompt。
+- 飞书 media 下载 helper 已按隔离函数接入；真实租户权限、文件 token 类型与下载端点差异仍需联调验证。
+
+## 进度记录 2026-06-29 20:55
+
+### 本次目标
+
+实现当前项目内的飞书富文档 reader adapter，只做可单测的读取/解析层，不落库、不接 API、不接前端、不接 Vision。
+
+### 本次完成
+
+- 新增飞书富来源 URL parser，支持 `docx`、旧 `/docs`、`wiki`、`sheets`、`base/bitable` 识别；旧 `feishu_reader.py` 的电子表格 parser 保持不变。
+- 在用例生成 schema 中新增 Parsed Source 内部契约，包含 markdown、source units、resources、raw manifest、warnings 和 unsupported resource candidates。
+- 扩展 `feishu_client.py` 的项目级通用 JSON OpenAPI helper，并新增 Wiki 节点解析，保留现有电子表格 Wiki resolver 行为。
+- 新增 `feishu_rich_reader.py`，实现 docx raw content + blocks 双读取、blocks 分页、图片/附件/inline/table-cell resource 提取、unsupported candidate 记录和 marker 渲染。
+- 实现 sheets 富读取：读取所有可见 Sheet、排除隐藏 Sheet 并记录 warning，保留稀疏坐标单元格和 cell/floating resource 位置。
+- 实现 bitable 只读基础解析预留：tables、views、records/search 和文件/图片字段资源识别。
+- 新增 parser、docx rich reader、sheets rich reader 测试，并补充 Feishu client helper/wiki/error 脱敏测试；旧飞书电子表格读取测试继续通过。
+
+### 当前项目进度
+
+- 飞书富读取 adapter 已具备不依赖落库和前端的单测基础，可以作为下一刀 Source Evidence API 或 snapshot adapter 的输入。
+- 当前仍未下载图片/附件原文件，也未执行 Vision observation；资源仅作为结构化候选和位置引用。
+
+### 测试验证
+
+- `python -m pytest backend/tests/test_test_case_feishu_source_parser.py backend/tests/test_test_case_feishu_rich_reader_docx.py backend/tests/test_test_case_feishu_rich_reader_sheets.py backend/tests/test_feishu_client.py backend/tests/test_feishu_reader.py`
+
+### 未完成项与风险
+
+- 本次未落库、未接 Source Evidence API、未接前端、未接 Vision。
+- `/docs/{token}` 暂按 docx 兼容路径读取；若真实飞书租户旧 docs token 不兼容 docx OpenAPI，会返回脱敏错误，后续再评估旧 Docs API。
+
+## 进度记录 2026-06-29 20:40
+
+### 本次目标
+
+实现 Source Evidence Run 后端基础：数据模型、迁移、存储目录解析、状态枚举、TTL 字段和最小审计元数据，不接飞书 OpenAPI、前端或 Vision。
+
+### 本次完成
+
+- 新增 `SourceEvidenceRunRecord` 和 `SourceEvidenceResourceRecord` ORM 模型，按 `project_id` 隔离，保留 run/resource 状态、TTL、操作人、创建/清理时间和最小审计字段。
+- 新增 `0012_source_evidence_runs` Alembic migration，创建 `source_evidence_runs` 与 `source_evidence_resources`，并更新 Alembic head 契约测试。
+- 新增 `source_evidence_dir` 与 `source_evidence_ttl_days` 配置，默认存储根目录为 `backend/.runtime/source-evidence`，默认 TTL 为 7 天。
+- 新增 `source_evidence_storage.py`，集中解析 `source_evidence_dir/<project_id>/<run_id>/`，并对读写/删除路径做根目录逃逸校验。
+- 新增 `source_evidence.py`，提供 run 创建、项目内查询、TTL 到期判断和敏感字段清理/最小审计摘要 helper。
+- 新增模型、存储和 migration 测试，覆盖 project 隔离、默认 TTL、路径逃逸拒绝、过期判断、敏感字段 scrub，以及不新增生成历史表/不保存蓝图、用例、prompt、provider response。
+
+### 当前项目进度
+
+- Source Evidence Run 已具备后续接飞书富读取前的持久化和本地存储安全底座。
+- 下一刀可以在此基础上接入飞书文档读取结果写入 run/resource，但仍需继续保持生成链路与证据读取链路解耦。
+
+### 测试验证
+
+- `python -m pytest backend/tests/test_source_evidence_models.py backend/tests/test_source_evidence_storage.py backend/tests/test_alembic_migrations.py`
+
+### 未完成项与风险
+
+- 本次未接飞书 OpenAPI、前端、Vision，也未实现完整 TTL 清理定时任务。
+- Migration 中 `expires_at` 由 ORM/helper 负责写入默认值；裸 SQL 插入仍需显式传入过期时间。
+
 ## 进度记录 2026-06-29 20:20
 
 ### 本次目标
@@ -2293,3 +2879,501 @@
 
 - 本次未实现业务代码。
 - 未运行测试；本次只更新领域术语、需求边界和项目记录。
+
+## 进度记录 2026-06-29 17:56
+
+### 本次目标
+
+实现 Source Evidence Run 的视觉候选包与用户资源选择准备阶段，不调用 Vision AI，不生成 observation，不改生成 prompt。
+
+### 本次完成
+
+- 新增 `visual_evidence` 后端服务，从 Source Evidence resources 构造视觉候选、默认推荐集合和选择状态。
+- 对已下载且本地可用的图片生成 run 目录内优化 JPEG，并只在内部 packet 中保存相对路径。
+- 新增视觉候选读取和替换式保存选择 API，继续执行严格项目成员校验、跨项目隐藏和 public knowledge guard。
+- Source Evidence 读取/重试完成后自动准备候选包，GET 候选在文件缺失时支持懒生成。
+- 前端资源抽屉改为展示视觉候选、推荐理由、可选/禁用状态和用户选择，保存选择后使旧生成结果失效并禁用导出。
+- 后端依赖声明新增 Pillow，用于图片尺寸读取与优化。
+
+### 当前项目进度
+
+- 飞书富文档读取后的 Source Evidence 已具备“文本/表格可生成 + 图片/附件待观察 + 用户选择候选”的后端和前端闭环。
+- 后续可在同一 run 未过期时接入 Vision observation，但未观察/未采纳资源仍不能作为需求事实。
+
+### 文档同步
+
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- `python -m pytest backend/tests/test_source_evidence_visual_candidates.py backend/tests/test_source_evidence_permissions.py`
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView`
+- `npm run build`
+
+### 未完成项与风险
+
+- 本次不调用 Vision AI，不生成 observation，不形成 `Adopted Visual Evidence`。
+- 本次不提供 optimized image 下载或预览接口。
+
+## 进度记录 2026-06-29 18:46
+
+### 本次目标
+
+实现 Source Evidence Vision observation 与 Adopted Visual Evidence，确保“已观察不等于已采纳”，未采纳 observation 不进入生成。
+
+### 本次完成
+
+- 新增项目级 Vision AI Credential 后端最小配置能力，凭据独立于文本 AI，支持保存、测试、删除和脱敏状态返回。
+- 新增 Source Evidence 视觉 observation 轻量 DB 索引和 Alembic migration，observation 详情仅写入 run 目录短期视觉包。
+- 新增 observations / adopted-visual-evidence API，支持按已保存选择生成 observation、读取 observation、采纳和撤销采纳。
+- Generate / Export 新增 `adopted_visual_evidence_ids`，只允许同项目、同 run、已采纳证据进入 prompt 和导出说明。
+- 前端资源抽屉展示 observation 摘要、限制、采纳状态，并在采纳/撤销后使旧生成结果失效。
+- 同步 `docs/specs/ai-project-credentials.md`，明确文本 AI 与 Vision AI 凭据独立、Vision 当前只支持 OpenAI-compatible 多模态 JSON 协议。
+
+### 当前项目进度
+
+- Source Evidence 已形成“文本/表格生成 + 图片候选选择 + Vision observation + 用户采纳后进入生成/导出”的受控闭环。
+- 未采纳 observation、文件名、附近文本、资源状态仍不得作为需求事实。
+
+### 文档同步
+
+- `docs/specs/ai-project-credentials.md`
+- `PROJECT_RECORD.md`
+- `CHANGELOG.md`
+
+### 验证
+
+- `python -m pytest backend/tests/test_source_evidence_observations.py backend/tests/test_project_vision_ai_config_api.py -q`
+- `python -m pytest backend/tests/test_source_evidence_generation.py backend/tests/test_test_case_exporter.py backend/tests/test_source_evidence_permissions.py -q`
+- `python -m pytest backend/tests/test_alembic_migrations.py -q`
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView`
+
+### 未完成项与风险
+
+- 本次不提供 Vision AI 配置前端管理 UI。
+- 本次不提供 optimized image 下载/预览接口。
+- Vision observation 当前只实现 OpenAI-compatible 协议；其他 provider 会返回可展示的不支持提示。
+## 进度记录 2026-06-29 19:44
+
+### 本次目标
+
+硬化 Source Evidence Run 的 TTL 清理和最小审计：敏感材料到期必须删除，最小审计元数据不随 7 天 TTL 删除。
+
+### 本次完成
+
+- 新增 `source_evidence_cleanup` 服务层，支持单 run 清理、过期 run 批量清理、访问时懒清理和项目清理审计列表。
+- TTL 清理会删除 run 目录内 `source.md`、`raw/`、`images/`、`attachments/`、`visual_evidence/`、observation 详情和 adopted evidence 复查详情。
+- 清理后对外状态统一为 `cleaned`，DB 只保留 run/resource/observation 最小审计字段；飞书来源标识长期保留为 `sha256:<16hex>` 脱敏指纹。
+- runtime cleanup 纳入过期 Source Evidence Run，dry-run 可统计，execute 执行安全清理；不把 run 内敏感文件暴露为普通 file candidate。
+- 新增项目管理员审计接口 `GET /api/v1/test-cases/source-evidence-cleanup-audits`，普通成员不可查看项目级清理列表。
+- Source Evidence run/resources/snapshot/retry/generate/export/visual/observation/adoption 入口接入懒清理；清理后只允许安全摘要读取，敏感复查和写操作要求重新读取来源。
+- 前端补充 cleanup audit API 类型和 wrapper，本次不新增页面。
+
+### 当前项目进度
+
+- Source Evidence 已具备“读取 -> 资源候选 -> observation -> 采纳 -> 生成/导出 -> TTL 清理/最小审计”的闭环。
+- 清理后不提供原文、视觉包或 observation 明细复查。
+
+### 文档同步
+
+- `docs/specs/test-case-generation-feishu-doc-migration.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- `python -m pytest backend/tests/test_source_evidence_cleanup.py backend/tests/test_runtime_cleanup.py backend/tests/test_source_evidence_permissions.py`
+
+### 未完成项与风险
+
+- 本次不新增清理审计前端页面。
+- 最小审计保留期限仍按项目审计数据保留策略执行，本刀只实现“不随 Source Evidence 7 天 TTL 一起删除”。
+
+## 进度记录 2026-06-29 19:57
+
+### 本次目标
+
+对用例生成飞书文档读取移植做全量验收、文档同步和风险清理；不新增业务功能。
+
+### 本次完成
+
+- 补齐 `test_test_case_api_contracts.py` 的 Source Evidence route 注册契约，纳入 visual candidates、visual selections、observations、adopted visual evidence 和 cleanup audit routes。
+- 复核 Source Evidence Run 数据模型与 migration，确认不新增生成历史表，不保存蓝图、用例、prompt 或 provider response。
+- 复核飞书富 reader、Source Evidence snapshot、Vision observation/adoption、TTL cleanup 和权限测试覆盖，与当前验收边界一致。
+- 确认前端仍保持 01/02/03/04 工作台布局，结果预览不恢复“原始表格/追踪视图”和“用例蓝图”页签。
+- 同步 `docs/specs/test-case-generation-feishu-doc-migration.md` 的 Visual Evidence API 列表，补充已实现的候选读取和 observation 读取接口。
+
+### 当前项目进度
+
+- 用例生成飞书文档读取移植已通过后端与前端建议验收命令。
+- `projectVisionAiConfig` 当前无前端测试文件或前端配置页，按“本刀不新增前端 Vision 配置 UI”的既定边界处理；Vision 凭据行为由后端 API 测试覆盖。
+
+### 文档同步
+
+- `docs/specs/test-case-generation-feishu-doc-migration.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- `python -m pytest backend/tests/test_test_case_api_contracts.py backend/tests/test_test_case_planning_snapshot.py backend/tests/test_test_case_generation.py backend/tests/test_test_case_exporter.py backend/tests/test_test_case_reference_models.py backend/tests/test_test_case_reference_profiles.py backend/tests/test_test_case_reference_library_api.py backend/tests/test_source_evidence_models.py backend/tests/test_source_evidence_storage.py backend/tests/test_test_case_feishu_source_parser.py backend/tests/test_test_case_feishu_rich_reader_docx.py backend/tests/test_test_case_feishu_rich_reader_sheets.py backend/tests/test_source_evidence_api.py backend/tests/test_source_evidence_snapshot.py backend/tests/test_source_evidence_generation.py backend/tests/test_source_evidence_visual_candidates.py backend/tests/test_source_evidence_observations.py backend/tests/test_source_evidence_cleanup.py backend/tests/test_project_ai_config_api.py backend/tests/test_project_vision_ai_config_api.py backend/tests/test_feishu_client.py backend/tests/test_feishu_reader.py backend/tests/test_feishu_permission_api.py backend/tests/test_source_api_security.py backend/tests/test_alembic_migrations.py`
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView projectVisionAiConfig`
+- `npm run build`
+
+### 未完成项与风险
+
+- 本次未做真实飞书租户联调和真实 Vision provider 联调，当前以单元/契约测试覆盖边界。
+- 前端构建仍有既有 chunk size 和 plugin timing 警告，本次未处理分包。
+
+## 进度记录 2026-07-01
+
+### 本次目标
+
+实现 `local_file` Source Evidence reader 第一阶段：上传 `.xlsx` 工作簿和独立图片文件；不实现 `.xls` 转换，不接 SVN，不改前端页面。
+
+### 本次完成
+
+- `POST /api/v1/test-cases/source-evidence-runs/upload` 改为真实创建并读取 `local_file` run，上传文件只写入当前 Source Evidence Run 目录。
+- 新增本地上传 reader 分发，支持 `.xlsx`、`.png`、`.jpg`、`.jpeg`、`.webp`，非法后缀返回中文错误。
+- `.xlsx` 使用 `openpyxl` 读取可见 Sheet 文本/表格，隐藏 Sheet 默认排除并写 warning。
+- `.xlsx` 内嵌图片提取到 run 的 `images/` 目录，并登记为 `SourceEvidenceResourceRecord`，ref 使用 `excel_img_s001_001` 格式，position 使用 `excel:sheet=...:image=...:anchor=...`。
+- 独立图片上传会创建 image resource，并在 snapshot 中提示缺少文本主体，生成前需要后续视觉证据观察和采纳。
+- local_file 输出 `source.md`、`raw/parsed_source.json`、`resources.json`、`manifest.json`，API 响应不暴露本地绝对路径或 `local_path`。
+- local_file retry 保留 `raw/upload/*` 原始上传，仅清理派生文件和资源记录后重新解析。
+
+### 当前项目进度
+
+- Source Evidence V2 已具备 Feishu 和本地上传 `.xlsx`/图片两类来源的后端读取骨架。
+- `.xls`、SVN 文件 reader、前端上传入口和图片观察/采纳自动化流程仍在后续切片。
+
+### 文档同步
+
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- `python -m pytest backend/tests/test_source_evidence_local_file.py backend/tests/test_source_evidence_excel_reader.py backend/tests/test_source_evidence_api.py backend/tests/test_source_evidence_storage.py`
+
+### 未完成项与风险
+
+- 本次不支持 `.xls` 转换或 `.xls` 图片提取。
+- 本次不读取 SVN 文件，也不新增长期本地数据源配置。
+- `.xlsx` 图片提取依赖 `openpyxl` 当前可访问的内嵌图片对象；真实复杂工作簿仍需后续样本回归。
+
+## 进度记录 2026-07-01
+
+### 本次目标
+
+实现 `svn_file` Source Evidence：使用项目级 SVN 凭据和独立 `Source Evidence SVN Root` 校验 SVN 文件 URL，拉取后复用本地文件 reader；同时补齐 `.xls` 文本读取和受控 LibreOffice/soffice 图片转换降级。
+
+### 本次完成
+
+- 新增 `project_source_evidence_svn_roots` 模型和 `0015_source_evidence_svn_roots` migration，Source Evidence SVN Root 与 Remote SVN Query Root 分表分接口维护。
+- 新增 `GET/PUT /api/v1/admin/projects/{project_id}/source-evidence-svn-roots`，管理员替换式保存 `alias/display_name/svn_url/enabled`，保存时校验 http(s)、host allowlist 和目录 URL。
+- `svn_file` dispatcher 改为调用 SVN reader：校验 host、后缀、Source Evidence SVN Root 和项目级 SVN 凭据后，浅 checkout 到当前 run 的 `raw/svn-cache/<dir-hash>/`，再复用本地 reader。
+- SVN manifest 记录脱敏 URL、root alias、revision、last changed rev、author、修改时间、file sha256 和 fetched_at，不记录密码、完整命令行或本地绝对路径。
+- 本地 reader 增加 `.xls` 支持：文本用 `xlrd`，图片通过 `SOURCE_EVIDENCE_SOFFICE_EXECUTABLE` 和 `SOURCE_EVIDENCE_XLS_CONVERT_TIMEOUT_SECONDS` 控制的 soffice 转 `.xlsx` 后复用 `.xlsx` 图片解析；转换失败时 run 仍可 ready 并写 warning。
+- 独立 SVN 图片复用本地图片 reader，ref 使用 `svn_img_001`，position 使用 `svn:image=1`。
+- 同步 `docs/specs/data-sources.md` 和 `docs/specs/test-case-generation-v2-source-evidence.md` 的实际表名、接口路径和转换器配置项。
+
+### 当前项目进度
+
+- Source Evidence V2 后端已具备 Feishu、本地上传 `.xlsx`/图片、`.xls` 文本降级/转换图片、SVN 文件读取的统一 run/source/resource/snapshot 链路。
+- 前端 SVN 创建入口、运行能力状态展示和真实 LibreOffice/SVN 环境验收仍留后续切片。
+
+### 文档同步
+
+- `docs/specs/data-sources.md`
+- `docs/specs/test-case-generation-v2-source-evidence.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- `python -m pytest backend/tests/test_source_evidence_svn_file.py backend/tests/test_source_evidence_svn_root.py backend/tests/test_svn_cache.py backend/tests/test_svn_manager.py backend/tests/test_admin_feishu_bot.py`：69 passed。
+- `python -m pytest backend/tests/test_source_evidence_api.py backend/tests/test_source_evidence_local_file.py backend/tests/test_source_evidence_excel_reader.py backend/tests/test_alembic_migrations.py -q`：20 passed。
+- `python -m compileall -q backend/app/test_cases/source_evidence.py backend/app/test_cases/svn_source_reader.py backend/app/test_cases/local_source_reader.py backend/app/test_cases/excel_source_reader.py backend/app/admin/router.py backend/app/admin/schemas.py backend/app/models.py backend/config.py`
+
+### 未完成项与风险
+
+- 本次未接前端页面和运行能力状态面板。
+- 本次未做真实 SVN 服务器、真实项目凭据或真实 LibreOffice/soffice 环境验收；`.xls` 图片转换用 fake converter 单测覆盖成功/失败边界。
+- 个人 SVN 凭据链路保持不参与 Source Evidence；后续如要支持个人临时证据，需要另设可见性和审计边界。
+
+## 进度记录 2026-07-01
+
+### 本次目标
+
+把 Source Evidence Snapshot 从 Feishu-only renderer 泛化为通用 renderer，确保 `feishu`、`local_file`、`svn_file` 都能输出兼容生成链路的 `PlanningSnapshotResponse`。
+
+### 本次完成
+
+- `ParsedSource` 增加 `source_type`，Feishu、本地上传、Excel `.xlsx/.xls` reader 新写入的 `raw/parsed_source.json` 都会带来源类型；旧 payload 缺失时由 run 的 `source_type` 补齐。
+- `build_source_evidence_snapshot` 改为通过通用 parsed source loader 读取，snapshot renderer 输入统一为 `ParsedSource + SourceEvidenceResourceRecord + run.source_type`。
+- Snapshot 行渲染拆成文本/表格事实行、无文本主体提示行和图片/附件资源摘要行；资源 marker 不再作为需求正文进入 snapshot。
+- Excel/Sheet 单元格统一保持 `证据状态=table`，图片/附件资源单独输出 `pending_visual` 摘要行。
+- 独立图片来源没有文本主体时，snapshot 明确提示需先观察并采纳视觉证据后才能作为需求事实。
+- Snapshot warnings 按 `manifest warnings -> reader/parsed warnings -> resource status warnings -> textless warning` 合并，并按 `(source, level, message)` 去重。
+- 生成侧回归覆盖确认 prompt 不把 `<image ...>` marker、token、provider response、本地路径或 SVN 密码带入上下文。
+
+### 当前项目进度
+
+- Source Evidence V2 的 snapshot 层已从 Feishu 特例渲染收敛到通用来源 renderer。
+- 后端生成链路仍复用 `PlanningSnapshotResponse` 契约；前端行为、旧 `/planning-snapshot` 主体逻辑和 ADR/CONTEXT 本次未改。
+
+### 文档同步
+
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- `python -m pytest backend/tests/test_source_evidence_snapshot.py backend/tests/test_source_evidence_generation.py backend/tests/test_source_evidence_local_file.py backend/tests/test_source_evidence_svn_file.py`：32 passed。
+- `python -m compileall -q backend/app/test_cases/source_evidence.py backend/app/test_cases/schemas.py backend/app/test_cases/feishu_rich_reader.py backend/app/test_cases/local_source_reader.py backend/app/test_cases/excel_source_reader.py`
+
+### 未完成项与风险
+
+- 本次不新增前端入口，不改旧 `/planning-snapshot` 主体逻辑。
+- 本次未做真实 Feishu、本地复杂 Excel、真实 SVN/LibreOffice 环境联调；继续依赖现有单元/契约测试覆盖通用 renderer 边界。
+
+## 进度记录 2026-07-01
+
+### 本次目标
+
+实现 V2 `visual validate`：生成和导出前统一校验 Source Evidence 视觉证据，确保只有已观察、人工采纳并通过校验的图片内容可以影响 prompt、生成结果和导出说明。
+
+### 本次完成
+
+- 在 `build_source_evidence_safe_context` 中接入共享 `validate_source_evidence_for_generation`，生成和导出复用同一套 run、resource、adopted evidence 和 warning 校验。
+- Source Evidence safe context 增加服务端内部使用的 `adopted_visual_refs`、`forbidden_visual_refs` 和 `visual_validate_warnings`。
+- adopted evidence id 必须属于当前 project/run、状态为 `adopted`、有关联 resource 且 observation detail 可读取；无效、跨 run、未采纳或详情不可用会阻塞。
+- 独立图片/textless run 未传入 adopted visual evidence 时阻塞生成和导出。
+- 未观察/未采纳图片、图片提取或下载失败、`.xls` 图片转换失败、Vision AI 未配置或不可用会进入 visual validate warnings。
+- 生成 prompt 不再展开未采纳资源的 ref、文件名和位置，Source Evidence Snapshot 的 `pending_visual` 行不会进入 prompt。
+- 生成前扫描 prompt，生成后扫描 blueprint/cases/requirement_trace/warnings；命中未采纳视觉 ref 时阻塞。
+- 导出 API 在服务端重建安全 summary 后扫描 blueprint/cases/warnings/summary，命中未采纳视觉 ref 时阻塞；workbook 仍只包含 adopted visual evidence 摘要、位置和 limitations。
+
+### 当前项目进度
+
+- Source Evidence V2 已具备从来源读取、通用 snapshot、视觉观察/采纳到生成/导出前 visual validate 的后端安全链路。
+- 前端仍未接入完整 visual validate 状态展示和用户操作闭环。
+
+### 文档同步
+
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- `python -m pytest backend/tests/test_source_evidence_generation.py backend/tests/test_source_evidence_observations.py backend/tests/test_test_case_exporter.py`：30 passed。
+- `python -m compileall -q backend/app/test_cases/source_evidence.py backend/app/test_cases/generation.py backend/app/test_cases/exporter.py backend/app/api/test_cases_api.py`
+
+### 未完成项与风险
+
+- 本次不调用 Vision provider 做实时可用性探测，只按项目 Vision AI Credential 配置/启用/解密状态产生 warning。
+- 本次不改前端和旧 `/planning-snapshot` 主体逻辑。
+- 本次未做真实 Vision provider、真实复杂 Excel 图片证据或真实导出文件人工验收。
+
+## 进度记录 2026-07-01
+
+### 本次目标
+
+把前端用例生成页的“本地文件 / SVN 文件 / 飞书文档”三入口统一到 `Source Evidence Run`，不再让本地/SVN V2 继续走旧 `uploaded_excel/planning-snapshot` 主链路。
+
+### 本次完成
+
+- 前端类型新增 `SourceEvidenceSourceType = feishu | local_file | svn_file`，`source_type: svn_file` 与本地上传 Source Evidence API wrapper 已接入。
+- 本地文件入口支持 `.xlsx/.xls/.png/.jpg/.jpeg/.webp` 上传，直接调用 `POST /api/v1/test-cases/source-evidence-runs/upload` 创建 `local_file` run。
+- SVN 文件入口改为提交具体 SVN 文件 URL，调用 `POST /api/v1/test-cases/source-evidence-runs` 创建 `svn_file` run；页面主读取路径不再使用个人 SVN 目录浏览、个人凭据状态或旧 metadata 读取。
+- 本地/SVN/飞书文档 run 创建后统一使用 Source Evidence 状态卡、TTL、warnings、资源清单、视觉候选、observation、采纳/撤销、retry、snapshot、生成和导出链路。
+- `ActiveGenerationInputKind` 的 V2 来源统一走 `source_evidence`；legacy Feishu spreadsheet 继续保留旧 `planning-snapshot` 兼容。
+- 切换来源会清空旧 snapshot、生成结果和导出状态；独立图片/textless run 在未采纳视觉证据前禁用生成并显示阻塞提示。
+- Vision、soffice、转换失败、图片提取/下载失败等 warning 会补充“图片未参与语义理解”的用户可见说明。
+
+### 当前项目进度
+
+- Source Evidence V2 已完成后端读取/通用 snapshot/visual validate，并完成前端三入口统一接入。
+- 后续还需要真实本地 Excel/图片、真实 SVN 文件、真实 Vision observation 的联调验收，以及按产品节奏进一步收敛旧前端遗留 SVN 目录浏览代码。
+
+### 文档同步
+
+- `PROJECT_RECORD.md`
+- `CHANGELOG.md`
+
+### 验证
+
+- `npm run test:unit -- testCasesApi TestCaseGeneratorView`：71 passed。
+- `npm run build`：通过。
+
+### 未完成项与风险
+
+- 本次不新增后端字段，独立图片阻塞由前端识别现有 warnings 文案完成。
+- 本次不做真实浏览器联调；仅通过 Vitest happy-dom 和生产构建验证前端行为。
+
+## 进度记录 2026-07-01 20:36
+
+### 本次目标
+
+按“个人校验 / 项目校验”页面作为视觉基准，审计后收敛全站前端风格，不改页面布局、不改业务逻辑。
+
+### 本次完成
+
+- 应用壳层接入跳到主内容入口，侧边栏、品牌和常见指标卡装饰图标补齐无障碍隐藏。
+- 共享按钮补齐 loading 的 `aria-busy` 与图标/加载态隐藏，减少屏幕阅读器噪音。
+- 登录、注册、管理后台、查询配置、飞书机器人配置、测试发送和 SVN 凭据弹窗的关键输入补齐 `name`、`autocomplete`、`spellcheck` 与更一致的 placeholder。
+- 全局共享样式收敛旧毛玻璃、光斑、负字距、viewport 字号和漂浮动画，继续保持白底、细边框、轻阴影工作台风格。
+- `/test-cases` 保持现有布局，强化右侧流程节点图标、当前态和完成态层次，使其更接近设计图但不再脱离全站风格。
+
+### 当前项目进度
+
+- 前端视觉基准已进一步统一到现有 SaaS 工作台风格。
+- 本次没有更新 `CONTEXT.md`，因为没有新增稳定领域术语。
+
+### 文档同步
+
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- `cd frontend; npm run test:unit -- testCasesApi TestCaseGeneratorView`：通过，75 个单测通过。
+- `cd frontend; npm run build`：通过，构建仅保留既有 chunk 体积提示。
+
+### 未完成项与风险
+
+- 本次不做页面布局重排，不处理所有历史表单字段的深层交互问题。
+- 当前 worktree 已有大量前后端脏改动，本次只在现有基础上叠加前端样式和可访问性收敛。
+
+## 进度记录 2026-07-01 20:53
+
+### 本次目标
+
+统一整个项目前端页面字体，解决各页面、Element Plus 覆盖层和局部组件各自维护字体栈导致的显示不一致。
+
+### 本次完成
+
+- 新增共享字体 token：正文统一使用 `--font-sans`，等宽/编号/代码预览统一使用 `--font-mono`。
+- Tailwind 字体配置、Element Plus 字体变量、全局 body、应用壳层和共享覆盖样式全部改为引用共享字体 token。
+- 清理个人校验、项目校验、工作台、查询配置、管理后台飞书配置和用例生成页面中的硬编码字体栈。
+
+### 当前项目进度
+
+- 前端字体来源已统一到 `frontend/src/styles/tokens.css`，后续换字体只需调整共享 token。
+- 本次没有更新 `CONTEXT.md`，因为没有新增稳定领域术语。
+
+### 文档同步
+
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- `rg -n "font-family|JetBrains Mono|Cascadia Mono|SFMono|Consolas|Noto Sans SC|PingFang SC|Microsoft YaHei|Segoe UI|Inter" frontend/src frontend/tailwind.config.js`：通过，字体名称只保留在 token 定义中，其余为变量引用；`setInterval` 为关键词误伤。
+- `cd frontend; npm run test:unit -- testCasesApi TestCaseGeneratorView`：通过，75 个单测通过。
+- `cd frontend; npm run build`：通过，构建仅保留既有 chunk 体积提示。
+
+### 未完成项与风险
+
+- 本次不引入远程字体或新增字体依赖，实际显示仍取决于用户系统已安装字体及浏览器 fallback。
+- 当前 worktree 已有大量脏改动，本次只叠加字体统一相关前端样式与记录更新。
+
+## 进度记录 2026-07-02 13:27
+
+### 本次目标
+
+排查 Source Evidence 运行能力状态中 LibreOffice/soffice 重启后仍显示未配置的问题，并修复 Vision AI 成功状态仍携带历史失败摘要的展示缺陷。
+
+### 本次完成
+
+- 确认本机 LibreOffice 已安装在 `C:\Program Files\LibreOffice\program\soffice.com`，且 `soffice.com --version` 可返回 LibreOffice 26.2.4.2。
+- 确认 Windows 用户环境变量已持久化，但旧启动终端/父进程不会自动继承，导致后端 `settings.source_evidence_soffice_executable` 仍为空。
+- 用显式环境变量重启当前 `python backend/run.py` 后端进程，使 `/api/v1/test-cases/source-evidence-capabilities` 返回 `soffice_configured=true`、`soffice_available=true`。
+- 修复 capability 聚合逻辑：当 Vision AI 最近测试状态为 `success` 时，不再返回历史 `last_test_error_summary`。
+
+### 当前项目进度
+
+- Source Evidence 运行能力接口当前返回 SVN 凭据、Source Evidence SVN Root、Vision AI、LibreOffice/soffice 均可用，warnings 为空。
+- 本次没有更新 `CONTEXT.md`，因为没有新增稳定领域术语。
+
+### 文档同步
+
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- `python -m compileall -q backend/app/test_cases/source_evidence_capabilities.py backend/tests/test_source_evidence_capabilities.py`：通过。
+- `python -m pytest backend/tests/test_source_evidence_capabilities.py backend/tests/test_project_vision_ai_config_api.py`：14 passed，保留既有 lark_oapi deprecation warnings。
+- `GET http://127.0.0.1:8000/health`：healthy。
+- `GET /api/v1/test-cases/source-evidence-capabilities`：`soffice_configured=true`、`soffice_available=true`、`vision_ai_last_test_status=success`、`vision_ai_last_test_error_summary=""`、`warnings=[]`。
+
+### 未完成项与风险
+
+- 若以后从已打开的旧 PowerShell/CMD 窗口重启后端，该窗口仍可能没有新环境变量；需要在启动前显式设置 `$env:SOURCE_EVIDENCE_SOFFICE_EXECUTABLE`，或关闭旧终端后重新打开。
+- 本次只修复运行能力状态和历史摘要展示，不做真实 `.xls` 图片转换样例验收。
+
+## 进度记录 2026-07-02 13:43
+
+### 本次目标
+
+排查并修复用例生成页在读取大型 Source Evidence 本地工作簿后生成失败的问题。
+
+### 本次完成
+
+- 定位前端报错“模型返回的 JSON 无法解析。”来自后端 AI provider 的 JSON 解析边界。
+- 用当前 run 复现发现：Source Evidence Snapshot 有 1945 行、9725 个非空单元格，蓝图 prompt 达到约 19 万字符 / 10.5 万 prompt tokens。
+- 确认根因是 V2 Source Evidence snapshot 页面预览走全集，而生成 prompt 没有再次套生成预算，导致 DeepSeek 在超大上下文下返回不稳定 JSON 或不符合契约的蓝图结构。
+- 在生成侧为 `PlanningSnapshotResponse` 渲染增加 prompt 预算：只把预算内文本/表格事实注入两阶段 prompt，截断时返回“生成输入超过预算” warning。
+- 增加蓝图阶段归一化：兼容模型把 `modules`、`flows`、`coverage_dimensions` 等列表字段返回为对象映射的常见形态。
+- 重启本地后端并用当前 Source Evidence run 2 真实调用 `/api/v1/test-cases/generate`，生成成功。
+
+### 当前项目进度
+
+- 大型 Source Evidence 工作簿不会再把全集直接塞进生成 prompt；页面会看到生成预算 warning。
+- 本次没有更新 `CONTEXT.md`，因为没有新增稳定领域术语。
+
+### 文档同步
+
+- `docs/specs/test-case-generation-v2-source-evidence.md`
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- `python -m pytest backend/tests/test_test_case_generation.py -k "blueprint_mapping or oversized_snapshot"`：2 passed。
+- `python -m pytest backend/tests/test_test_case_generation.py backend/tests/test_source_evidence_generation.py`：31 passed，保留既有 lark_oapi deprecation warnings。
+- `python -m compileall -q backend/app/test_cases/generation.py backend/tests/test_test_case_generation.py backend/tests/test_source_evidence_generation.py`：通过。
+- 真实接口验证：`POST /api/v1/test-cases/source-evidence-runs/2/snapshot` 后调用 `POST /api/v1/test-cases/generate`，返回 32 条用例、8 条 warning，其中包含“生成输入超过预算，已限制为前 691 条文本/表格事实或约 60000 个字符”。
+
+### 未完成项与风险
+
+- 预算截断会牺牲超大工作簿后半段需求覆盖；后续如果需要完整覆盖，应在前端提供 Sheet/章节/范围选择或分批生成。
+- DeepSeek `json_object` 不能强制 JSON Schema，只能通过 prompt、预算和后端归一化降低失败概率；严格 schema 仍取决于供应商能力。
+
+## 进度记录 2026-07-02 14:10
+
+### 本次目标
+
+排查用例生成页在 Source Evidence 大型本地工作簿生成时继续出现“AI 蓝图返回结构不符合用例生成契约：Field required”的问题。
+
+### 本次完成
+
+- 用当前 `local_file` Source Evidence run 6 复现生成链路，并单独抓取蓝图阶段 AI 返回结构。
+- 确认根因不是 Source Evidence 读取失败，而是模型把蓝图 `warnings` 返回为 `{id, description}` 结构；后端契约要求 `{source, level, message}`，且禁止额外字段，实际缺失字段为 `warnings[0].message`。
+- 在 provider warning 归一化层兼容 `{id, description}`、`detail`、`content`、`text` 等常见 warning 返回形态，输出时仍保持稳定的 `{source, level, message}` 契约。
+- 重启本地后端，并用真实 `/api/v1/test-cases/generate` 调用验证当前 run 6 可生成成功。
+
+### 当前项目进度
+
+- Source Evidence 大工作簿生成现在同时覆盖 prompt 预算截断、蓝图列表映射归一化和 warnings 对象归一化三类常见模型偏差。
+- 本次没有更新 `CONTEXT.md`，因为没有新增稳定领域术语。
+
+### 文档同步
+
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- `python -m compileall -q backend/app/test_cases/generation.py backend/tests/test_test_case_generation.py`：通过。
+- `python -m pytest backend/tests/test_test_case_generation.py -k "warning_description_objects or provider_warning_strings or blueprint_mapping or oversized_snapshot"`：4 passed，保留既有 lark_oapi deprecation warnings。
+- 真实接口验证：`POST /api/v1/test-cases/source-evidence-runs/6/snapshot` 后调用 `POST /api/v1/test-cases/generate`，返回 13 条用例、7 条 warning，HTTP 200。
+
+### 未完成项与风险
+
+- DeepSeek 仍可能产生其它不符合 JSON Schema 的非标准字段形态；当前只对已经复现的常见偏差做归一化，不放宽最终响应契约。

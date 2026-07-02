@@ -150,7 +150,7 @@
 
 .profile-password-form .el-input__wrapper {
   min-height: 44px;
-  border-radius: 10px;
+  border-radius: var(--ui-input-radius);
   background: #ffffff;
   box-shadow: 0 0 0 1px var(--color-border) inset, 0 6px 16px rgba(15, 23, 42, 0.025);
   transition:

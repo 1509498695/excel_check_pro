@@ -433,7 +433,10 @@ function formatUpdatedAt(value: string | null): string {
                 <label>App ID（必填）</label>
                 <el-input
                   v-model="form.appId"
-                  placeholder="例如：cli_abcdef1234567890"
+                  name="feishu-app-id"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder="例如：cli_abcdef1234567890…"
                   maxlength="64"
                   show-word-limit
                 />
@@ -443,7 +446,10 @@ function formatUpdatedAt(value: string | null): string {
                 <label>App Secret{{ hasAppSecret ? '（留空表示保持原值）' : '（首次必填）' }}</label>
                 <el-input
                   v-model="form.appSecret"
-                  :placeholder="hasAppSecret ? '已保存，留空保持原值' : '请填写飞书自建应用 App Secret'"
+                  name="feishu-app-secret"
+                  autocomplete="new-password"
+                  spellcheck="false"
+                  :placeholder="hasAppSecret ? '已保存，留空保持原值…' : '请填写飞书自建应用 App Secret…'"
                   show-password
                   maxlength="256"
                 />
@@ -453,8 +459,11 @@ function formatUpdatedAt(value: string | null): string {
                 <label>默认 chat_id（可选，用于测试发送默认回填）</label>
                 <el-input
                   v-model="form.defaultChatId"
+                  name="default-chat-id"
+                  autocomplete="off"
+                  spellcheck="false"
                   data-testid="feishu-default-chat-id-input"
-                  placeholder="例如：oc_1234567890abcdef"
+                  placeholder="例如：oc_1234567890abcdef…"
                   maxlength="128"
                   @change="syncDefaultChatToBoundChats"
                 />
@@ -465,8 +474,11 @@ function formatUpdatedAt(value: string | null): string {
                 <el-input
                   v-model="form.allowedOpenIds"
                   type="textarea"
+                  name="allowed-open-ids"
+                  autocomplete="off"
+                  spellcheck="false"
                   :rows="4"
-                  placeholder="例如：&#10;ou_aaa&#10;ou_bbb"
+                  placeholder="例如：&#10;ou_aaa&#10;ou_bbb…"
                   maxlength="2048"
                 />
               </div>
@@ -476,8 +488,11 @@ function formatUpdatedAt(value: string | null): string {
                 <el-input
                   v-model="form.localDownloadRoots"
                   type="textarea"
+                  name="local-download-roots"
+                  autocomplete="off"
+                  spellcheck="false"
                   :rows="4"
-                  placeholder="例如：&#10;D:\project\configs"
+                  placeholder="例如：&#10;D:\project\configs…"
                   maxlength="4096"
                 />
               </div>
@@ -487,8 +502,11 @@ function formatUpdatedAt(value: string | null): string {
                 <el-input
                   v-model="form.svnDownloadRoots"
                   type="textarea"
+                  name="svn-download-roots"
+                  autocomplete="off"
+                  spellcheck="false"
                   :rows="4"
-                  placeholder="例如：&#10;D:\svn\game-configs"
+                  placeholder="例如：&#10;D:\svn\game-configs…"
                   maxlength="4096"
                 />
               </div>
@@ -497,7 +515,10 @@ function formatUpdatedAt(value: string | null): string {
                 <label>允许下载后缀（每行或英文逗号分隔，留空恢复默认）</label>
                 <el-input
                   v-model="form.allowedDownloadSuffixes"
-                  placeholder=".xls,.xlsx,.csv,.json,.xml,.txt"
+                  name="allowed-download-suffixes"
+                  autocomplete="off"
+                  spellcheck="false"
+                  placeholder=".xls,.xlsx,.csv,.json,.xml,.txt…"
                   maxlength="1024"
                 />
               </div>
@@ -525,8 +546,11 @@ function formatUpdatedAt(value: string | null): string {
             <el-input
               v-model="form.boundChatIdsText"
               type="textarea"
+              name="bound-chat-ids"
+              autocomplete="off"
+              spellcheck="false"
               :rows="3"
-              placeholder="每行一个 chat_id，例如：&#10;oc_default&#10;oc_backup"
+              placeholder="每行一个 chat_id，例如：&#10;oc_default&#10;oc_backup…"
             />
             <div class="feishu-chat-tags">
               <span
@@ -585,21 +609,30 @@ function formatUpdatedAt(value: string | null): string {
                     <el-input
                       v-model="root.alias"
                       size="small"
-                      placeholder="game_datas"
+                      :name="`query-root-alias-${index}`"
+                      autocomplete="off"
+                      spellcheck="false"
+                      placeholder="game_datas…"
                     />
                   </td>
                   <td>
                     <el-input
                       v-model="root.displayName"
                       size="small"
-                      placeholder="游戏配置主目录"
+                      :name="`query-root-name-${index}`"
+                      autocomplete="off"
+                      placeholder="游戏配置主目录…"
                     />
                   </td>
                   <td>
                     <el-input
                       v-model="root.svnUrl"
                       size="small"
-                      placeholder="https://svn.example.com/game"
+                      :name="`query-root-url-${index}`"
+                      type="url"
+                      autocomplete="off"
+                      spellcheck="false"
+                      placeholder="https://svn.example.com/game…"
                     />
                   </td>
                   <td>
@@ -665,14 +698,23 @@ function formatUpdatedAt(value: string | null): string {
                 <div v-if="form.svnCredential.isEditing" class="feishu-credential-edit">
                   <label>
                     <span>SVN 用户名</span>
-                    <el-input v-model="form.svnCredential.username" placeholder="svn_admin" />
+                    <el-input
+                      v-model="form.svnCredential.username"
+                      name="svn-username"
+                      autocomplete="off"
+                      spellcheck="false"
+                      placeholder="svn_admin…"
+                    />
                   </label>
                   <label>
                     <span>SVN 密码（留空表示保持原值）</span>
                     <el-input
                       v-model="form.svnCredential.password"
+                      name="svn-password"
+                      autocomplete="new-password"
+                      spellcheck="false"
                       show-password
-                      placeholder="留空保持原值"
+                      placeholder="留空保持原值…"
                     />
                   </label>
                   <SecondaryButton size="sm" @click="cancelEditSvnCredential">
@@ -783,14 +825,21 @@ function formatUpdatedAt(value: string | null): string {
                   <el-input
                     v-else
                     v-model="projectAiForm.model"
-                    placeholder="请输入模型名"
+                    name="project-ai-model"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="请输入模型名…"
                   />
                 </label>
                 <label>
                   <span>Base URL</span>
                   <el-input
                     v-model="projectAiForm.baseUrl"
-                    placeholder="https://api.example.com/v1"
+                    name="project-ai-base-url"
+                    type="url"
+                    autocomplete="off"
+                    spellcheck="false"
+                    placeholder="https://api.example.com/v1…"
                   />
                 </label>
               </div>
@@ -799,8 +848,11 @@ function formatUpdatedAt(value: string | null): string {
                   <span>API Key（留空表示保持原值）</span>
                   <el-input
                     v-model="projectAiForm.apiKey"
+                    name="project-ai-api-key"
+                    autocomplete="new-password"
+                    spellcheck="false"
                     show-password
-                    placeholder="已保存时留空保持原值"
+                    placeholder="已保存时留空保持原值…"
                   />
                 </label>
                 <label>
@@ -1037,7 +1089,7 @@ function formatUpdatedAt(value: string | null): string {
   border-radius: 7px;
   color: #334155;
   background: #ffffff;
-  font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 700;
   text-overflow: ellipsis;
@@ -1172,7 +1224,7 @@ function formatUpdatedAt(value: string | null): string {
 
 .feishu-svn-test-item__alias {
   color: var(--color-text-main);
-  font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-weight: 800;
 }
 

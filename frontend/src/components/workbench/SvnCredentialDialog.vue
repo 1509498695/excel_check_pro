@@ -176,7 +176,11 @@ function handleCancel(): void {
         <label class="mb-1.5 block text-[12px] font-medium text-ink-500">测试目录 URL</label>
         <el-input
           v-model="form.testDirUrl"
-          placeholder="例如：https://samosvn/data/project/samo/GameDatas/"
+          name="svn-test-dir-url"
+          type="url"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="例如：https://samosvn/data/project/samo/GameDatas/…"
         />
         <div class="mt-1 text-[12px] text-ink-500">
           保存后会按当前登录用户与 host 记住该目录；“测试连接”会先保存凭据，再对这个目录执行一次 SVN 列表请求。
@@ -187,7 +191,9 @@ function handleCancel(): void {
         <label class="mb-1.5 block text-[12px] font-medium text-ink-500">用户名</label>
         <el-input
           v-model="form.username"
-          placeholder="例如：alice"
+          name="svn-credential-username"
+          placeholder="例如：alice…"
+          spellcheck="false"
           autocomplete="off"
         />
       </div>
@@ -197,8 +203,9 @@ function handleCancel(): void {
         <el-input
           v-model="form.password"
           :type="form.showPassword ? 'text' : 'password'"
+          name="svn-credential-password"
           show-password
-          placeholder="登录 SVN 的密码"
+          placeholder="登录 SVN 的密码…"
           autocomplete="new-password"
         />
       </div>

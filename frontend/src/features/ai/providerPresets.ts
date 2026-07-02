@@ -30,11 +30,11 @@ export const AI_PROVIDER_PRESETS = [
     model: 'deepseek-v4-flash',
   },
   {
-    label: '通义千问 DashScope',
+    label: '通义千问（百炼）',
     value: 'qwen',
     protocol: 'OpenAI-compatible',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-    model: 'qwen-plus',
+    model: 'qwen3.6-plus',
   },
   {
     label: 'Kimi',
@@ -48,7 +48,7 @@ export const AI_PROVIDER_PRESETS = [
     value: 'zhipu',
     protocol: 'OpenAI-compatible',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
-    model: 'glm-4.7-flash',
+    model: 'glm-5.2',
   },
   {
     label: 'OpenRouter',

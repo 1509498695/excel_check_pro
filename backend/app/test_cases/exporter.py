@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime
 from io import BytesIO
 from typing import Any
@@ -134,6 +135,7 @@ def _write_summary_sheet(
     rows = [
         ("生成时间", "meta", datetime.now().isoformat(sep=" ", timespec="seconds")),
         ("策划案来源", "source", payload.source_summary),
+        ("Source Evidence 摘要", "source_evidence", _resolve_source_evidence_summary(payload)),
         ("导出字段", "fields", "、".join(STANDARD_CASE_FIELD_LABELS[field] for field in export_fields)),
         ("用例总数", "stats", payload.stats.total),
         ("优先级分布", "stats", payload.stats.priority_counts),
@@ -145,10 +147,12 @@ def _write_summary_sheet(
             "V1 限制",
             "limit",
             "导出完全基于当前页面提交的 blueprint/cases/warnings/stats；"
-            "不读取生成历史，不写入完整 API Key、原始 prompt 或 provider response。",
+            "不读取生成历史，不写入完整 API Key、敏感请求内容或上游原始响应。",
         ),
     ]
     for row in rows:
+        if row[0] == "Source Evidence 摘要" and not row[2]:
+            continue
         sheet.append([_format_cell_value(item) for item in row])
     for warning in payload.warnings:
         sheet.append(["warning", warning.level, warning.message])
@@ -280,6 +284,29 @@ def _format_cell_value(value: Any) -> str:
     if isinstance(value, (dict, list)):
         return json.dumps(_sanitize_json_value(value), ensure_ascii=False)
     return str(value)
+
+
+def _resolve_source_evidence_summary(payload: TestCaseExportRequest) -> str:
+    summary = payload.source_evidence_summary or payload.evidence_summary
+    return _sanitize_sensitive_text(summary)
+
+
+def _sanitize_sensitive_text(value: str) -> str:
+    text = str(value or "")
+    if not text:
+        return ""
+    text = re.sub(
+        r"(?i)\bauthorization\s*:\s*bearer\s*[^；;\n]+",
+        "[REDACTED]",
+        text,
+    )
+    text = re.sub(
+        r"(?i)\b(api_key|apikey|prompt|raw_prompt|provider_response|raw_provider_response|raw_response)\s*[:=]\s*[^；;\n]+",
+        "[REDACTED]",
+        text,
+    )
+    text = re.sub(r"sk-[A-Za-z0-9._-]+", "sk-[REDACTED]", text)
+    return text
 
 
 def _sanitize_json_value(value: Any) -> Any:

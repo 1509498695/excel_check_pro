@@ -36,7 +36,7 @@
 
 .admin-dashboard-search .el-input__wrapper {
   min-height: 42px;
-  border-radius: 10px;
+  border-radius: var(--ui-input-radius);
   box-shadow: 0 0 0 1px var(--color-border) inset, 0 8px 18px rgba(15, 23, 42, 0.03);
 }
 

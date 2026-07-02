@@ -27,9 +27,10 @@ const sizeClass = computed(() => `ui-button--${props.size}`)
     class="ui-button ui-button--primary"
     :class="sizeClass"
     :disabled="disabled || loading"
+    :aria-busy="loading ? 'true' : undefined"
   >
-    <span v-if="loading" class="ui-button__spinner"></span>
-    <span v-else-if="$slots.icon" class="ui-button__icon">
+    <span v-if="loading" class="ui-button__spinner" aria-hidden="true"></span>
+    <span v-else-if="$slots.icon" class="ui-button__icon" aria-hidden="true">
       <slot name="icon" />
     </span>
     <span class="ui-button__label">

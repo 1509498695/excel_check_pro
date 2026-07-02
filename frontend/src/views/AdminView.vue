@@ -16,6 +16,7 @@ import {
   apiUpdateProject,
 } from '../api/admin'
 import FeishuBotConfigCard from '../components/admin/FeishuBotConfigCard.vue'
+import SourceEvidenceAdminConfigCard from '../components/admin/SourceEvidenceAdminConfigCard.vue'
 import { useAuthStore } from '../store/auth'
 import type { ProjectDetail, ProjectMember } from '../types/auth'
 import DataTable from '../components/shell/DataTable.vue'
@@ -437,7 +438,9 @@ function getMemberRoleLabel(member: ProjectMember): string {
       <template #actions>
         <el-input
           v-model="projectKeyword"
-          placeholder="搜索项目"
+          name="project-search"
+          autocomplete="off"
+          placeholder="搜索项目…"
           :prefix-icon="Search"
           clearable
           size="default"
@@ -467,21 +470,21 @@ function getMemberRoleLabel(member: ProjectMember): string {
           :icon-tone="getMetricIconTone(index)"
         >
           <template #icon>
-            <svg v-if="item.label === '项目总数'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg v-if="item.label === '项目总数'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
               <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v8A2.5 2.5 0 0 1 17.5 19h-11A2.5 2.5 0 0 1 4 16.5z" />
             </svg>
-            <svg v-else-if="item.label === '当前项目成员'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg v-else-if="item.label === '当前项目成员'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
               <path d="M12 5a3 3 0 1 0 0 6 3 3 0 0 0 0-6Z" />
               <path d="M5 20a7 7 0 0 1 14 0" />
               <path d="M4 11.5a2.5 2.5 0 1 0 0-5" />
               <path d="M20 6.5a2.5 2.5 0 1 0 0 5" />
             </svg>
-            <svg v-else-if="item.label === '超级管理员'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg v-else-if="item.label === '超级管理员'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
               <path d="M16 11a4 4 0 1 0-8 0 4 4 0 0 0 8 0Z" />
               <path d="M4 21a8 8 0 0 1 16 0" />
               <path d="M19 4v4M21 6h-4" />
             </svg>
-            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
               <path d="M12 3 14.7 8.7 21 9.6 16.5 14 17.6 20.2 12 17.2 6.4 20.2 7.5 14 3 9.6 9.3 8.7z" />
             </svg>
           </template>
@@ -817,6 +820,13 @@ function getMemberRoleLabel(member: ProjectMember): string {
         :project-id="selectedProject.id"
         :project-name="selectedProject.name"
       />
+
+      <!-- 05 Source Evidence -->
+      <SourceEvidenceAdminConfigCard
+        v-if="canManageFeishuBot && selectedProject"
+        :project-id="selectedProject.id"
+        :project-name="selectedProject.name"
+      />
     </div>
 
     <!-- 项目编辑弹窗 -->
@@ -831,7 +841,9 @@ function getMemberRoleLabel(member: ProjectMember): string {
           <label class="mb-1.5 block text-[12px] font-medium text-ink-500">项目名称</label>
           <el-input
             v-model="projectForm.name"
-            placeholder="请输入项目名称"
+            name="project-name"
+            autocomplete="off"
+            placeholder="请输入项目名称…"
             maxlength="128"
             show-word-limit
           />
@@ -844,7 +856,9 @@ function getMemberRoleLabel(member: ProjectMember): string {
             :rows="4"
             maxlength="500"
             show-word-limit
-            placeholder="可选"
+            name="project-description"
+            autocomplete="off"
+            placeholder="可选…"
           />
         </div>
       </div>
@@ -881,7 +895,9 @@ function getMemberRoleLabel(member: ProjectMember): string {
           <label class="mb-1.5 block text-[12px] font-medium text-ink-500">目标归属项目</label>
           <el-select
             v-model="moveProjectForm.targetProjectId"
-            placeholder="请选择目标项目"
+            name="target-project"
+            autocomplete="off"
+            placeholder="请选择目标项目…"
             class="w-full"
           >
             <el-option

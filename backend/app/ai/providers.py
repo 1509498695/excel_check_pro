@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import base64
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -53,10 +54,10 @@ PROVIDER_PRESETS: dict[AiProviderPreset, ProviderPreset] = {
         "deepseek-v4-flash",
     ),
     "qwen": ProviderPreset(
-        "通义千问 DashScope",
+        "通义千问（百炼）",
         "openai_compatible",
         "https://dashscope.aliyuncs.com/compatible-mode/v1",
-        "qwen-plus",
+        "qwen3.6-plus",
     ),
     "kimi": ProviderPreset(
         "Kimi",
@@ -68,7 +69,7 @@ PROVIDER_PRESETS: dict[AiProviderPreset, ProviderPreset] = {
         "智谱 GLM",
         "openai_compatible",
         "https://open.bigmodel.cn/api/paas/v4",
-        "glm-4.7-flash",
+        "glm-5.2",
     ),
     "openrouter": ProviderPreset(
         "OpenRouter",
@@ -107,6 +108,15 @@ PROVIDER_PRESETS: dict[AiProviderPreset, ProviderPreset] = {
         "",
     ),
 }
+
+
+VISION_CONNECTION_TEST_IMAGE_PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAmUlEQVR42s2W"
+    "QQqAMAwE5zO+zOf7CBU8WNRCknZAD0ox2dV0myzLuu3adYJzPST08067mI5+"
+    "E8zlaKHovZiC/iQY53inEwkqo38T1Dh6KWQTssHU0uJhjCRHAhj5wMgvUi5C"
+    "sIDUtjEuAQpSSQmMrNizR+RPBG6J3E12ZeoeNLdVuM3ObdfuwHFHpjv0Xdvi"
+    "Gi/XOrrm17bvBw7akibFBoBCAAAAAElFTkSuQmCC"
+)
 
 
 class ProviderConnectionError(RuntimeError):
@@ -229,6 +239,90 @@ async def test_provider_connection(
         json_schema=schema,
         extra_headers=extra_headers,
         timeout_seconds=15.0,
+    )
+    return int(meta["latency_ms"])
+
+
+async def call_provider_vision_json(
+    *,
+    provider_preset: AiProviderPreset,
+    base_url: str,
+    model: str,
+    api_key: str,
+    system_prompt: str,
+    user_prompt: str,
+    image_bytes: bytes,
+    image_mime_type: str,
+    json_schema: dict[str, Any],
+    extra_headers: dict[str, str] | None = None,
+    timeout_seconds: float = 60.0,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """调用 OpenAI-compatible 多模态模型并解析为 JSON 对象。"""
+    if not api_key:
+        raise ProviderConnectionError("auth_failed", "请先填写 API Key。")
+    if not base_url or not model:
+        raise ProviderConnectionError("invalid_config", "请先填写 Base URL 和模型名称。")
+    if not image_bytes:
+        raise ProviderConnectionError("invalid_config", "视觉观察缺少图片内容。")
+
+    preset = PROVIDER_PRESETS[provider_preset]
+    if preset.protocol != "openai_compatible":
+        raise ProviderConnectionError(
+            "unsupported_protocol",
+            "当前 Vision provider 暂不支持视觉观察协议。",
+        )
+
+    started_at = time.perf_counter()
+    raw_text, usage = await _call_openai_compatible_vision(
+        provider_preset=provider_preset,
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+        system_prompt=system_prompt,
+        user_prompt=user_prompt,
+        image_bytes=image_bytes,
+        image_mime_type=image_mime_type,
+        json_schema=json_schema,
+        extra_headers=extra_headers or {},
+        timeout_seconds=timeout_seconds,
+    )
+    parsed = extract_json_object(raw_text)
+    meta = {"latency_ms": int((time.perf_counter() - started_at) * 1000), "usage": usage}
+    return parsed, meta
+
+
+async def test_provider_vision_connection(
+    *,
+    provider_preset: AiProviderPreset,
+    base_url: str,
+    model: str,
+    api_key: str,
+    extra_headers: dict[str, str] | None = None,
+) -> int:
+    """用最小图片 JSON 请求测试 Vision provider 连通性。"""
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "summary": {"type": "string"},
+            "visible_text": {"type": "string"},
+            "confidence": {"type": "number"},
+            "limitations": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["summary", "visible_text", "confidence", "limitations"],
+    }
+    _, meta = await call_provider_vision_json(
+        provider_preset=provider_preset,
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+        system_prompt="你只返回 JSON，不要输出 Markdown。",
+        user_prompt="观察这张测试图片，返回最小 JSON。",
+        image_bytes=VISION_CONNECTION_TEST_IMAGE_PNG_BYTES,
+        image_mime_type="image/png",
+        json_schema=schema,
+        extra_headers=extra_headers,
+        timeout_seconds=20.0,
     )
     return int(meta["latency_ms"])
 
@@ -379,6 +473,78 @@ async def _call_openai_compatible(
         content = data["choices"][0]["message"]["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ProviderConnectionError("invalid_json", "大模型响应缺少 choices.message.content。") from exc
+    return str(content), data.get("usage") if isinstance(data.get("usage"), dict) else {}
+
+
+async def _call_openai_compatible_vision(
+    *,
+    provider_preset: AiProviderPreset,
+    base_url: str,
+    model: str,
+    api_key: str,
+    system_prompt: str,
+    user_prompt: str,
+    image_bytes: bytes,
+    image_mime_type: str,
+    json_schema: dict[str, Any],
+    extra_headers: dict[str, str],
+    timeout_seconds: float,
+) -> tuple[str, dict[str, Any]]:
+    preset = PROVIDER_PRESETS[provider_preset]
+    headers = _merge_headers(
+        {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        extra_headers,
+    )
+    image_mime = image_mime_type or "image/jpeg"
+    image_url = f"data:{image_mime};base64,{base64.b64encode(image_bytes).decode('ascii')}"
+    base_payload: dict[str, Any] = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_prompt},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": image_url, "detail": "auto"},
+                    },
+                ],
+            },
+        ],
+        "temperature": 0,
+        "stream": False,
+        "max_tokens": 1200,
+    }
+    if preset.supports_strict_schema:
+        response_format = {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "source_evidence_visual_observation",
+                "strict": True,
+                "schema": json_schema,
+            },
+        }
+    else:
+        response_format = {"type": "json_object"}
+
+    payload = {**base_payload, "response_format": response_format}
+    url = _normalize_chat_completions_url(base_url)
+    try:
+        data = await _post_json(url, headers=headers, payload=payload, timeout_seconds=timeout_seconds)
+    except ProviderConnectionError as exc:
+        if exc.category not in {"unknown", "invalid_json"} or not preset.supports_strict_schema:
+            raise
+        payload = {**base_payload, "response_format": {"type": "json_object"}}
+        data = await _post_json(url, headers=headers, payload=payload, timeout_seconds=timeout_seconds)
+
+    try:
+        content = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise ProviderConnectionError("invalid_json", "Vision 模型响应缺少 choices.message.content。") from exc
     return str(content), data.get("usage") if isinstance(data.get("usage"), dict) else {}
 
 

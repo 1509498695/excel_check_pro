@@ -639,7 +639,7 @@ function formatReferences(summary: RuleConfigSummary | undefined): string {
   border-radius: 10px;
   color: var(--color-primary);
   background: var(--color-primary-soft);
-  font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 16px;
   font-weight: 850;
 }
@@ -767,7 +767,7 @@ function formatReferences(summary: RuleConfigSummary | undefined): string {
   box-shadow: none;
   background: transparent;
   color: #334155;
-  font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.6;
   padding: 10px 16px;

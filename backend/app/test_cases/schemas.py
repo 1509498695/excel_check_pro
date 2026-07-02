@@ -23,6 +23,314 @@ class GenerationWarning(TestCaseBaseModel):
     message: str
 
 
+class ParsedSourceCell(TestCaseBaseModel):
+    """富来源中的稀疏单元格。"""
+
+    coord: str
+    row: int = Field(ge=1)
+    col: int = Field(ge=1)
+    text: str = ""
+    raw: Any | None = None
+
+
+class ParsedSourceResource(TestCaseBaseModel):
+    """富来源中的图片、附件或其它资源引用。"""
+
+    ref: str
+    type: str
+    source_id: str
+    position: str
+    filename: str = ""
+    file_token: str = ""
+    mime_type: str = ""
+    status: str = "pending"
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class UnsupportedResourceCandidate(TestCaseBaseModel):
+    """无法直接作为视觉/附件证据使用的资源候选。"""
+
+    kind: str
+    token: str = ""
+    block_id: str = ""
+    position: str = ""
+    source: str = ""
+    status: str = "unsupported"
+    supported: bool = False
+    pointer_block_id: str | None = None
+    cell_block_id: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ParsedSourceUnit(TestCaseBaseModel):
+    """富来源中的一个可追踪片段。"""
+
+    unit_id: str
+    kind: str
+    title: str = ""
+    path: str = ""
+    cells: list[ParsedSourceCell] = Field(default_factory=list)
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ParsedSource(TestCaseBaseModel):
+    """Source Evidence reader 的通用 Parsed Source 输出。"""
+
+    source_type: str = ""
+    title: str
+    doc_type: str
+    token: str
+    url: str
+    markdown: str = ""
+    source_units: list[ParsedSourceUnit] = Field(default_factory=list)
+    resources: list[ParsedSourceResource] = Field(default_factory=list)
+    unsupported_resource_candidates: list[UnsupportedResourceCandidate] = Field(
+        default_factory=list
+    )
+    raw_manifest: dict[str, Any] = Field(default_factory=dict)
+    warnings: list[GenerationWarning] = Field(default_factory=list)
+
+
+class ParsedFeishuSource(ParsedSource):
+    """飞书富读取 adapter 的 Parsed Source 兼容类型。"""
+
+
+class SourceEvidenceRunCreateRequest(TestCaseBaseModel):
+    """创建 Source Evidence Run 的请求。"""
+
+    source_type: Literal["feishu", "svn_file"]
+    source_url: str = Field(min_length=1)
+
+
+class SourceEvidenceRunResponse(TestCaseBaseModel):
+    """Source Evidence Run 摘要响应，不返回原文或本地路径。"""
+
+    id: int
+    status: str
+    source_type: str
+    source_summary: str = ""
+    source_title: str = ""
+    source_identifier: str = ""
+    created_at: str | None = None
+    expires_at: str | None = None
+    warnings: list[GenerationWarning] = Field(default_factory=list)
+    resource_count: int = Field(default=0, ge=0)
+
+
+class SourceEvidenceCapabilityItem(TestCaseBaseModel):
+    """Source Evidence 运行能力单项状态。"""
+
+    key: str
+    label: str
+    configured: bool = False
+    available: bool = False
+    status: str = "missing"
+    message: str = ""
+    action: str = ""
+    level: Literal["info", "warning", "error"] = "warning"
+
+
+class SourceEvidenceCapabilityStatusResponse(TestCaseBaseModel):
+    """当前项目 Source Evidence 运行能力状态。"""
+
+    svn_credential_configured: bool = False
+    source_evidence_svn_roots_configured: bool = False
+    vision_ai_configured: bool = False
+    soffice_configured: bool = False
+    soffice_available: bool = False
+    is_project_admin: bool = False
+    items: list[SourceEvidenceCapabilityItem] = Field(default_factory=list)
+    warnings: list[GenerationWarning] = Field(default_factory=list)
+    admin_details: dict[str, Any] | None = None
+
+
+class SourceEvidenceAuthorizationRequestResponse(TestCaseBaseModel):
+    """Source Evidence 飞书授权请求结果。"""
+
+    status: str
+    message: str = ""
+    authorization_id: int | None = None
+    target_mode: str = "not_sent"
+    sent_targets_count: int = Field(default=0, ge=0)
+    failed_targets_count: int = Field(default=0, ge=0)
+    fallback_to_default_chat: bool = False
+    owner_candidates_truncated: bool = False
+    expires_at: str | None = None
+    can_retry_read: bool = False
+
+
+class SourceEvidenceAuthorizationAuditItem(TestCaseBaseModel):
+    """Source Evidence 授权复用审计摘要，不含源 token/URL。"""
+
+    id: int
+    project_id: int
+    app_id: str = ""
+    doc_type: str = ""
+    permission: str = "edit"
+    status: str = ""
+    source_fingerprint: str = ""
+    source_alias_fingerprints: list[str] = Field(default_factory=list)
+    originating_run_id: int | None = None
+    target_mode: str = "not_sent"
+    sent_targets_count: int = Field(default=0, ge=0)
+    failed_targets_count: int = Field(default=0, ge=0)
+    owner_candidates_truncated: bool = False
+    authorized_by_open_id: str = ""
+    authorized_by_display_name_masked: str = ""
+    state_expires_at: str | None = None
+    authorized_at: str | None = None
+    expires_at: str | None = None
+    invalidated_at: str | None = None
+    invalidated_by: int | None = None
+    last_error_summary: str = ""
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class SourceEvidenceAuthorizationAuditListResponse(TestCaseBaseModel):
+    """Source Evidence 授权审计列表。"""
+
+    items: list[SourceEvidenceAuthorizationAuditItem] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
+    limit: int = Field(default=50, ge=1)
+    offset: int = Field(default=0, ge=0)
+
+
+class SourceEvidenceResourceResponse(TestCaseBaseModel):
+    """Source Evidence 资源清单响应。"""
+
+    id: int
+    ref: str
+    type: str
+    position: str = ""
+    filename: str = ""
+    download_status: str = "pending"
+    adoption_status: str = "unobserved"
+    mime_type: str = ""
+
+
+class SourceEvidenceResourceListResponse(TestCaseBaseModel):
+    """Source Evidence Run 资源列表响应。"""
+
+    items: list[SourceEvidenceResourceResponse] = Field(default_factory=list)
+    run_status: str | None = None
+    warnings: list[GenerationWarning] = Field(default_factory=list)
+
+
+class SourceEvidenceVisualCandidateResponse(TestCaseBaseModel):
+    """Source Evidence 视觉候选安全响应，不返回本地路径或 token。"""
+
+    ref: str
+    type: str
+    position: str = ""
+    filename: str = ""
+    status: str = ""
+    selectable: bool = False
+    recommended: bool = False
+    selected: bool = False
+    recommendation_reasons: list[str] = Field(default_factory=list)
+    download_status: str = "pending"
+    adoption_status: str = "unobserved"
+    dimensions: dict[str, int] = Field(default_factory=dict)
+
+
+class SourceEvidenceVisualCandidatesResponse(TestCaseBaseModel):
+    """Source Evidence 视觉候选列表响应。"""
+
+    items: list[SourceEvidenceVisualCandidateResponse] = Field(default_factory=list)
+    recommended_refs: list[str] = Field(default_factory=list)
+    selected_refs: list[str] = Field(default_factory=list)
+    warnings: list[GenerationWarning] = Field(default_factory=list)
+    run_status: str | None = None
+
+
+class SourceEvidenceVisualSelectionRequest(TestCaseBaseModel):
+    """替换式保存用户选择的视觉候选 ref。"""
+
+    selected_refs: list[str] = Field(default_factory=list)
+
+
+class SourceEvidenceObservationResponse(TestCaseBaseModel):
+    """Source Evidence 视觉观察安全响应。"""
+
+    id: int
+    ref: str
+    resource_id: int | None = None
+    type: str = ""
+    position: str = ""
+    filename: str = ""
+    status: str = "observed"
+    summary: str = ""
+    visible_text: str = ""
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    limitations: list[str] = Field(default_factory=list)
+    source: dict[str, Any] = Field(default_factory=dict)
+    created_by: int | None = None
+    created_at: str | None = None
+    adopted_by: int | None = None
+    adopted_at: str | None = None
+    revoked_at: str | None = None
+
+
+class SourceEvidenceObservationListResponse(TestCaseBaseModel):
+    """Source Evidence 视觉观察列表响应。"""
+
+    items: list[SourceEvidenceObservationResponse] = Field(default_factory=list)
+    warnings: list[GenerationWarning] = Field(default_factory=list)
+    run_status: str | None = None
+
+
+class SourceEvidenceAdoptVisualEvidenceRequest(TestCaseBaseModel):
+    """批量采纳已观察视觉证据。"""
+
+    observation_ids: list[int] = Field(default_factory=list)
+
+
+class SourceEvidenceCleanupAuditResource(TestCaseBaseModel):
+    """Source Evidence 清理审计中的资源摘要。"""
+
+    resource_id: int | None = None
+    run_id: int | None = None
+    project_id: int | None = None
+    ref: str = ""
+    type: str = ""
+    filename: str = ""
+    status: str = ""
+    download_status: str = ""
+    created_at: str | None = None
+    cleaned_at: str | None = None
+
+
+class SourceEvidenceCleanupAuditItem(TestCaseBaseModel):
+    """Source Evidence Cleanup Audit Summary，不含已清理内容。"""
+
+    run_id: int
+    project_id: int
+    source_type: str = ""
+    source_identifier: str = ""
+    source_title: str = ""
+    status_before: str = ""
+    status_after: str = "cleaned"
+    created_by: int | None = None
+    cleaned_by: int | None = None
+    created_at: str | None = None
+    expires_at: str | None = None
+    cleaned_at: str | None = None
+    error_summary: str = ""
+    counts: dict[str, int] = Field(default_factory=dict)
+    resources: list[SourceEvidenceCleanupAuditResource] = Field(default_factory=list)
+
+
+class SourceEvidenceCleanupAuditListResponse(TestCaseBaseModel):
+    """Source Evidence 清理审计列表响应。"""
+
+    items: list[SourceEvidenceCleanupAuditItem] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
+    limit: int = Field(default=50, ge=1)
+    offset: int = Field(default=0, ge=0)
+
+
 class PlanningSnapshotLimits(TestCaseBaseModel):
     """策划案快照预算限制。"""
 
@@ -153,6 +461,8 @@ class TestCaseGenerationRequest(TestCaseBaseModel):
     """根据策划案快照生成蓝图和用例的请求。"""
 
     planning_snapshot: PlanningSnapshotResponse
+    source_evidence_run_id: int | None = Field(default=None, ge=1)
+    adopted_visual_evidence_ids: list[int] = Field(default_factory=list)
     snapshot_brief_markdown: str | None = None
     reference_ids: list[int] = Field(default_factory=list)
     primary_reference_id: int | None = None
@@ -184,6 +494,10 @@ class TestCaseExportRequest(TestCaseBaseModel):
     export_columns: list[str] = Field(default_factory=list)
     primary_reference_profile: dict[str, Any] | None = None
     source_summary: str = ""
+    source_evidence_run_id: int | None = Field(default=None, ge=1)
+    adopted_visual_evidence_ids: list[int] = Field(default_factory=list)
+    source_evidence_summary: str = ""
+    evidence_summary: str = ""
 
 
 class ReferenceProfileColumn(TestCaseBaseModel):

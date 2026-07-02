@@ -2,9 +2,16 @@
    运行时样式 token 的唯一入口。Tailwind token 应与本文件保持语义一致，
    组件和页面样式优先引用这里的 CSS variables。 */
 :root {
+  --font-sans:
+    'Inter', 'Segoe UI', 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono:
+    'JetBrains Mono', 'Cascadia Mono', 'SFMono-Regular', Consolas, 'Liberation Mono',
+    ui-monospace, monospace;
+
   font-family:
-    'Inter', 'Noto Sans SC', 'SF Pro Display', 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', sans-serif;
+    var(--font-sans);
+  --el-font-family: var(--font-sans);
   color: #0f172a;
   background: #f6f8fc;
   line-height: 1.6;
@@ -71,6 +78,7 @@
   --ui-control-height-sm: 36px;
   --ui-control-height-md: 42px;
   --ui-control-radius: 10px;
+  --ui-input-radius: 6px;
   --ui-table-row-height: 50px;
   --ui-textarea-min-height-md: 80px;
 
@@ -101,7 +109,13 @@
   --success: #30d158;
   --warning: #ff9f0a;
   --danger: #ff453a;
-  --apple-transition: all 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+  --apple-transition:
+    background-color 180ms cubic-bezier(0.2, 0, 0, 1),
+    border-color 180ms cubic-bezier(0.2, 0, 0, 1),
+    box-shadow 180ms cubic-bezier(0.2, 0, 0, 1),
+    color 180ms cubic-bezier(0.2, 0, 0, 1),
+    opacity 180ms cubic-bezier(0.2, 0, 0, 1),
+    transform 180ms cubic-bezier(0.2, 0, 0, 1);
 }
 
 @media (min-width: 1440px) {

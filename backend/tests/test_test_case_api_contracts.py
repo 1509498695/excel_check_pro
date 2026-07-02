@@ -18,6 +18,22 @@ TEST_CASE_API_PATHS = {
     "/api/v1/test-cases/planning-snapshot/brief",
     "/api/v1/test-cases/generate",
     "/api/v1/test-cases/export",
+    "/api/v1/test-cases/source-evidence-cleanup-audits",
+    "/api/v1/test-cases/source-evidence-authorizations",
+    "/api/v1/test-cases/source-evidence-authorizations/oauth/callback",
+    "/api/v1/test-cases/source-evidence-authorizations/{authorization_id}/invalidate",
+    "/api/v1/test-cases/source-evidence-runs",
+    "/api/v1/test-cases/source-evidence-runs/upload",
+    "/api/v1/test-cases/source-evidence-runs/{run_id}",
+    "/api/v1/test-cases/source-evidence-runs/{run_id}/authorization-request",
+    "/api/v1/test-cases/source-evidence-runs/{run_id}/resources",
+    "/api/v1/test-cases/source-evidence-runs/{run_id}/visual-candidates",
+    "/api/v1/test-cases/source-evidence-runs/{run_id}/visual-selections",
+    "/api/v1/test-cases/source-evidence-runs/{run_id}/observations",
+    "/api/v1/test-cases/source-evidence-runs/{run_id}/adopted-visual-evidence",
+    "/api/v1/test-cases/source-evidence-runs/{run_id}/adopted-visual-evidence/{evidence_id}",
+    "/api/v1/test-cases/source-evidence-runs/{run_id}/snapshot",
+    "/api/v1/test-cases/source-evidence-runs/{run_id}/retry",
 }
 
 
@@ -103,6 +119,13 @@ def _export_request() -> dict[str, object]:
     }
 
 
+def _source_evidence_create_request() -> dict[str, object]:
+    return {
+        "source_type": "feishu",
+        "source_url": "https://demo.feishu.cn/docx/doccnabc123",
+    }
+
+
 async def _create_non_member_headers() -> dict[str, str]:
     async with async_session_factory() as session:
         owned_project = Project(name=f"tc-owned-{uuid4().hex[:8]}", description="")
@@ -148,6 +171,7 @@ async def test_test_case_api_routes_are_registered(test_db) -> None:
         ("/api/v1/test-cases/planning-snapshot/brief", _brief_request()),
         ("/api/v1/test-cases/generate", _generation_request()),
         ("/api/v1/test-cases/export", _export_request()),
+        ("/api/v1/test-cases/source-evidence-runs", _source_evidence_create_request()),
     ],
 )
 async def test_test_case_api_requires_login(
@@ -171,6 +195,7 @@ async def test_test_case_api_requires_login(
     [
         ("/api/v1/test-cases/planning-snapshot", _planning_snapshot_request()),
         ("/api/v1/test-cases/planning-snapshot/brief", _brief_request()),
+        ("/api/v1/test-cases/source-evidence-runs", _source_evidence_create_request()),
     ],
 )
 async def test_test_case_api_rejects_token_project_not_owned(

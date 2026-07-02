@@ -25,6 +25,8 @@
 | 交付、部署与工程治理 | [delivery-devops.md](delivery-devops.md) | Alembic、检查脚本、CI、源码包、生产安全配置。 |
 | 用例生成（V1 主链路已完成） | [test-case-generation.md](test-case-generation.md) | 独立用例生成页、项目级参考案例库、策划案快照、AI 生成、Excel 导出的 V1 需求与当前边界。 |
 | 用例生成飞书文档读取移植方案 | [test-case-generation-feishu-doc-migration.md](test-case-generation-feishu-doc-migration.md) | V1 完成后移植 `qa-case` 飞书文档富读取、Source Evidence Run、视觉证据、TTL 清理和 Vision AI 凭据的专项方案。 |
+| 用例生成 V2 需求文档 | [test-case-generation-v2-requirements.md](test-case-generation-v2-requirements.md) | V2 用户目标、范围、角色、流程、验收和测试覆盖要求。 |
+| 用例生成 V2 Source Evidence | [test-case-generation-v2-source-evidence.md](test-case-generation-v2-source-evidence.md) | 飞书/本地/SVN 来源统一 Source Evidence Run、`.xls` 图片转换、视觉证据采纳和校验。 |
 
 ## 文档边界
 

@@ -159,7 +159,9 @@ async function submitCreateRule(): Promise<void> {
       <template #actions>
         <el-input
           v-model="keyword"
-          placeholder="搜索查询类型、数据根或文件"
+          name="query-rule-search"
+          autocomplete="off"
+          placeholder="搜索查询类型、数据根或文件…"
           :prefix-icon="Search"
           clearable
           size="default"
@@ -193,6 +195,7 @@ async function submitCreateRule(): Promise<void> {
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
             >
               <path d="M8 6h13" />
               <path d="M8 12h13" />
@@ -209,6 +212,7 @@ async function submitCreateRule(): Promise<void> {
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
             >
               <path d="M20 6 9 17l-5-5" />
               <circle cx="12" cy="12" r="10" />
@@ -221,6 +225,7 @@ async function submitCreateRule(): Promise<void> {
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
             >
               <path d="M12 20h9" />
               <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z" />
@@ -233,6 +238,7 @@ async function submitCreateRule(): Promise<void> {
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
             >
               <path d="M10.3 3.6 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.6a2 2 0 0 0-3.4 0Z" />
               <path d="M12 9v4" />
@@ -246,6 +252,7 @@ async function submitCreateRule(): Promise<void> {
               stroke-width="2"
               stroke-linecap="round"
               stroke-linejoin="round"
+              aria-hidden="true"
             >
               <circle cx="12" cy="12" r="10" />
               <path d="M12 6v6l4 2" />
@@ -342,15 +349,15 @@ async function submitCreateRule(): Promise<void> {
         <div class="query-rule-create-form">
           <label>
             <span>查询类型</span>
-            <el-input v-model="createForm.queryType" placeholder="例如：礼包" />
+            <el-input v-model="createForm.queryType" name="query-type" autocomplete="off" placeholder="例如：礼包…" />
           </label>
           <label>
             <span>数据根</span>
-            <el-input v-model="createForm.queryRoot" placeholder="例如：game_datas" />
+            <el-input v-model="createForm.queryRoot" name="query-root" autocomplete="off" spellcheck="false" placeholder="例如：game_datas…" />
           </label>
           <label>
             <span>配置文件</span>
-            <el-input v-model="createForm.fileName" placeholder="例如：IAPConfig.xls" />
+            <el-input v-model="createForm.fileName" name="query-file-name" autocomplete="off" spellcheck="false" placeholder="例如：IAPConfig.xls…" />
           </label>
           <p>系统会根据以上字段生成单条查询规则 Markdown 模板，创建成功后进入详情页继续编辑。</p>
         </div>

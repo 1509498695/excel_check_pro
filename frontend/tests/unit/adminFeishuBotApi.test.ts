@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   apiGetFeishuBotConfig,
+  apiGetProjectVisionAiConfig,
+  apiGetSourceEvidenceSvnRoots,
+  apiSaveProjectVisionAiConfig,
+  apiSaveSourceEvidenceSvnRoots,
+  apiTestProjectVisionAiConfig,
   apiTestProjectSvnCredential,
   apiUpsertFeishuBotConfig,
 } from '../../src/api/admin'
@@ -32,6 +37,91 @@ describe('admin feishu bot api', () => {
       '/api/v1/admin/projects/12/svn-credential/test',
       { method: 'POST' },
     )
+  })
+
+  it('loads and saves Source Evidence SVN Roots through dedicated endpoints', async () => {
+    const payload = {
+      items: [
+        {
+          alias: 'game_datas',
+          display_name: '游戏配置主目录',
+          svn_url: 'https://svn.example.com/game/',
+          enabled: true,
+        },
+      ],
+    }
+
+    await apiGetSourceEvidenceSvnRoots(12)
+    await apiSaveSourceEvidenceSvnRoots(12, payload)
+
+    expect(apiFetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/v1/admin/projects/12/source-evidence-svn-roots',
+    )
+    expect(apiFetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/v1/admin/projects/12/source-evidence-svn-roots',
+      {
+        method: 'PUT',
+        body: JSON.stringify(payload),
+      },
+    )
+  })
+
+  it('loads, saves and tests project Vision AI config through dedicated endpoints', async () => {
+    await apiGetProjectVisionAiConfig(12)
+    await apiSaveProjectVisionAiConfig(12, {
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      base_url: 'https://api.openai.com/v1',
+      api_key: 'sk-vision-secret',
+      enabled: true,
+    })
+    await apiTestProjectVisionAiConfig(12)
+
+    expect(apiFetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/v1/admin/projects/12/vision-ai-config',
+    )
+    expect(apiFetchMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/v1/admin/projects/12/vision-ai-config',
+      {
+        method: 'PUT',
+        body: JSON.stringify({
+          provider: 'openai',
+          model: 'gpt-4o-mini',
+          base_url: 'https://api.openai.com/v1',
+          enabled: true,
+          api_key: 'sk-vision-secret',
+        }),
+      },
+    )
+    expect(apiFetchMock).toHaveBeenNthCalledWith(
+      3,
+      '/api/v1/admin/projects/12/vision-ai-config/test',
+      { method: 'POST' },
+    )
+  })
+
+  it('does not submit blank Vision AI API key as a clear operation', async () => {
+    await apiSaveProjectVisionAiConfig(12, {
+      provider: 'openai',
+      model: 'gpt-4o-mini',
+      base_url: 'https://api.openai.com/v1',
+      api_key: null,
+      enabled: true,
+    })
+
+    expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/admin/projects/12/vision-ai-config', {
+      method: 'PUT',
+      body: JSON.stringify({
+        provider: 'openai',
+        model: 'gpt-4o-mini',
+        base_url: 'https://api.openai.com/v1',
+        enabled: true,
+      }),
+    })
   })
 
   it('saves legacy base config fields', async () => {

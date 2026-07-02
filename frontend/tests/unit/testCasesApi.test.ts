@@ -1,13 +1,28 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  createLocalFileSourceEvidenceRun,
+  createSourceEvidenceRun,
   createReferenceCategory,
   deleteReferenceFile,
   exportTestCaseWorkbook,
+  fetchSourceEvidenceCleanupAudits,
+  fetchSourceEvidenceCapabilities,
+  fetchSourceEvidenceResources,
+  fetchSourceEvidenceRun,
+  fetchSourceEvidenceVisualCandidates,
+  fetchSourceEvidenceObservations,
   fetchReferenceCategories,
   fetchReferenceFiles,
   generateTestCases,
+  observeSourceEvidenceRun,
   readPlanningSnapshot,
+  readSourceEvidenceSnapshot,
+  requestSourceEvidenceAuthorization,
+  revokeSourceEvidenceVisualEvidence,
+  retrySourceEvidenceRun,
+  adoptSourceEvidenceVisualEvidence,
+  saveSourceEvidenceVisualSelections,
   setRecommendedPrimaryReference,
   uploadReferenceFile,
 } from '../../src/api/testCases'
@@ -93,6 +108,8 @@ describe('test case generation api', () => {
       },
       reference_ids: [],
       primary_reference_id: null,
+      source_evidence_run_id: 42,
+      adopted_visual_evidence_ids: [7],
     }
 
     await generateTestCases(payload)
@@ -117,6 +134,8 @@ describe('test case generation api', () => {
       },
       export_columns: ['case_id', 'title'],
       source_summary: '上传 Excel：planning.xlsx',
+      source_evidence_run_id: 42,
+      adopted_visual_evidence_ids: [7],
     }
 
     await exportTestCaseWorkbook(payload)
@@ -130,6 +149,105 @@ describe('test case generation api', () => {
         body: JSON.stringify(payload),
       },
     )
+  })
+
+  it('calls Source Evidence Run endpoints', async () => {
+    const createPayload = {
+      source_type: 'feishu' as const,
+      source_url: 'https://example.feishu.cn/docx/doc123',
+    }
+
+    await createSourceEvidenceRun(createPayload)
+    await fetchSourceEvidenceRun(42)
+    await fetchSourceEvidenceResources(42)
+    await fetchSourceEvidenceVisualCandidates(42)
+    await saveSourceEvidenceVisualSelections(42, { selected_refs: ['img_001'] })
+    await observeSourceEvidenceRun(42)
+    await fetchSourceEvidenceObservations(42)
+    await adoptSourceEvidenceVisualEvidence(42, { observation_ids: [7] })
+    await revokeSourceEvidenceVisualEvidence(42, 7)
+    await readSourceEvidenceSnapshot(42)
+    await retrySourceEvidenceRun(42)
+    await requestSourceEvidenceAuthorization(42)
+    await fetchSourceEvidenceCapabilities()
+    await fetchSourceEvidenceCleanupAudits({ limit: 25, offset: 50 })
+
+    expect(apiFetchMock).toHaveBeenNthCalledWith(1, '/api/v1/test-cases/source-evidence-runs', {
+      method: 'POST',
+      body: JSON.stringify(createPayload),
+    })
+    expect(apiFetchMock).toHaveBeenNthCalledWith(2, '/api/v1/test-cases/source-evidence-runs/42')
+    expect(apiFetchMock).toHaveBeenNthCalledWith(3, '/api/v1/test-cases/source-evidence-runs/42/resources')
+    expect(apiFetchMock).toHaveBeenNthCalledWith(4, '/api/v1/test-cases/source-evidence-runs/42/visual-candidates')
+    expect(apiFetchMock).toHaveBeenNthCalledWith(5, '/api/v1/test-cases/source-evidence-runs/42/visual-selections', {
+      method: 'POST',
+      body: JSON.stringify({ selected_refs: ['img_001'] }),
+    })
+    expect(apiFetchMock).toHaveBeenNthCalledWith(6, '/api/v1/test-cases/source-evidence-runs/42/observations', {
+      method: 'POST',
+    })
+    expect(apiFetchMock).toHaveBeenNthCalledWith(7, '/api/v1/test-cases/source-evidence-runs/42/observations')
+    expect(apiFetchMock).toHaveBeenNthCalledWith(
+      8,
+      '/api/v1/test-cases/source-evidence-runs/42/adopted-visual-evidence',
+      {
+        method: 'POST',
+        body: JSON.stringify({ observation_ids: [7] }),
+      },
+    )
+    expect(apiFetchMock).toHaveBeenNthCalledWith(
+      9,
+      '/api/v1/test-cases/source-evidence-runs/42/adopted-visual-evidence/7',
+      {
+        method: 'DELETE',
+      },
+    )
+    expect(apiFetchMock).toHaveBeenNthCalledWith(10, '/api/v1/test-cases/source-evidence-runs/42/snapshot', {
+      method: 'POST',
+    })
+    expect(apiFetchMock).toHaveBeenNthCalledWith(11, '/api/v1/test-cases/source-evidence-runs/42/retry', {
+      method: 'POST',
+    })
+    expect(apiFetchMock).toHaveBeenNthCalledWith(
+      12,
+      '/api/v1/test-cases/source-evidence-runs/42/authorization-request',
+      {
+        method: 'POST',
+      },
+    )
+    expect(apiFetchMock).toHaveBeenNthCalledWith(
+      13,
+      '/api/v1/test-cases/source-evidence-capabilities',
+    )
+    expect(apiFetchMock).toHaveBeenNthCalledWith(
+      14,
+      '/api/v1/test-cases/source-evidence-cleanup-audits?limit=25&offset=50',
+    )
+  })
+
+  it('creates svn_file Source Evidence runs and uploads local source evidence files', async () => {
+    const svnPayload = {
+      source_type: 'svn_file' as const,
+      source_url: 'https://samosvn/data/project/samo/GameDatas/QuestReward.xls',
+    }
+    const file = new File(['xlsx'], 'QuestReward.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    })
+
+    await createSourceEvidenceRun(svnPayload)
+    await createLocalFileSourceEvidenceRun(file)
+
+    expect(apiFetchMock).toHaveBeenNthCalledWith(1, '/api/v1/test-cases/source-evidence-runs', {
+      method: 'POST',
+      body: JSON.stringify(svnPayload),
+    })
+    expect(apiFetchMock).toHaveBeenNthCalledWith(2, '/api/v1/test-cases/source-evidence-runs/upload', {
+      method: 'POST',
+      body: expect.any(FormData),
+    })
+    const formData = apiFetchMock.mock.calls[1]?.[1]?.body
+    expect(formData).toBeInstanceOf(FormData)
+    expect((formData as FormData).get('file')).toBe(file)
   })
 
   it('fetches reference categories and files', async () => {

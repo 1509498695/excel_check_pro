@@ -13,6 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.database import async_session_factory
 from backend.app.models import ExecutionResultItemRecord, ExecutionRunRecord
+from backend.app.test_cases.source_evidence_cleanup import (
+    SourceEvidenceCleanupRuns,
+    cleanup_expired_source_evidence_runs,
+    collect_expired_source_evidence_runs,
+)
 from backend.config import settings
 
 
@@ -58,6 +63,9 @@ class RuntimeCleanupReport:
     deleted: list[CleanupFileCandidate] = field(default_factory=list)
     skipped: list[CleanupSkippedPath] = field(default_factory=list)
     execution_runs: CleanupExecutionRuns = field(default_factory=CleanupExecutionRuns)
+    source_evidence_runs: SourceEvidenceCleanupRuns = field(
+        default_factory=SourceEvidenceCleanupRuns
+    )
 
     def to_dict(self) -> dict:
         """返回 JSON 友好的字典。"""
@@ -353,10 +361,18 @@ async def collect_runtime_cleanup_candidates(
                 retention_days=settings.execution_result_retention_days,
                 now=current_time,
             )
+            source_evidence_runs = await collect_expired_source_evidence_runs(
+                session,
+                now=current_time,
+            )
     else:
         execution_runs = await _collect_execution_runs(
             db,
             retention_days=settings.execution_result_retention_days,
+            now=current_time,
+        )
+        source_evidence_runs = await collect_expired_source_evidence_runs(
+            db,
             now=current_time,
         )
 
@@ -365,6 +381,7 @@ async def collect_runtime_cleanup_candidates(
         candidates=candidates,
         skipped=skipped,
         execution_runs=execution_runs,
+        source_evidence_runs=source_evidence_runs,
     )
 
 
@@ -385,6 +402,16 @@ async def _delete_execution_runs(
         )
     )
     await db.commit()
+
+
+async def _cleanup_source_evidence_runs(
+    db: AsyncSession,
+    *,
+    now: dt.datetime,
+) -> SourceEvidenceCleanupRuns:
+    cleaned = await cleanup_expired_source_evidence_runs(db, now=now, cleaned_by=None)
+    await db.commit()
+    return cleaned
 
 
 def _delete_candidate(candidate: CleanupFileCandidate) -> None:
@@ -437,8 +464,16 @@ async def cleanup_runtime(
     if db is None:
         async with async_session_factory() as session:
             await _delete_execution_runs(session, report.execution_runs)
+            source_evidence_runs = await _cleanup_source_evidence_runs(
+                session,
+                now=now or _utc_now(),
+            )
     else:
         await _delete_execution_runs(db, report.execution_runs)
+        source_evidence_runs = await _cleanup_source_evidence_runs(
+            db,
+            now=now or _utc_now(),
+        )
 
     return RuntimeCleanupReport(
         dry_run=False,
@@ -446,4 +481,5 @@ async def cleanup_runtime(
         deleted=deleted,
         skipped=skipped,
         execution_runs=report.execution_runs,
+        source_evidence_runs=source_evidence_runs,
     )

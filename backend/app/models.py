@@ -20,6 +20,22 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship, validates
 from backend.app.database import Base
 
 
+SOURCE_EVIDENCE_DEFAULT_TTL_DAYS = 7
+SOURCE_EVIDENCE_AUTHORIZATION_DEFAULT_TTL_DAYS = 90
+
+
+def _default_source_evidence_expires_at() -> datetime.datetime:
+    return datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+        days=SOURCE_EVIDENCE_DEFAULT_TTL_DAYS,
+    )
+
+
+def _default_source_evidence_authorization_expires_at() -> datetime.datetime:
+    return datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+        days=SOURCE_EVIDENCE_AUTHORIZATION_DEFAULT_TTL_DAYS,
+    )
+
+
 class Project(Base):
     """项目表。"""
 
@@ -227,6 +243,41 @@ class ProjectQueryRootRecord(Base):
     )
 
 
+class ProjectSourceEvidenceSvnRootRecord(Base):
+    """项目级 Source Evidence SVN 文件读取边界。"""
+
+    __tablename__ = "project_source_evidence_svn_roots"
+    __table_args__ = (
+        Index(
+            "uq_project_source_evidence_svn_roots_project_alias",
+            "project_id",
+            "alias",
+            unique=True,
+        ),
+        Index(
+            "ix_project_source_evidence_svn_roots_project_status",
+            "project_id",
+            "status",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    alias: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(128), default="")
+    svn_root_url: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="enabled", index=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class ProjectSvnCredentialRecord(Base):
     """项目级 SVN 凭据配置（按 project_id 隔离）。"""
 
@@ -280,6 +331,47 @@ class ProjectAiCredentialRecord(Base):
     auto_match_threshold: Mapped[float] = mapped_column(Float, default=0.9)
     candidate_threshold: Mapped[float] = mapped_column(Float, default=0.6)
     max_candidates: Mapped[int] = mapped_column(default=10)
+    last_test_status: Mapped[str] = mapped_column(String(32), default="")
+    last_test_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_test_error_summary: Mapped[str] = mapped_column(Text, default="")
+    updated_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ProjectVisionAiCredentialRecord(Base):
+    """项目级 Vision AI 模型凭据配置（按 project_id 隔离）。"""
+
+    __tablename__ = "project_vision_ai_credentials"
+    __table_args__ = (
+        Index(
+            "ix_project_vision_ai_credentials_project_id",
+            "project_id",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    provider_preset: Mapped[str] = mapped_column(String(64), nullable=False)
+    base_url: Mapped[str] = mapped_column(Text, default="")
+    model: Mapped[str] = mapped_column(String(128), default="")
+    encrypted_api_key: Mapped[str] = mapped_column(Text, default="")
+    extra_headers_json: Mapped[str] = mapped_column(Text, default="{}")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     last_test_status: Mapped[str] = mapped_column(String(32), default="")
     last_test_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime(timezone=True),
@@ -590,3 +682,274 @@ class TestCaseReferenceFileRecord(Base):
     updated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class SourceEvidenceAuthorizationRecord(Base):
+    """Source Evidence 飞书源文档授权复用记录。
+
+    本表只保存哈希、状态和最小审计信息，不保存完整 URL、源 token、
+    wiki token、file token、OAuth code 或 user_access_token。
+    """
+
+    __tablename__ = "source_evidence_authorizations"
+    __table_args__ = (
+        Index(
+            "uq_source_evidence_authorizations_project_app_source_perm",
+            "project_id",
+            "app_id",
+            "source_token_hash",
+            "permission",
+            unique=True,
+        ),
+        Index(
+            "uq_source_evidence_authorizations_state_hash",
+            "state_hash",
+            unique=True,
+        ),
+        Index(
+            "ix_source_evidence_authorizations_project_status_expires",
+            "project_id",
+            "status",
+            "expires_at",
+        ),
+        Index(
+            "ix_source_evidence_authorizations_project_originating_run",
+            "project_id",
+            "originating_run_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    app_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    doc_type: Mapped[str] = mapped_column(String(32), default="")
+    permission: Mapped[str] = mapped_column(String(16), default="edit")
+    source_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_token_alias_hashes_json: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(32), default="authorization_sent")
+    state_hash: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    state_expires_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    originating_run_id: Mapped[int | None] = mapped_column(nullable=True)
+    target_mode: Mapped[str] = mapped_column(String(32), default="not_sent")
+    sent_targets_count: Mapped[int] = mapped_column(default=0)
+    failed_targets_count: Mapped[int] = mapped_column(default=0)
+    owner_candidates_truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    authorized_by_open_id: Mapped[str] = mapped_column(String(128), default="")
+    authorized_by_display_name_masked: Mapped[str] = mapped_column(String(128), default="")
+    authorized_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    expires_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_default_source_evidence_authorization_expires_at,
+        nullable=False,
+    )
+    invalidated_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    invalidated_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    last_error_summary: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class SourceEvidenceRunRecord(Base):
+    """用例生成 Source Evidence 读取 run。
+
+    本表只保存读取过程的生命周期、TTL 和最小审计字段，不保存蓝图、用例、
+    prompt 或 provider response。
+    """
+
+    __tablename__ = "source_evidence_runs"
+    __table_args__ = (
+        Index("ix_source_evidence_runs_project_id", "project_id"),
+        Index("ix_source_evidence_runs_status", "status"),
+        Index("ix_source_evidence_runs_project_status", "project_id", "status"),
+        Index("ix_source_evidence_runs_project_expires", "project_id", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_type: Mapped[str] = mapped_column(String(32), default="")
+    source_url: Mapped[str] = mapped_column(Text, default="")
+    source_token: Mapped[str] = mapped_column(Text, default="")
+    source_identifier: Mapped[str] = mapped_column(String(255), default="")
+    source_title: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(32), default="reading")
+    storage_path: Mapped[str] = mapped_column(Text, default="")
+    expires_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_default_source_evidence_expires_at,
+        nullable=False,
+    )
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    cleaned_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    error_summary: Mapped[str] = mapped_column(Text, default="")
+    raw_manifest_json: Mapped[str] = mapped_column(Text, default="{}")
+    minimal_audit_json: Mapped[str] = mapped_column(Text, default="{}")
+    cleaned_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    resources: Mapped[list["SourceEvidenceResourceRecord"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+    visual_observations: Mapped[list["SourceEvidenceVisualObservationRecord"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+
+
+class SourceEvidenceResourceRecord(Base):
+    """Source Evidence run 关联的资源文件元数据。"""
+
+    __tablename__ = "source_evidence_resources"
+    __table_args__ = (
+        Index("ix_source_evidence_resources_run_id", "run_id"),
+        Index("ix_source_evidence_resources_project_id", "project_id"),
+        Index("ix_source_evidence_resources_status", "status"),
+        Index("ix_source_evidence_resources_project_status", "project_id", "status"),
+        Index("ix_source_evidence_resources_run_ref", "run_id", "ref"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("source_evidence_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ref: Mapped[str] = mapped_column(String(128), default="")
+    resource_type: Mapped[str] = mapped_column(String(32), default="")
+    position: Mapped[str] = mapped_column(Text, default="")
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    file_token: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    download_status: Mapped[str] = mapped_column(String(32), default="pending")
+    local_path: Mapped[str] = mapped_column(Text, default="")
+    mime_type: Mapped[str] = mapped_column(String(128), default="")
+    observation_json: Mapped[str] = mapped_column(Text, default="")
+    visual_packet_path: Mapped[str] = mapped_column(Text, default="")
+    metadata_json: Mapped[str] = mapped_column(Text, default="{}")
+    cleaned_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    run: Mapped[SourceEvidenceRunRecord] = relationship(back_populates="resources")
+
+
+class SourceEvidenceVisualObservationRecord(Base):
+    """Source Evidence 视觉 observation / adopted evidence 轻量索引。"""
+
+    __tablename__ = "source_evidence_visual_observations"
+    __table_args__ = (
+        Index("ix_source_evidence_visual_observations_run_id", "run_id"),
+        Index("ix_source_evidence_visual_observations_project_id", "project_id"),
+        Index("ix_source_evidence_visual_observations_status", "status"),
+        Index(
+            "ix_source_evidence_visual_observations_project_status",
+            "project_id",
+            "status",
+        ),
+        Index(
+            "uq_source_evidence_visual_observations_run_ref",
+            "run_id",
+            "ref",
+            unique=True,
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("source_evidence_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    resource_id: Mapped[int | None] = mapped_column(
+        ForeignKey("source_evidence_resources.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    ref: Mapped[str] = mapped_column(String(128), default="")
+    position: Mapped[str] = mapped_column(Text, default="")
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(32), default="observed")
+    observation_path: Mapped[str] = mapped_column(Text, default="")
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    adopted_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    revoked_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    adopted_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    revoked_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    cleaned_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    run: Mapped[SourceEvidenceRunRecord] = relationship(back_populates="visual_observations")

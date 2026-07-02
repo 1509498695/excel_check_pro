@@ -21,7 +21,9 @@ from backend.app.admin.schemas import (
     MoveMemberProjectRequest,
     ProjectAiConfigRequest,
     ProjectCreateRequest,
+    SourceEvidenceSvnRootsUpdateRequest,
     ProjectUpdateRequest,
+    ProjectVisionAiConfigRequest,
     ResetUserPasswordRequest,
     SetMemberRoleRequest,
 )
@@ -33,6 +35,7 @@ from backend.app.ai.providers import (
     mask_api_key,
     resolve_provider_defaults,
     test_provider_connection,
+    test_provider_vision_connection,
 )
 from backend.app.database import get_db
 from backend.app.integrations.feishu_bot import (
@@ -43,7 +46,12 @@ from backend.app.integrations.feishu_bot import (
 )
 from backend.app.integrations.feishu_long_conn import long_conn_supervisor
 from backend.app.loaders.svn_credentials import SvnCredential
-from backend.app.loaders.svn_manager import SvnRemoteError, list_svn_directory
+from backend.app.loaders.svn_manager import (
+    SvnRemoteError,
+    enforce_host_allowlist,
+    list_svn_directory,
+    normalize_dir_url,
+)
 from backend.app.models import (
     FeishuBotBoundChatRecord,
     FeishuBotConfigRecord,
@@ -51,7 +59,9 @@ from backend.app.models import (
     Project,
     ProjectAiCredentialRecord,
     ProjectQueryRootRecord,
+    ProjectSourceEvidenceSvnRootRecord,
     ProjectSvnCredentialRecord,
+    ProjectVisionAiCredentialRecord,
     RuleConfigRecord,
     RuleConfigVersionRecord,
     User,
@@ -347,6 +357,11 @@ async def delete_project(
     await db.execute(
         delete(ProjectQueryRootRecord).where(
             ProjectQueryRootRecord.project_id == project_id
+        )
+    )
+    await db.execute(
+        delete(ProjectSourceEvidenceSvnRootRecord).where(
+            ProjectSourceEvidenceSvnRootRecord.project_id == project_id
         )
     )
     await db.execute(
@@ -1015,6 +1030,47 @@ async def test_project_svn_credential(
     }
 
 
+@router.get("/projects/{project_id}/source-evidence-svn-roots")
+async def get_source_evidence_svn_roots(
+    project_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """读取项目级 Source Evidence SVN Roots。"""
+    _require_project_management_access(ctx, project_id)
+    await _get_project_or_404(db, project_id)
+    roots = await _list_source_evidence_svn_roots(db, project_id)
+    return {
+        "code": 200,
+        "msg": "ok",
+        "data": {"items": [_serialize_source_evidence_svn_root(row) for row in roots]},
+    }
+
+
+@router.put("/projects/{project_id}/source-evidence-svn-roots")
+async def save_source_evidence_svn_roots(
+    project_id: int,
+    payload: SourceEvidenceSvnRootsUpdateRequest,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """替换保存项目级 Source Evidence SVN Roots。"""
+    _require_project_management_access(ctx, project_id)
+    await _get_project_or_404(db, project_id)
+    await _replace_source_evidence_svn_roots(db, project_id, payload.items)
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=400, detail="Source Evidence SVN Root 保存冲突，请重试") from exc
+    roots = await _list_source_evidence_svn_roots(db, project_id)
+    return {
+        "code": 200,
+        "msg": "保存成功",
+        "data": {"items": [_serialize_source_evidence_svn_root(row) for row in roots]},
+    }
+
+
 @router.get("/projects/{project_id}/ai-config")
 async def get_project_ai_config(
     project_id: int,
@@ -1119,6 +1175,110 @@ async def test_project_ai_config(
     return {"code": 200, "msg": "连接测试成功", "data": _serialize_project_ai_config(record)}
 
 
+@router.get("/projects/{project_id}/vision-ai-config")
+async def get_project_vision_ai_config(
+    project_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """读取项目级 Vision AI 配置；仅管理后台使用，不返回明文 API Key。"""
+    _require_project_management_access(ctx, project_id)
+    await _get_project_or_404(db, project_id)
+    record = await _get_project_vision_ai_credential(db, project_id)
+    return {"code": 200, "msg": "ok", "data": _serialize_project_vision_ai_config(record)}
+
+
+@router.put("/projects/{project_id}/vision-ai-config")
+async def save_project_vision_ai_config(
+    project_id: int,
+    payload: ProjectVisionAiConfigRequest,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """保存项目级 Vision AI 凭据。"""
+    _require_project_management_access(ctx, project_id)
+    await _get_project_or_404(db, project_id)
+    record = await _save_project_vision_ai_config(
+        db,
+        project_id=project_id,
+        payload=payload,
+        updated_by=ctx.user_id,
+    )
+    await db.commit()
+    await db.refresh(record)
+    return {"code": 200, "msg": "保存成功", "data": _serialize_project_vision_ai_config(record)}
+
+
+@router.delete("/projects/{project_id}/vision-ai-config", status_code=204)
+async def delete_project_vision_ai_config(
+    project_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    """清除项目级 Vision AI 配置。"""
+    _require_project_management_access(ctx, project_id)
+    await _get_project_or_404(db, project_id)
+    record = await _get_project_vision_ai_credential(db, project_id)
+    if record is not None:
+        await db.delete(record)
+        await db.commit()
+    return Response(status_code=204)
+
+
+@router.post("/projects/{project_id}/vision-ai-config/test")
+async def test_project_vision_ai_config(
+    project_id: int,
+    response: Response,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """使用已保存的项目级 Vision AI 凭据做轻量连通性测试。"""
+    _require_project_management_access(ctx, project_id)
+    await _get_project_or_404(db, project_id)
+    record = await _get_project_vision_ai_credential(db, project_id)
+    if record is None or not record.encrypted_api_key:
+        raise HTTPException(status_code=400, detail="请先保存项目级 Vision AI 凭据。")
+
+    try:
+        api_key = decrypt_secret(record.encrypted_api_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="项目级 Vision AI API Key 无法解密，请重新保存。") from exc
+    if not api_key:
+        raise HTTPException(status_code=400, detail="请先保存项目级 Vision AI API Key。")
+    if not record.enabled:
+        raise HTTPException(status_code=400, detail="项目级 Vision AI 当前未启用。")
+
+    try:
+        await test_provider_vision_connection(
+            provider_preset=record.provider_preset,  # type: ignore[arg-type]
+            base_url=record.base_url,
+            model=record.model,
+            api_key=api_key,
+            extra_headers=_parse_json_object(record.extra_headers_json),
+        )
+    except ProviderConnectionError as exc:
+        record.last_test_status = "failed"
+        record.last_test_at = datetime.now(timezone.utc)
+        record.last_test_error_summary = _sanitize_project_ai_error(exc.message, api_key)
+        db.add(record)
+        await db.commit()
+        await db.refresh(record)
+        response.status_code = exc.status_code
+        return {
+            "code": exc.status_code,
+            "msg": "连接测试失败",
+            "data": _serialize_project_vision_ai_config(record),
+        }
+
+    record.last_test_status = "success"
+    record.last_test_at = datetime.now(timezone.utc)
+    record.last_test_error_summary = ""
+    db.add(record)
+    await db.commit()
+    await db.refresh(record)
+    return {"code": 200, "msg": "连接测试成功", "data": _serialize_project_vision_ai_config(record)}
+
+
 async def _serialize_feishu_bot_config(
     db: AsyncSession,
     record: FeishuBotConfigRecord | None,
@@ -1219,6 +1379,18 @@ async def _list_enabled_remote_query_roots(
         for row in result.scalars().all()
         if _is_remote_svn_url(row.svn_root_url)
     ]
+
+
+async def _list_source_evidence_svn_roots(
+    db: AsyncSession,
+    project_id: int,
+) -> list[ProjectSourceEvidenceSvnRootRecord]:
+    result = await db.execute(
+        select(ProjectSourceEvidenceSvnRootRecord)
+        .where(ProjectSourceEvidenceSvnRootRecord.project_id == project_id)
+        .order_by(ProjectSourceEvidenceSvnRootRecord.id)
+    )
+    return list(result.scalars().all())
 
 
 def _is_remote_svn_url(raw_url: str | None) -> bool:
@@ -1323,7 +1495,30 @@ async def _get_project_ai_credential(
     return result.scalar_one_or_none()
 
 
+async def _get_project_vision_ai_credential(
+    db: AsyncSession,
+    project_id: int,
+) -> ProjectVisionAiCredentialRecord | None:
+    result = await db.execute(
+        select(ProjectVisionAiCredentialRecord).where(
+            ProjectVisionAiCredentialRecord.project_id == project_id
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 def _serialize_query_root(row: ProjectQueryRootRecord) -> dict[str, Any]:
+    return {
+        "alias": row.alias,
+        "display_name": row.display_name,
+        "svn_url": row.svn_root_url,
+        "enabled": row.status == "enabled",
+    }
+
+
+def _serialize_source_evidence_svn_root(
+    row: ProjectSourceEvidenceSvnRootRecord,
+) -> dict[str, Any]:
     return {
         "alias": row.alias,
         "display_name": row.display_name,
@@ -1432,6 +1627,44 @@ def _serialize_project_ai_config(
     }
 
 
+def _serialize_project_vision_ai_config(
+    record: ProjectVisionAiCredentialRecord | None,
+) -> dict[str, Any]:
+    if record is None or not record.encrypted_api_key:
+        return {
+            "configured": False,
+            "enabled": False,
+            "provider": "",
+            "model": "",
+            "base_url": "",
+            "masked_api_key": "",
+            "has_extra_headers": False,
+            "last_test_status": "",
+            "last_test_at": None,
+            "last_test_error_summary": "",
+            "updated_by": None,
+            "updated_at": None,
+        }
+    try:
+        api_key = decrypt_secret(record.encrypted_api_key)
+    except ValueError:
+        api_key = ""
+    return {
+        "configured": bool(api_key),
+        "enabled": bool(record.enabled),
+        "provider": record.provider_preset,
+        "model": record.model,
+        "base_url": record.base_url,
+        "masked_api_key": mask_api_key(api_key),
+        "has_extra_headers": bool(_parse_json_object(record.extra_headers_json)),
+        "last_test_status": record.last_test_status or "",
+        "last_test_at": record.last_test_at.isoformat() if record.last_test_at else None,
+        "last_test_error_summary": record.last_test_error_summary or "",
+        "updated_by": record.updated_by,
+        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+    }
+
+
 async def _save_project_ai_config(
     db: AsyncSession,
     *,
@@ -1480,6 +1713,52 @@ async def _save_project_ai_config(
     record.updated_by = updated_by
     db.add(record)
     await _mirror_project_ai_match_params_to_feishu_config(db, project_id, record)
+    return record
+
+
+async def _save_project_vision_ai_config(
+    db: AsyncSession,
+    *,
+    project_id: int,
+    payload: ProjectVisionAiConfigRequest,
+    updated_by: int | None,
+) -> ProjectVisionAiCredentialRecord:
+    base_url, model = resolve_provider_defaults(
+        payload.provider,
+        payload.base_url,
+        payload.model,
+    )
+    if not base_url or not model:
+        raise HTTPException(status_code=400, detail="请填写 Base URL 和模型名称。")
+
+    record = await _get_project_vision_ai_credential(db, project_id)
+    encrypted_key = record.encrypted_api_key if record else ""
+    if payload.api_key:
+        encrypted_key = encrypt_secret(payload.api_key)
+    if payload.enabled and not encrypted_key:
+        raise HTTPException(status_code=400, detail="启用项目级 Vision AI 前必须填写 API Key。")
+    if record is None and not encrypted_key:
+        raise HTTPException(status_code=400, detail="首次保存项目级 Vision AI 配置时必须填写 API Key。")
+
+    extra_headers_json = json.dumps(payload.extra_headers, ensure_ascii=False)
+    if record is None:
+        record = ProjectVisionAiCredentialRecord(
+            project_id=project_id,
+            provider_preset=payload.provider,
+            base_url=base_url,
+            model=model,
+            encrypted_api_key=encrypted_key,
+            extra_headers_json=extra_headers_json,
+        )
+    else:
+        record.provider_preset = payload.provider
+        record.base_url = base_url
+        record.model = model
+        record.encrypted_api_key = encrypted_key
+        record.extra_headers_json = extra_headers_json
+    record.enabled = payload.enabled
+    record.updated_by = updated_by
+    db.add(record)
     return record
 
 
@@ -1652,6 +1931,76 @@ async def _replace_query_roots(
                 status="enabled" if item["enabled"] else "disabled",
             )
         )
+
+
+async def _replace_source_evidence_svn_roots(
+    db: AsyncSession,
+    project_id: int,
+    roots: list[Any],
+) -> None:
+    normalized_rows: list[dict[str, Any]] = []
+    seen_aliases: set[str] = set()
+    for item in roots:
+        alias = item.alias.strip()
+        if alias in seen_aliases:
+            raise HTTPException(
+                status_code=400,
+                detail=f"source_evidence_svn_roots alias 重复：{alias}",
+            )
+        seen_aliases.add(alias)
+        raw_url = item.svn_url.strip()
+        if not raw_url:
+            raise HTTPException(
+                status_code=400,
+                detail=f"source_evidence_svn_roots.svn_url 不能为空：{alias}",
+            )
+        normalized_rows.append(
+            {
+                "alias": alias,
+                "display_name": item.display_name.strip(),
+                "svn_url": _normalize_source_evidence_svn_root_url(raw_url),
+                "enabled": item.enabled,
+            }
+        )
+
+    await db.execute(
+        delete(ProjectSourceEvidenceSvnRootRecord).where(
+            ProjectSourceEvidenceSvnRootRecord.project_id == project_id
+        )
+    )
+    for item in normalized_rows:
+        db.add(
+            ProjectSourceEvidenceSvnRootRecord(
+                project_id=project_id,
+                alias=item["alias"],
+                display_name=item["display_name"],
+                svn_root_url=item["svn_url"],
+                status="enabled" if item["enabled"] else "disabled",
+            )
+        )
+
+
+def _normalize_source_evidence_svn_root_url(raw_url: str) -> str:
+    try:
+        normalized = normalize_dir_url(raw_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    parsed = urlparse(normalized)
+    if parsed.username or parsed.password:
+        raise HTTPException(
+            status_code=400,
+            detail="Source Evidence SVN Root 不允许包含用户名或密码",
+        )
+    if parsed.query or parsed.fragment:
+        raise HTTPException(
+            status_code=400,
+            detail="Source Evidence SVN Root 不能包含 query 或 fragment",
+        )
+    try:
+        enforce_host_allowlist(parsed.hostname)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return normalized
 
 
 async def _upsert_project_svn_credential(

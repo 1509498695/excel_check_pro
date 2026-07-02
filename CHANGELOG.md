@@ -57,6 +57,20 @@
 ### 前端与体验
 
 - 新增 `/test-cases`“用例生成”页面，接入左侧导航、路由和预加载；页面现已接入真实策划案快照、生成、导出和参考案例库 API。
+- 全站前端样式进一步对齐个人/项目校验页：收敛旧毛玻璃和负字距装饰，统一按钮、弹窗、表单、流程节点和指标图标的显示质感，并补齐关键表单与装饰图标的可访问性属性。
+- 全站前端字体入口统一为共享正文与等宽字体 token，Element Plus、Tailwind、工作台页面、用例生成页和管理后台局部样式不再各自维护独立字体栈。
+- `/test-cases` 按最新设计图完成贴合验收：01 数据源三种来源态、02 当前来源跟随、03 Excel-only 参考案例库和 04 结果预览保持同一工作台结构，并继续避免展示完整 URL、token、open_id、Authorization、Bearer 或原始 prompt。
+- “用例生成”页面接入 Source Evidence Run：01 数据源新增飞书文档 URL 短期入口，支持读取富文档 snapshot、展示证据状态和资源清单抽屉，并在生成/导出时携带受控证据 run id；旧 Excel 与飞书电子表格单 Sheet 快照路径保持不变。
+- “用例生成”页面将本地文件、SVN 文件和飞书文档三入口统一到 Source Evidence Run：本地上传 `.xlsx/.xls/.png/.jpg/.jpeg/.webp` 直接创建 `local_file` run，SVN 文件 URL 创建 `svn_file` run，三者共用状态卡、TTL、warnings、资源清单、视觉观察/采纳、snapshot、生成和导出链路；本地/SVN V2 不再走旧 `uploaded_excel/planning-snapshot` 主链路。
+- “用例生成”页面新增 Source Evidence 运行能力状态提示：展示项目级 SVN 凭据、Source Evidence SVN Root、Vision AI 和 LibreOffice/soffice 可用性；SVN 运行能力缺失时禁用 SVN 文件读取，Vision 未配置时提示图片不会参与语义理解但不阻断文本/表格生成。
+- 修复 Source Evidence 运行能力状态在 Windows 本地配置 LibreOffice/soffice 后仍显示未配置的问题，并避免 Vision AI 最近测试已成功时继续展示历史失败摘要。
+- 修复 Source Evidence 大型本地工作簿生成用例不稳定的问题：生成 prompt 现在按预算截断超大 snapshot 并返回 warning，同时兼容模型把蓝图列表字段返回为对象映射的常见形态。
+- 修复 Source Evidence 生成时模型将蓝图 warnings 返回为 `{id, description}` 导致 “Field required” 的问题，后端现在会归一化为稳定的 `{source, level, message}` warning 契约。
+- 管理后台新增 Source Evidence 运行配置卡：项目管理员可维护 Source Evidence SVN Root，并配置、测试或清除 Project Vision AI Credential，避免生成页提示用户去 `/admin` 后找不到对应入口。
+- 管理后台 Project Vision AI Credential 表单改为只推荐明确的 OpenAI-compatible 视觉模型入口，并对已保存的 DeepSeek、`qwen-plus`、`qwen3.6-plus`、`glm-5.2` 等文本 provider/model 给出风险提示，避免文本模型被误当作 Source Evidence 图片 observation 模型。
+- 项目级 AI 配置按通义千问百炼和智谱最新 API 文档更新默认值：通义千问文本默认 `qwen3.6-plus`，智谱文本默认 `glm-5.2`；Vision 推荐新增 Qwen `qwen3.7-plus` 和智谱 `glm-5v-turbo`。
+- “用例生成”页面接入并验收 Source Evidence 授权申请：权限不足或资源下载失败时可显式发送授权卡，等待授权/已授权/发送失败/过期清理等状态会在当前 Source Evidence 状态区提示，并继续避免展示完整 URL、文档 token、文件 token 或 open_id 明细。
+- “用例生成”页面的 Source Evidence 资源抽屉新增 Vision observation 与采纳/撤销采纳流程；已观察未采纳不进入生成，生成/导出只携带已采纳视觉证据。
 - “用例生成”页面的生成设置支持主参考 Sheet 选择框；Excel 参考案例按 Sheet 保存画像，Markdown/TXT 参考案例显示无 Sheet 禁用态。
 - “用例生成”页面新增页面态 01 数据源模块，复用个人校验数据源添加体验，并将原策划案来源卡片调整为来源与 Sheet 选择区。
 - “用例生成”页面完善参考案例库交互：分类作为本次生成范围，支持多选参考案例、唯一主参考、推荐主参考默认选中、无推荐分类空选择、搜索筛选排序和分页浏览。
@@ -78,6 +92,8 @@
 
 ### 修复
 
+- 修复 Project Vision AI Credential 连接测试使用 1x1 PNG 探针导致 Qwen 视觉模型拒绝请求的问题；测试探针改为满足常见视觉模型最小尺寸限制的小图。
+- 修复管理后台 Project Vision AI Credential 已保存后连接测试失败仍显示“配置未保存”的误导提示；测试失败现在显示“Vision AI 连接测试失败”，并展示后端返回的脱敏失败原因。
 - 修复“用例生成”AI 返回常见非契约形态时直接 502 的问题，包括字符串形式 `warnings`、数组形式 `steps/expected_results`、数值型文本字段和 `requirement_trace: null`。
 - 补齐 `package_items_compare` 在规则元数据中的当前能力声明，修正数据源 capabilities 的实现状态，并清理飞书读取与页面展示中的旧状态文案。
 - 修复组合分支保存、跨组变量比较、SVN 变量添加、默认管理员自修复、文件选择卡顿和页面刷新状态误判等问题。

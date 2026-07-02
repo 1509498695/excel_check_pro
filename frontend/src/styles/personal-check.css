@@ -67,7 +67,7 @@
   border-radius: 999px;
   color: var(--color-text-muted);
   background: var(--color-bg-card-soft);
-  font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 14px;
   font-weight: 800;
   transition:
@@ -249,7 +249,7 @@
   border-radius: 999px;
   color: var(--color-primary-hover);
   background: var(--color-primary-soft);
-  font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 750;
   padding: 2px 8px;

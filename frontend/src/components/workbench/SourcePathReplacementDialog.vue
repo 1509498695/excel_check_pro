@@ -618,7 +618,8 @@ defineExpose({
 }
 
 .preset-select-button:focus-visible {
-  outline: none;
+  outline: 2px solid rgba(59, 130, 246, 0.32);
+  outline-offset: 2px;
   border-color: var(--color-primary, #3b82f6);
   box-shadow: 0 0 0 1px var(--color-primary, #3b82f6) inset;
 }

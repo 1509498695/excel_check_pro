@@ -140,6 +140,23 @@ def test_migrate_empty_sqlite_database_creates_current_schema(tmp_path: Path) ->
         "project_query_roots",
     )
     assert {
+        "project_id",
+        "alias",
+        "display_name",
+        "svn_root_url",
+        "status",
+        "created_at",
+        "updated_at",
+    }.issubset(_column_names(inspector, "project_source_evidence_svn_roots"))
+    assert "uq_project_source_evidence_svn_roots_project_alias" in _index_names(
+        inspector,
+        "project_source_evidence_svn_roots",
+    )
+    assert "ix_project_source_evidence_svn_roots_project_status" in _index_names(
+        inspector,
+        "project_source_evidence_svn_roots",
+    )
+    assert {
         "auto_match_threshold",
         "candidate_threshold",
         "max_candidates",
@@ -200,6 +217,25 @@ def test_migrate_empty_sqlite_database_creates_current_schema(tmp_path: Path) ->
     )
     assert {
         "project_id",
+        "provider_preset",
+        "base_url",
+        "model",
+        "encrypted_api_key",
+        "extra_headers_json",
+        "enabled",
+        "last_test_status",
+        "last_test_at",
+        "last_test_error_summary",
+        "updated_by",
+        "created_at",
+        "updated_at",
+    }.issubset(_column_names(inspector, "project_vision_ai_credentials"))
+    assert "ix_project_vision_ai_credentials_project_id" in _index_names(
+        inspector,
+        "project_vision_ai_credentials",
+    )
+    assert {
+        "project_id",
         "name",
         "name_key",
         "created_by",
@@ -236,7 +272,135 @@ def test_migrate_empty_sqlite_database_creates_current_schema(tmp_path: Path) ->
         inspector,
         "test_case_reference_files",
     )
-    assert _alembic_version(db_path) == "0011_test_case_reference_category_name_key"
+    assert {
+        "project_id",
+        "source_type",
+        "source_url",
+        "source_token",
+        "source_identifier",
+        "source_title",
+        "status",
+        "storage_path",
+        "expires_at",
+        "created_by",
+        "cleaned_by",
+        "error_summary",
+        "raw_manifest_json",
+        "minimal_audit_json",
+        "created_at",
+        "updated_at",
+        "cleaned_at",
+    }.issubset(_column_names(inspector, "source_evidence_runs"))
+    assert "ix_source_evidence_runs_project_status" in _index_names(
+        inspector,
+        "source_evidence_runs",
+    )
+    assert "ix_source_evidence_runs_project_expires" in _index_names(
+        inspector,
+        "source_evidence_runs",
+    )
+    assert {
+        "run_id",
+        "project_id",
+        "ref",
+        "resource_type",
+        "position",
+        "filename",
+        "file_token",
+        "status",
+        "download_status",
+        "local_path",
+        "mime_type",
+        "observation_json",
+        "visual_packet_path",
+        "metadata_json",
+        "created_at",
+        "updated_at",
+        "cleaned_at",
+    }.issubset(_column_names(inspector, "source_evidence_resources"))
+    assert "ix_source_evidence_resources_project_status" in _index_names(
+        inspector,
+        "source_evidence_resources",
+    )
+    assert "ix_source_evidence_resources_run_ref" in _index_names(
+        inspector,
+        "source_evidence_resources",
+    )
+    assert {
+        "run_id",
+        "project_id",
+        "resource_id",
+        "ref",
+        "position",
+        "filename",
+        "status",
+        "observation_path",
+        "created_by",
+        "adopted_by",
+        "revoked_by",
+        "adopted_at",
+        "revoked_at",
+        "cleaned_at",
+        "created_at",
+        "updated_at",
+    }.issubset(_column_names(inspector, "source_evidence_visual_observations"))
+    assert "ix_source_evidence_visual_observations_project_status" in _index_names(
+        inspector,
+        "source_evidence_visual_observations",
+    )
+    assert "uq_source_evidence_visual_observations_run_ref" in _index_names(
+        inspector,
+        "source_evidence_visual_observations",
+    )
+    assert {
+        "project_id",
+        "app_id",
+        "doc_type",
+        "permission",
+        "source_token_hash",
+        "source_token_alias_hashes_json",
+        "status",
+        "state_hash",
+        "state_expires_at",
+        "originating_run_id",
+        "target_mode",
+        "sent_targets_count",
+        "failed_targets_count",
+        "owner_candidates_truncated",
+        "authorized_by_open_id",
+        "authorized_by_display_name_masked",
+        "authorized_at",
+        "expires_at",
+        "invalidated_at",
+        "invalidated_by",
+        "last_error_summary",
+        "created_at",
+        "updated_at",
+    }.issubset(_column_names(inspector, "source_evidence_authorizations"))
+    authorization_indexes = _index_names(inspector, "source_evidence_authorizations")
+    assert "uq_source_evidence_authorizations_project_app_source_perm" in authorization_indexes
+    assert "uq_source_evidence_authorizations_state_hash" in authorization_indexes
+    assert "ix_source_evidence_authorizations_project_status_expires" in authorization_indexes
+    assert "ix_source_evidence_authorizations_project_originating_run" in authorization_indexes
+    assert {
+        "blueprint_json",
+        "cases_json",
+        "prompt",
+        "provider_response",
+    }.isdisjoint(_column_names(inspector, "source_evidence_runs"))
+    assert {
+        "blueprint_json",
+        "cases_json",
+        "prompt",
+        "provider_response",
+    }.isdisjoint(_column_names(inspector, "source_evidence_resources"))
+    assert {
+        "prompt",
+        "provider_response",
+        "local_path",
+        "file_token",
+    }.isdisjoint(_column_names(inspector, "source_evidence_visual_observations"))
+    assert _alembic_version(db_path) == "0015_source_evidence_svn_roots"
 
 
 def test_migrate_legacy_sqlite_database_adds_missing_columns_and_indexes(
@@ -352,6 +516,9 @@ def test_migrate_legacy_sqlite_database_adds_missing_columns_and_indexes(
     assert "project_ai_credentials" in set(inspector.get_table_names())
     assert "test_case_reference_categories" in set(inspector.get_table_names())
     assert "test_case_reference_files" in set(inspector.get_table_names())
+    assert "source_evidence_runs" in set(inspector.get_table_names())
+    assert "source_evidence_resources" in set(inspector.get_table_names())
+    assert "project_source_evidence_svn_roots" in set(inspector.get_table_names())
     assert "ai_provider_credentials" not in set(inspector.get_table_names())
     assert {
         "enabled",
@@ -452,7 +619,11 @@ def test_migrate_old_reference_library_revision_adds_category_name_key(
         engine.dispose()
 
     assert name_key == "冒烟"
-    assert _alembic_version(db_path) == "0011_test_case_reference_category_name_key"
+    assert "source_evidence_runs" in set(inspector.get_table_names())
+    assert "source_evidence_resources" in set(inspector.get_table_names())
+    assert "source_evidence_authorizations" in set(inspector.get_table_names())
+    assert "project_source_evidence_svn_roots" in set(inspector.get_table_names())
+    assert _alembic_version(db_path) == "0015_source_evidence_svn_roots"
 
 
 def test_migration_can_run_twice_without_duplicate_columns(tmp_path: Path) -> None:
@@ -469,5 +640,9 @@ def test_migration_can_run_twice_without_duplicate_columns(tmp_path: Path) -> No
     assert "project_query_roots" in set(inspector.get_table_names())
     assert "feishu_bot_bound_chats" in set(inspector.get_table_names())
     assert "test_case_reference_categories" in set(inspector.get_table_names())
+    assert "source_evidence_runs" in set(inspector.get_table_names())
+    assert "source_evidence_resources" in set(inspector.get_table_names())
+    assert "source_evidence_authorizations" in set(inspector.get_table_names())
+    assert "project_source_evidence_svn_roots" in set(inspector.get_table_names())
     assert "name_key" in _column_names(inspector, "test_case_reference_categories")
-    assert _alembic_version(db_path) == "0011_test_case_reference_category_name_key"
+    assert _alembic_version(db_path) == "0015_source_evidence_svn_roots"

@@ -113,6 +113,7 @@ def _snapshot_payload() -> dict[str, Any]:
 def _generation_request(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "planning_snapshot": _snapshot_payload(),
+        "source_evidence_run_id": None,
         "reference_ids": [],
         "primary_reference_id": None,
     }
@@ -452,6 +453,188 @@ async def test_generation_normalizes_provider_warning_strings(
         "message": "未使用参考案例增强。",
     } in data["warnings"]
     assert data["stats"]["warning_count"] == 3
+
+
+@pytest.mark.anyio
+async def test_generation_normalizes_provider_warning_description_objects(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """兼容 provider 将 warnings 返回为 {id, description} 对象。"""
+    await _seed_project_ai(test_project_id)
+    calls: list[dict[str, Any]] = []
+
+    async def fake_call_provider_json(**kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "modules": ["活动入口"],
+                "flows": ["进入活动"],
+                "warnings": [
+                    {
+                        "id": "W1",
+                        "description": "图片资源未采纳，不能作为需求事实。",
+                    }
+                ],
+            }, {}
+        return {
+            "cases": [],
+            "warnings": [
+                {
+                    "id": "W2",
+                    "description": "未使用参考案例增强。",
+                }
+            ],
+            "requirement_trace": [],
+        }, {}
+
+    monkeypatch.setattr(
+        "backend.app.test_cases.generation.call_provider_json",
+        fake_call_provider_json,
+    )
+
+    response = await auth_client.post(
+        "/api/v1/test-cases/generate",
+        json=_generation_request(reference_ids=[], primary_reference_id=None),
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert len(calls) == 2
+    assert {
+        "source": "blueprint",
+        "level": "warning",
+        "message": "图片资源未采纳，不能作为需求事实。",
+    } in data["warnings"]
+    assert {
+        "source": "cases",
+        "level": "warning",
+        "message": "未使用参考案例增强。",
+    } in data["warnings"]
+    assert data["stats"]["warning_count"] == 3
+
+
+@pytest.mark.anyio
+async def test_generation_normalizes_blueprint_mapping_fields(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """兼容 provider 将蓝图列表字段返回为 key-object 映射。"""
+    await _seed_project_ai(test_project_id)
+    calls: list[dict[str, Any]] = []
+
+    async def fake_call_provider_json(**kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return {
+                "modules": {
+                    "hero_resonance": {"description": "英雄共鸣系统"},
+                },
+                "flows": {
+                    "open_panel": {"steps": ["打开入口", "查看界面"]},
+                },
+                "coverage_dimensions": {
+                    "lifecycle": ["入口", "解锁", "关闭"],
+                },
+                "risks": {},
+                "warnings": [],
+            }, {}
+        return {
+            "cases": [],
+            "warnings": [],
+            "requirement_trace": [],
+        }, {}
+
+    monkeypatch.setattr(
+        "backend.app.test_cases.generation.call_provider_json",
+        fake_call_provider_json,
+    )
+
+    response = await auth_client.post(
+        "/api/v1/test-cases/generate",
+        json=_generation_request(reference_ids=[], primary_reference_id=None),
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["blueprint"]["modules"][0]["name"] == "hero_resonance"
+    assert data["blueprint"]["flows"][0]["name"] == "open_panel"
+    assert data["blueprint"]["coverage_dimensions"][0]["name"] == "lifecycle"
+
+
+@pytest.mark.anyio
+async def test_generation_truncates_oversized_snapshot_prompt(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """超大快照进入生成前必须按 prompt 预算截断，避免模型返回失控。"""
+    await _seed_project_ai(test_project_id)
+    large_rows = []
+    for index in range(1, 2200):
+        large_rows.append(
+            {
+                "row_index": index,
+                "cells": [
+                    {
+                        "row_index": index,
+                        "column_index": 1,
+                        "column_name": "模块",
+                        "value": "英雄共鸣",
+                    },
+                    {
+                        "row_index": index,
+                        "column_index": 2,
+                        "column_name": "需求点",
+                        "value": f"需求-{index:04d}-" + ("长文本" * 30),
+                    },
+                    {
+                        "row_index": index,
+                        "column_index": 3,
+                        "column_name": "证据状态",
+                        "value": "table",
+                    },
+                ],
+            }
+        )
+    snapshot = {
+        "source_summary": "local_file:xlsx：large.xlsx",
+        "sheet_name": "Source Evidence",
+        "columns": ["模块", "需求点", "证据状态"],
+        "rows": large_rows,
+        "non_empty_cell_count": len(large_rows) * 3,
+        "truncated": False,
+        "warnings": [],
+    }
+    prompts: list[str] = []
+
+    async def fake_call_provider_json(**kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        prompt = kwargs["user_prompt"]
+        prompts.append(prompt)
+        assert len(prompt) < 90_000
+        assert "生成输入超过预算" in prompt
+        assert "需求-0001" in prompt
+        assert "需求-2199" not in prompt
+        if len(prompts) == 1:
+            return {"modules": [], "flows": [], "warnings": []}, {}
+        return {"cases": [], "warnings": [], "requirement_trace": []}, {}
+
+    monkeypatch.setattr(
+        "backend.app.test_cases.generation.call_provider_json",
+        fake_call_provider_json,
+    )
+
+    response = await auth_client.post(
+        "/api/v1/test-cases/generate",
+        json=_generation_request(planning_snapshot=snapshot),
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert len(prompts) == 2
+    assert any("生成输入超过预算" in warning["message"] for warning in data["warnings"])
 
 
 @pytest.mark.anyio

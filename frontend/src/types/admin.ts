@@ -20,6 +20,17 @@ export interface FeishuBotQueryRoot {
   enabled: boolean
 }
 
+export interface SourceEvidenceSvnRoot {
+  alias: string
+  display_name: string
+  svn_url: string
+  enabled: boolean
+}
+
+export interface SourceEvidenceSvnRootsConfig {
+  items: SourceEvidenceSvnRoot[]
+}
+
 export interface FeishuBotSvnCredentialStatus {
   configured: boolean
   username_masked: string
@@ -92,6 +103,30 @@ export interface ProjectAiCredentialPayload {
   base_url?: string | null
   model?: string | null
   api_key?: string | null
+  extra_headers?: Record<string, string>
+}
+
+export interface ProjectVisionAiConfig {
+  configured: boolean
+  enabled: boolean
+  provider: AiProviderPreset | ''
+  model: string
+  base_url: string
+  masked_api_key: string
+  has_extra_headers: boolean
+  last_test_status: string
+  last_test_at: string | null
+  last_test_error_summary: string
+  updated_by: number | null
+  updated_at: string | null
+}
+
+export interface ProjectVisionAiConfigPayload {
+  provider: AiProviderPreset
+  model: string
+  base_url: string
+  api_key?: string | null
+  enabled: boolean
   extra_headers?: Record<string, string>
 }
 

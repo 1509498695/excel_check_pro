@@ -37,22 +37,31 @@ __all__ = [
     "FEISHU_DOCUMENT_NOT_FOUND",
     "FEISHU_DOCUMENT_PERMISSION_DENIED",
     "FEISHU_INVALID_URL",
+    "FEISHU_METADATA_UNAVAILABLE",
     "FEISHU_READ_RANGE_TOO_LARGE",
     "FeishuClientError",
+    "FeishuDriveMetadata",
     "FeishuSheetMetadata",
     "FeishuSheetTable",
     "FeishuSpreadsheetMetadata",
     "FeishuOAuthUserInfo",
+    "FeishuWikiNode",
+    "add_source_document_collaborator",
     "add_sheet_viewer_collaborator",
     "exchange_oauth_code_for_user_token",
+    "download_feishu_media",
+    "feishu_json_request",
     "get_current_bot_open_id",
     "get_feishu_tenant_access_token",
+    "get_drive_metadata",
     "get_oauth_user_info",
     "get_spreadsheet_metadata",
     "list_spreadsheet_sheets",
     "read_sheet_header_columns",
     "read_sheet_columns",
     "read_sheet_values",
+    "resolve_feishu_wiki_node",
+    "resolve_source_evidence_wiki_node",
     "resolve_wiki_sheet_locator",
     "resolve_wiki_sheet_locator_with_user_token",
 ]
@@ -63,6 +72,7 @@ FEISHU_APP_PERMISSION_MISSING = "FEISHU_APP_PERMISSION_MISSING"
 FEISHU_DOCUMENT_PERMISSION_DENIED = "FEISHU_DOCUMENT_PERMISSION_DENIED"
 FEISHU_DOCUMENT_NOT_FOUND = "FEISHU_DOCUMENT_NOT_FOUND"
 FEISHU_READ_RANGE_TOO_LARGE = "FEISHU_READ_RANGE_TOO_LARGE"
+FEISHU_METADATA_UNAVAILABLE = "FEISHU_METADATA_UNAVAILABLE"
 FEISHU_API_ERROR = "FEISHU_API_ERROR"
 
 SPREADSHEET_GET_PATH = "/open-apis/sheets/v3/spreadsheets/{spreadsheet_token}"
@@ -72,6 +82,9 @@ OAUTH_TOKEN_PATH = "/open-apis/authen/v2/oauth/token"
 OAUTH_USER_INFO_PATH = "/open-apis/authen/v1/user_info"
 BOT_INFO_PATH = "/open-apis/bot/v3/info"
 DRIVE_PERMISSION_MEMBER_PATH = "/open-apis/drive/v1/permissions/{token}/members"
+DRIVE_PERMISSION_MEMBER_CREATE_PATH = "/open-apis/drive/permission/member/create"
+DRIVE_META_BATCH_QUERY_PATH = "/open-apis/drive/v1/metas/batch_query"
+DRIVE_MEDIA_DOWNLOAD_PATH = "/open-apis/drive/v1/medias/{file_token}/download"
 WIKI_GET_NODE_PATH = "/open-apis/wiki/v2/spaces/get_node"
 
 _APP_PERMISSION_CODES = {10003, 99991663, 99991664, 99991665, 99991668, 99991672}
@@ -119,6 +132,30 @@ class FeishuOAuthUserInfo:
     """飞书 OAuth 授权用户信息。"""
 
     open_id: str
+
+
+@dataclass(frozen=True)
+class FeishuDriveMetadata:
+    """飞书 Drive 文件元信息，用于 Source Evidence 授权降级判断。"""
+
+    token: str
+    doc_type: str
+    drive_type: str
+    title: str
+    owner_ids: list[str]
+    creator_ids: list[str]
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class FeishuWikiNode:
+    """飞书 Wiki 节点解析后的真实对象。"""
+
+    wiki_token: str
+    obj_token: str
+    obj_type: str
+    doc_type: str
+    title: str = ""
 
 
 class FeishuClientError(RuntimeError):
@@ -242,6 +279,253 @@ async def add_sheet_viewer_collaborator(
             "perm": "view",
         },
     )
+
+
+async def add_source_document_collaborator(
+    user_access_token: str,
+    source_token: str,
+    bot_open_id: str,
+    doc_type: str,
+    *,
+    perm: str = "edit",
+    notify_lark: bool = False,
+) -> dict[str, Any]:
+    """以授权用户身份给整篇源文档添加机器人协作者。"""
+    normalized_token = (source_token or "").strip()
+    if not normalized_token:
+        raise FeishuClientError(FEISHU_INVALID_URL, "飞书源文档缺少 token。")
+    normalized_open_id = (bot_open_id or "").strip()
+    if not normalized_open_id:
+        raise FeishuClientError(FEISHU_API_ERROR, "飞书机器人 open_id 不能为空。")
+    normalized_perm = (perm or "").strip().lower()
+    if normalized_perm not in {"view", "edit"}:
+        raise FeishuClientError(
+            FEISHU_API_ERROR,
+            "飞书协作者权限仅支持 view 或 edit。",
+        )
+    drive_type, _source_doc_type = _normalize_source_document_type(doc_type)
+    payload = await _request_feishu_json_with_bearer(
+        "POST",
+        DRIVE_PERMISSION_MEMBER_CREATE_PATH,
+        access_token=user_access_token,
+        context_message="飞书源文档协作者授权失败",
+        json_payload={
+            "token": normalized_token,
+            "type": drive_type,
+            "members": [
+                {
+                    "member_type": "openid",
+                    "member_id": normalized_open_id,
+                    "perm": normalized_perm,
+                }
+            ],
+            "notify_lark": bool(notify_lark),
+        },
+    )
+    data = payload.get("data")
+    data_payload = data if isinstance(data, dict) else {}
+    failed_members = data_payload.get("fail_members")
+    if data_payload.get("is_all_success") is False or _member_failed(
+        failed_members,
+        normalized_open_id,
+    ):
+        raise FeishuClientError(
+            FEISHU_DOCUMENT_PERMISSION_DENIED,
+            "飞书源文档协作者授权失败：目标机器人未成功加入协作者。",
+        )
+    return data_payload or payload
+
+
+async def get_drive_metadata(
+    db: AsyncSession,
+    project_id: int,
+    source_token: str,
+    doc_type: str,
+) -> FeishuDriveMetadata:
+    """读取 Drive metadata；失败时抛可降级识别的错误码。"""
+    normalized_token = (source_token or "").strip()
+    if not normalized_token:
+        raise FeishuClientError(FEISHU_INVALID_URL, "飞书源文档缺少 token。")
+    drive_type, source_doc_type = _normalize_source_document_type(doc_type)
+    try:
+        payload = await _request_feishu_json(
+            db,
+            project_id,
+            "POST",
+            DRIVE_META_BATCH_QUERY_PATH,
+            json_payload={
+                "request_docs": [
+                    {"doc_token": normalized_token, "doc_type": drive_type}
+                ],
+                "with_url": True,
+            },
+        )
+    except FeishuClientError as exc:
+        raise _build_metadata_unavailable_error(str(exc), exc) from exc
+
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        raise _build_metadata_unavailable_error("飞书 Drive metadata 返回缺少 data。")
+    failed_reason = _summarize_metadata_failed_list(data.get("failed_list"))
+    if failed_reason:
+        raise _build_metadata_unavailable_error(f"飞书 Drive metadata 查询失败：{failed_reason}")
+
+    metadata_payload = _select_drive_metadata_payload(data, normalized_token)
+    if metadata_payload is None:
+        raise _build_metadata_unavailable_error("飞书 Drive metadata 返回缺少文件元信息。")
+
+    return FeishuDriveMetadata(
+        token=_as_str(
+            metadata_payload.get("doc_token")
+            or metadata_payload.get("file_token")
+            or metadata_payload.get("token"),
+            fallback=normalized_token,
+        ),
+        doc_type=source_doc_type,
+        drive_type=drive_type,
+        title=_as_str(metadata_payload.get("title") or metadata_payload.get("name")),
+        owner_ids=_extract_identity_ids(
+            metadata_payload,
+            (
+                "owner_id",
+                "owner_user_id",
+                "owner_open_id",
+                "owner",
+                "owners",
+                "owner_ids",
+            ),
+        ),
+        creator_ids=_extract_identity_ids(
+            metadata_payload,
+            (
+                "creator_id",
+                "creator_user_id",
+                "creator_open_id",
+                "create_user_id",
+                "creator",
+                "creators",
+                "creator_ids",
+            ),
+        ),
+        raw=metadata_payload,
+    )
+
+
+async def feishu_json_request(
+    db: AsyncSession,
+    project_id: int,
+    method: str,
+    path: str,
+    *,
+    params: dict[str, Any] | None = None,
+    json_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """使用项目级 tenant_access_token 调用飞书 OpenAPI JSON 接口。"""
+    normalized_path = path if path.startswith("/") else f"/{path}"
+    if not normalized_path.startswith("/open-apis/"):
+        normalized_path = f"/open-apis{normalized_path}"
+    return await _request_feishu_json(
+        db,
+        project_id,
+        method,
+        normalized_path,
+        params=params,
+        json_payload=json_payload,
+    )
+
+
+async def download_feishu_media(
+    db: AsyncSession,
+    project_id: int,
+    file_token: str,
+) -> tuple[bytes, str]:
+    """使用项目级 tenant_access_token 下载飞书 media 二进制内容。"""
+    normalized_token = (file_token or "").strip()
+    if not normalized_token:
+        raise FeishuClientError(FEISHU_API_ERROR, "飞书资源下载缺少 file_token。")
+    token = await get_feishu_tenant_access_token(db, project_id)
+    path = DRIVE_MEDIA_DOWNLOAD_PATH.format(
+        file_token=quote(normalized_token, safe="")
+    )
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        async with _create_async_client() as client:
+            response = await client.get(path, headers=headers)
+    except httpx.TimeoutException as exc:
+        raise FeishuClientError(
+            FEISHU_API_ERROR,
+            "飞书资源下载失败：请求超时。",
+        ) from exc
+    except httpx.HTTPError as exc:
+        raise FeishuClientError(
+            FEISHU_API_ERROR,
+            _sanitize_error_message(f"飞书资源下载失败：{exc}"),
+        ) from exc
+
+    if not response.is_success:
+        raise _build_http_error(response)
+
+    content_type = response.headers.get("content-type", "")
+    if "application/json" in content_type.lower():
+        try:
+            payload = response.json()
+        except json.JSONDecodeError:
+            payload = {}
+        if isinstance(payload, dict) and payload.get("code") not in (None, 0):
+            feishu_code = _as_int(payload.get("code"), fallback=-1)
+            msg = _sanitize_error_message(str(payload.get("msg") or "未知错误"))
+            raise _build_business_error(feishu_code, msg)
+    return response.content, content_type
+
+
+async def resolve_feishu_wiki_node(
+    db: AsyncSession,
+    project_id: int,
+    wiki_token: str,
+) -> FeishuWikiNode:
+    """解析 Wiki 节点真实对象类型，供富读取路由使用。"""
+    normalized_token = (wiki_token or "").strip()
+    if not normalized_token:
+        raise FeishuClientError(FEISHU_INVALID_URL, "飞书 Wiki 链接缺少 token。")
+    payload = await feishu_json_request(
+        db,
+        project_id,
+        "GET",
+        WIKI_GET_NODE_PATH,
+        params={"token": normalized_token},
+    )
+    data = _ensure_dict(payload.get("data"), "data")
+    node = _ensure_dict(data.get("node"), "node")
+    obj_type = _as_str(
+        node.get("obj_type") or node.get("objType") or node.get("type")
+    ).lower()
+    obj_token = _as_str(
+        node.get("obj_token") or node.get("objToken") or node.get("token")
+    )
+    doc_type = _normalize_wiki_doc_type(obj_type)
+    if not doc_type or not obj_token:
+        raise FeishuClientError(
+            FEISHU_INVALID_URL,
+            f"该 Wiki 节点类型暂不支持：{obj_type or 'unknown'}。",
+        )
+    return FeishuWikiNode(
+        wiki_token=normalized_token,
+        obj_token=obj_token,
+        obj_type=obj_type,
+        doc_type=doc_type,
+        title=_as_str(
+            node.get("title") or node.get("name") or node.get("display_name")
+        ),
+    )
+
+
+async def resolve_source_evidence_wiki_node(
+    db: AsyncSession,
+    project_id: int,
+    wiki_token: str,
+) -> FeishuWikiNode:
+    """解析 Source Evidence 源文档 Wiki 节点，返回真实对象 token。"""
+    return await resolve_feishu_wiki_node(db, project_id, wiki_token)
 
 
 async def resolve_wiki_sheet_locator(
@@ -434,6 +718,7 @@ async def _request_feishu_json(
     path: str,
     *,
     params: dict[str, Any] | None = None,
+    json_payload: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     token = await get_feishu_tenant_access_token(db, project_id)
     headers = {"Authorization": f"Bearer {token}"}
@@ -445,6 +730,7 @@ async def _request_feishu_json(
                 path,
                 headers=headers,
                 params=params,
+                json=json_payload,
             )
     except httpx.TimeoutException as exc:
         raise FeishuClientError(
@@ -608,6 +894,131 @@ def _build_sheet_locator_from_wiki_payload(
         normalized_url=_build_sheets_url_from_locator(wiki_locator, obj_token),
         url_type="sheet",
     )
+
+
+def _normalize_wiki_doc_type(obj_type: str) -> str:
+    normalized = (obj_type or "").strip().lower()
+    if normalized in {"docx", "doc", "docs"}:
+        return "docx"
+    if normalized in {"sheet", "sheets", "spreadsheet"}:
+        return "sheets"
+    if normalized in {"bitable", "base"}:
+        return "bitable"
+    return ""
+
+
+def _normalize_source_document_type(doc_type: str) -> tuple[str, str]:
+    normalized = (doc_type or "").strip().lower()
+    if normalized in {"doc", "docx", "docs"}:
+        return "doc", "docx"
+    if normalized in {"sheet", "sheets", "spreadsheet"}:
+        return "sheet", "sheets"
+    if normalized in {"bitable", "base"}:
+        return "bitable", "bitable"
+    raise FeishuClientError(
+        FEISHU_INVALID_URL,
+        f"该飞书源文档类型暂不支持：{doc_type or 'unknown'}。",
+    )
+
+
+def _member_failed(value: Any, member_id: str) -> bool:
+    if not isinstance(value, list):
+        return False
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        if _as_str(item.get("member_id")) == member_id:
+            return True
+    return False
+
+
+def _build_metadata_unavailable_error(
+    message: str,
+    source: FeishuClientError | None = None,
+) -> FeishuClientError:
+    return FeishuClientError(
+        FEISHU_METADATA_UNAVAILABLE,
+        _sanitize_error_message(f"飞书 Drive metadata 不可用：{message}"),
+        status_code=source.status_code if source is not None else None,
+        feishu_code=source.feishu_code if source is not None else None,
+    )
+
+
+def _summarize_metadata_failed_list(value: Any) -> str:
+    if not isinstance(value, list) or not value:
+        return ""
+    first = value[0]
+    if isinstance(first, dict):
+        return _as_str(
+            first.get("msg")
+            or first.get("reason")
+            or first.get("error")
+            or first.get("error_msg")
+            or first,
+        )
+    return _as_str(first)
+
+
+def _select_drive_metadata_payload(
+    data: dict[str, Any],
+    expected_token: str,
+) -> dict[str, Any] | None:
+    candidates: list[Any] = []
+    for key in ("metas", "docs", "items", "files", "file_list"):
+        value = data.get(key)
+        if isinstance(value, list):
+            candidates.extend(value)
+    for key in ("meta", "doc", "file"):
+        value = data.get(key)
+        if isinstance(value, dict):
+            candidates.append(value)
+
+    dict_candidates = [item for item in candidates if isinstance(item, dict)]
+    for item in dict_candidates:
+        token = _as_str(
+            item.get("doc_token") or item.get("file_token") or item.get("token")
+        )
+        if token == expected_token:
+            return item
+    return dict_candidates[0] if dict_candidates else None
+
+
+def _extract_identity_ids(
+    payload: dict[str, Any],
+    keys: tuple[str, ...],
+) -> list[str]:
+    values: list[str] = []
+    for key in keys:
+        _append_identity_value(values, payload.get(key))
+    return _dedupe_non_empty(values)
+
+
+def _append_identity_value(values: list[str], value: Any) -> None:
+    if isinstance(value, str):
+        values.append(value)
+        return
+    if isinstance(value, list):
+        for item in value:
+            _append_identity_value(values, item)
+        return
+    if not isinstance(value, dict):
+        return
+    for key in ("open_id", "openId", "user_id", "userId", "id", "member_id"):
+        raw_value = value.get(key)
+        if isinstance(raw_value, str):
+            values.append(raw_value)
+
+
+def _dedupe_non_empty(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        normalized = value.strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
 
 
 def _build_sheets_url_from_locator(
@@ -977,19 +1388,41 @@ def _summarize_response_body(response: httpx.Response, limit: int = 200) -> str:
 
 def _sanitize_error_message(message: str) -> str:
     sanitized = re.sub(
-        r"(?i)\b(app_secret|tenant_access_token|user_access_token)\s*=\s*[^,\s]+",
-        r"\1=[REDACTED]",
+        r"(?i)([\"']?\b(?:app_secret|tenant_access_token|user_access_token)[\"']?\s*[:=]\s*[\"']?)[^,\"'}\s]+",
+        r"\1[REDACTED]",
         message,
     )
     sanitized = re.sub(
-        r"(?i)\boauth\s+code\s*=\s*[^,\s]+",
-        "OAuth code=[REDACTED]",
+        r"(?i)(\b(?:oauth[\s_-]*code|authorization[\s_-]*code|auth[\s_-]*code)\s*[:=]\s*[\"']?)[^,\"'}\s]+",
+        r"\1[REDACTED]",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"(?i)\bAuthorization\s*[:=]\s*Bearer\s+[^,\s]+",
+        "Authorization=[REDACTED]",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"(?i)\bAuthorization\s*[:=]\s*[^,\s]+",
+        "Authorization=[REDACTED]",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"(?i)\bBearer\s+[^,\s]+",
+        "Bearer [REDACTED]",
         sanitized,
     )
     for marker in (
         "app_secret",
         "tenant_access_token",
         "user_access_token",
+        "authorization",
+        "Authorization",
+        "bearer",
+        "Bearer",
+        "oauth_code",
+        "authorization_code",
+        "auth_code",
         "oauth code",
         "OAuth code",
     ):

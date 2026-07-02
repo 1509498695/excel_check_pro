@@ -145,6 +145,52 @@ V1 后续切片可以先不开放多维表格 UI，但读取层应预留：
 - 用户只是触发读取、授权申请或重试。
 - 不把当前登录用户个人 OAuth token 作为长期读取身份保存。
 - 权限状态按项目和来源隔离。
+- Source Evidence 文档、图片和附件链路默认为项目 App/Bot 申请 `edit` 权限；授权卡文案必须明确“仅用于读取正文、表格、下载图片/附件和生成证据，不修改源文档”。
+- 授权成功时把项目 App/Bot 加为整篇源文档协作者，不做图片、附件或单个资源粒度授权；后续 retry 应基于该协作者权限补读正文、表格、图片和附件。
+- Source Evidence 授权采用一次性 OAuth 回调闭环：点击授权卡的人必须具备源文档分享/授权能力；后端仅在本次回调内使用 `user_access_token` 把项目 App/Bot 加为整篇源文档 `edit` 协作者，不保存个人 token。
+- Source Evidence OAuth `state` 只能是一段一次性随机值，不得携带源文档 URL、doc token、wiki token、file token 或 source token；数据库仅保存 `state_hash`、过期时间、专用授权记录 id 和 originating run id。callback 通过 `state_hash` 回查授权记录和未过期 run，再从 run 的短期敏感字段解析真实对象 token 完成协作者添加。
+- Source Evidence OAuth callback 到达时，如果 originating run 已过期或已清理，不得继续添加协作者；callback 应失败并提示“证据已过期，请重新读取来源并重新申请授权”。授权记录可标记为 `expired` 或 `authorization_failed`，但不得绕过 Source Evidence 7 天敏感材料清理边界恢复或保留源文档 token。
+- Source Evidence OAuth callback 不要求点击授权卡的人是当前系统项目成员；callback 只校验一次性 `state`、OAuth code、专用授权记录、originating run 未过期，以及点击人在飞书侧确实能把项目 App/Bot 加为协作者。`authorization-request` 发起接口仍必须要求当前系统项目成员权限。
+- Source Evidence OAuth callback 成功后，授权审计只记录点击人的飞书 `open_id`、可选脱敏展示名/邮箱摘要、`authorized_at`、`verification_status` 和 `last_error_summary`；不得保存完整 `user_access_token`、OAuth code、手机号、邮箱全文或其他个人敏感信息。
+- Source Evidence 授权记录列表仅项目管理员/超级管理员可查看；普通项目成员不能查看项目级授权列表，只能在当前 run 页面看到与本 run 相关的授权状态提示。列表仅返回 `doc_type`、`permission`、状态、脱敏 source 指纹、发送目标摘要、授权人 `open_id`/脱敏名、创建/发送/授权/过期/失效时间和最后错误摘要，不返回 source URL、doc token、wiki token、file token、OAuth code、`user_access_token` 或 App Secret。
+- Source Evidence 必须使用专用 OAuth callback：`GET /api/v1/test-cases/source-evidence-authorizations/oauth/callback`，不复用 V1 飞书电子表格 `/api/v1/feishu/sources/oauth/callback`；回调状态、成功/失败页文案和授权记录都按 Source Evidence 整篇源文档协作者语义处理。
+- Source Evidence 授权申请由当前 run 显式触发：`POST /api/v1/test-cases/source-evidence-runs/{run_id}/authorization-request`；服务端仍按 `project_id + app_id + resolved obj_token hash + permission=edit` 查找或更新复用授权记录，不把授权状态绑定到单个 run。
+- `authorization-request` 响应字段固定为最小安全摘要：`status`、`message`、`authorization_id`、`target_mode`、`sent_targets_count`、`failed_targets_count`、`fallback_to_default_chat`、`owner_candidates_truncated`、`expires_at`、`can_retry_read`；不得返回 open_id 明细、完整飞书 URL、doc/wiki/file/source token 或完整错误堆栈。
+- `authorization-request.status` 枚举固定为 `authorization_sent`、`already_sent`、`already_authorized`、`already_readable`、`send_failed`、`bot_not_configured`、`invalid_run_state`、`expired_or_cleaned`。
+- `authorization-request.target_mode` 枚举固定为 `owner_direct`、`creator_direct`、`default_chat`、`not_sent`；多个 owner 成功时仍返回 `owner_direct`，发送数量由 `sent_targets_count` 表达，全部直发失败后降级到默认群时返回 `default_chat`。
+- `authorization-request` HTTP 状态码约定：未登录、非项目成员和跨项目仍使用标准 `401`/`403`/`404`；`expired_or_cleaned` 返回 `409`；其他业务结果返回 `200` 并通过 `status` 区分，包括 `already_sent`、`already_authorized`、`already_readable`、`bot_not_configured`、`send_failed` 和 `invalid_run_state`。
+- `authorization-request` 作为 Source Evidence POST 接口，必须继续拒绝公共知识字段：`knowledge_context`、`qa_knowledge_context`、`project_qa_knowledge`。
+- Source Evidence Run 创建或首次读取遇到权限不足时，不自动发送授权卡；run/resource 只标记 `pending_permission`，返回可展示的 owner / creator 或默认群降级提示，并由页面用户点击“申请授权”后才调用 `authorization-request`。
+- Source Evidence 显式授权申请需要防重复：已有未过期 `authorization_sent` 时不重复发卡，返回“已发送，等待授权”；已有有效 `authorized` 且当前 run/resource 没有权限失败时不发卡，返回 `already_authorized` 并提示重试读取；当前 run/resource 为 `pending_permission`/`download_failed`，或授权记录为 `failed`/`authorization_failed`/`expired`/`invalidated` 时，允许用户显式重新发送。
+- Source Evidence `authorization-request` 不允许对 `ready` 且无资源权限失败的 run 发送授权卡；此类请求返回 `already_readable` 或 `already_authorized`，避免无意义地骚扰 owner / creator。
+- Source Evidence OAuth callback 授权成功后不自动触发当前 run retry；成功页只提示“授权已完成，请回到页面点击重试读取”，由页面用户显式执行 retry。
+- Source Evidence OAuth callback 页面文案固定：成功页显示“授权已完成，请回到用例生成页面点击重试读取。”；originating run 过期或已清理时显示“证据已过期，请重新读取来源并重新申请授权。”；点击人缺少飞书分享权限时显示“授权失败：当前飞书账号可能没有分享该文档的权限，请联系文档 owner。”；系统错误页只展示脱敏错误摘要，不展示 OAuth code、URL、token、Authorization 或堆栈。
+- Source Evidence OAuth callback 添加整篇源文档协作者成功后，必须再使用项目 App/Bot tenant token 做一次轻量读取校验；只有校验通过才把专用授权记录标记为 `authorized`。如果添加协作者成功但 App/Bot 仍不可读，则记录 `pending_verification` 或 `authorization_failed`，并继续让 run/resource 保持 `pending_permission`，避免页面误判权限已生效。
+- Source Evidence 授权卡优先通过 Drive metadata 查询文档 owner / creator 并直接发送；如果 metadata 不可用或发送失败，则降级发送到项目默认群，并明确提示“无法定位作者，请有权限的人点击授权”。
+- Drive metadata 返回多个候选人时，Source Evidence 授权卡按 owner 优先、creator 兜底发送：如果存在 owner，最多发送给前 3 个 owner，超出时在审计中记录 `owner_candidates_truncated=true`；如果 owner 不可达再尝试 creator；owner 和 creator 都不可达时再降级到项目默认群，避免一次性骚扰过多人。
+- 多个 owner / creator 候选发送时，只要至少一个直发目标发送成功，`authorization-request` 即返回 `authorization_sent`，并在响应和审计中记录 `sent_targets_count`、`failed_targets_count` 和脱敏失败摘要；只有全部直发目标失败时才降级发送到项目默认群。
+- Source Evidence 授权卡不得展示完整飞书 URL、doc token、wiki token、file token 或 source token；卡片只展示项目名、来源类型、文档标题、申请人、安全用途说明和“仅用于读取正文、表格、下载图片/附件和生成证据，不修改源文档”。metadata 无法取得标题时，使用来源类型和脱敏 source 指纹辅助定位。
+- 旧 V1 飞书电子表格单 Sheet 快照仍保持 `view` 权限，不随 Source Evidence 扩大授权范围。
+- Source Evidence 授权成功后按 `project_id + app_id + resolved obj_token hash + permission=edit` 复用授权状态，不绑定单个 run；复用的只是读取权限，证据文件、视觉包、observation 和 TTL 清理仍按每个 run 隔离。
+- Source Evidence 授权复用必须新增专用表/模型，不复用 `FeishuSheetAuthorizationRecord`；现有表只服务 V1 飞书电子表格单 Sheet 的 `view` 授权，Source Evidence 专用模型负责 docx/wiki/sheets/bitable 的整篇源文档 `edit` 授权。
+- Source Evidence 专用授权表/模型需要独立 Alembic migration 和后端实现切片；该切片只包含模型、迁移、service、API/callback 和权限/安全测试，不和飞书富 reader 读取逻辑混在同一刀。
+- Source Evidence 专用授权表名为 `source_evidence_authorizations`；唯一键为 `project_id + app_id + source_token_hash + permission`，其中 `source_token_hash` 保存 wiki resolve 后真实 `obj_token` 的 sha256。
+- Source Evidence 专用授权记录必备字段：`project_id`、`app_id`、`doc_type`、`permission`、`source_token_hash`、`source_token_alias_hashes_json`、`status`、`state_hash`、`state_expires_at`、`originating_run_id`、`target_mode`、`sent_targets_count`、`failed_targets_count`、`owner_candidates_truncated`、`authorized_by_open_id`、`authorized_by_display_name_masked`、`authorized_at`、`expires_at`、`invalidated_at`、`invalidated_by`、`last_error_summary`、`created_at`、`updated_at`。
+- Source Evidence 专用授权表索引：唯一索引 `project_id, app_id, source_token_hash, permission`；列表/过期查询索引 `project_id, status, expires_at`；callback 查询使用唯一 `state_hash`；run 页面回查索引 `project_id, originating_run_id`。
+- `originating_run_id` 只作为审计值保存，不对 `SourceEvidenceRun` 建外键；授权复用生命周期默认 90 天，不能被 run 的 7 天 TTL、清理或删除耦合。
+- `source_token_alias_hashes_json` 不建索引；service 只在 wiki resolve 后用真实对象 `obj_token` 写主 `source_token_hash`，alias 仅用于审计和排查。
+- `source_token_hash` 在数据库中保存完整 sha256 hex 以支持唯一键；对外展示和审计摘要只使用 `sha256:<16hex>` 指纹。`source_token_alias_hashes_json` 只保存 alias 的完整 sha256 hex 和展示指纹，不保存明文 alias。
+- `state_hash` 保存 OAuth 一次性随机 state 的完整 sha256 hex；OAuth URL 只携带随机 state 明文，不携带任何 source URL、doc token、wiki token、file token 或 source token。
+- `last_error_summary` 和所有授权响应错误信息必须复用现有 Feishu 脱敏规则，覆盖 `app_secret`、`tenant_access_token`、`user_access_token`、OAuth code、`Authorization` header 和 Bearer token。
+- Source Evidence 专用授权记录的唯一复用键应基于 `project_id`、`app_id`、resolved `obj_token` 的 `source_token_hash` 和 `permission`；模型仅保存 token hash、wiki alias hash、doc_type、permission、状态、发送目标、授权人最小审计、创建/授权/失效/过期时间和最小错误摘要，不长期保存完整 source URL、doc token、wiki token、file token、OAuth code 或个人 access token。
+- Source Evidence 专用授权记录状态至少包括：`authorization_sent`、`authorized`、`pending_verification`、`authorization_failed`、`expired`、`invalidated`。`pending_verification` 只用于授权记录，表示添加协作者 API 成功但项目 App/Bot 读取校验未通过；run/resource 不新增对应状态，仍保持 `pending_permission`。
+- Source Evidence 授权复用记录需要独立过期时间，默认 90 天，可由项目管理员手动失效；该过期时间不跟 Source Evidence Run 默认 7 天 TTL 绑定。
+- 项目管理员/超级管理员可通过 `POST /api/v1/test-cases/source-evidence-authorizations/{authorization_id}/invalidate` 手动把 Source Evidence 授权记录标记为 `invalidated`；该操作只停止本系统复用该授权，不自动从飞书源文档移除项目 App/Bot 协作者。
+- Source Evidence 授权记录 90 天到期或被管理员手动失效时，只表示本系统不再复用该授权记录，不自动把项目 App/Bot 从飞书源文档协作者中移除；飞书侧撤权需要后续单独设计可审计流程，避免误删其他项目或人工授予的协作关系。
+- `source_token` 使用解析后的真实对象 token；wiki 链接先 resolve 到 `obj_token` 后再参与授权复用，原始 wiki token 仅作为 alias/audit hash 保留，不作为主授权 hash，避免同一文档通过 wiki/docx 两种 URL 重复授权。
+- Source Evidence 授权复用记录不得长期保存完整 source URL、doc token、wiki token 或 file token；只保存 `source_token_hash`、`source_token_alias_hashes`、`doc_type`、`permission`、`app_id`、状态、授权人 open_id 和时间等最小审计字段。
+- 如果已有可复用 `edit` 授权但本次读取或资源下载仍失败，不自动重复发送授权卡；run/resource 进入 `pending_permission` 或 `download_failed`，页面提供用户显式触发的“重新申请授权”入口，避免骚扰作者。
+- OAuth 回调中添加协作者失败时，记录 `authorization_failed` 并保留 run/resource 的 `pending_permission` 状态；不得自动再次发送授权卡。
 
 ### 7.2 权限不足处理
 
@@ -275,7 +321,9 @@ runtime/source-evidence/
 
 `source_evidence_cleanup_audits`
 
-- 可选；若直接在 `source_evidence_runs.minimal_audit_json` 中保留摘要，也可以不单独建表。
+- 当前实现不单独建表，直接在 `source_evidence_runs.minimal_audit_json` 中保留清理摘要。
+- 飞书 token 类来源标识只保留 `sha256:<16hex>` 脱敏指纹，不长期保存完整 doc token、file token 或 source URL。
+- 清理摘要只允许包含 run id、project id、来源类型、来源标题、脱敏来源标识、清理前/后状态、操作人、创建/过期/清理时间、最小错误摘要、资源 ref/类型/文件名/状态和统计计数。
 - 只记录 run id、项目、来源标识、资源文件名、状态、操作人、创建时间、清理时间。
 
 ### 9.3 TTL 清理
@@ -309,6 +357,8 @@ runtime/source-evidence/
 
 - 后台定时清理批量过期 run。
 - 页面/API 访问 run 时做懒清理，发现过期立即转为已清理状态。
+- 清理成功后的权威状态为 `cleaned`；`expired` 只作为 TTL 已到但尚未完成清理前的瞬时判定。
+- 懒清理后 `GET run` 可返回安全摘要；snapshot、generate、export、retry、保存视觉选择、observation 和采纳操作必须拒绝继续使用，并提示重新读取来源。
 
 ## 10. API 方案
 
@@ -327,13 +377,33 @@ runtime/source-evidence/
   - 将已读取来源转换为现有生成链路可使用的受控快照。
 - `POST /api/v1/test-cases/source-evidence-runs/{run_id}/retry`
   - 权限补齐后重试读取或补下载资源。
+- `POST /api/v1/test-cases/source-evidence-runs/{run_id}/authorization-request`
+  - 用户显式请求发送整篇源文档协作者授权卡；UI 操作绑定当前 run，授权复用状态按真实源文档 token 归档。
+  - 输出：`status`、`message`、`authorization_id`、`target_mode`、`sent_targets_count`、`failed_targets_count`、`fallback_to_default_chat`、`owner_candidates_truncated`、`expires_at`、`can_retry_read`。
+  - `status`：`authorization_sent`、`already_sent`、`already_authorized`、`already_readable`、`send_failed`、`bot_not_configured`、`invalid_run_state`、`expired_or_cleaned`。
+  - `target_mode`：`owner_direct`、`creator_direct`、`default_chat`、`not_sent`。
+  - HTTP：未登录/非成员/跨项目按 `401`/`403`/`404`；`expired_or_cleaned` 返回 `409`；其他业务状态返回 `200`。
+  - 安全：拒绝 `knowledge_context`、`qa_knowledge_context`、`project_qa_knowledge`。
+- `GET /api/v1/test-cases/source-evidence-authorizations?limit=50&offset=0`
+  - 项目管理员/超级管理员查看 Source Evidence 授权最小审计列表；普通成员不可查看项目级授权列表。
+- `POST /api/v1/test-cases/source-evidence-authorizations/{authorization_id}/invalidate`
+  - 项目管理员/超级管理员手动失效授权复用记录；只停止本系统复用，不自动移除飞书源文档协作者。
+- `GET /api/v1/test-cases/source-evidence-authorizations/oauth/callback`
+  - Source Evidence 专用 OAuth 回调；使用一次性 `user_access_token` 把项目 App/Bot 加为整篇源文档 `edit` 协作者，不保存个人 token。
+- `GET /api/v1/test-cases/source-evidence-cleanup-audits?limit=50&offset=0`
+  - 项目管理员/超级管理员查看本项目已清理 run 的最小审计摘要；普通成员不可查看项目级清理列表。
+  - 返回内容不得包含已清理的 source.md、raw manifest、图片/附件路径、visual packet、observation 详情、prompt、provider response、飞书 token 或 AI key。
 
 ### 10.2 Visual Evidence
 
+- `GET /api/v1/test-cases/source-evidence-runs/{run_id}/visual-candidates`
+  - 读取或懒生成视觉候选列表，返回推荐原因、选择状态、下载/权限状态；已清理 run 只返回安全空列表和重新读取提示。
 - `POST /api/v1/test-cases/source-evidence-runs/{run_id}/visual-selections`
   - 保存本次用户选择的待观察资源集合。
 - `POST /api/v1/test-cases/source-evidence-runs/{run_id}/observations`
   - 调用 Vision AI 观察选中资源；Vision 不可用时返回降级错误，不影响文本生成。
+- `GET /api/v1/test-cases/source-evidence-runs/{run_id}/observations`
+  - 读取 observation 安全摘要；未采纳 observation 只用于页面复核，不进入生成。
 - `POST /api/v1/test-cases/source-evidence-runs/{run_id}/adopted-visual-evidence`
   - 用户采纳 observation，形成可进入生成依据的证据。
 - `DELETE /api/v1/test-cases/source-evidence-runs/{run_id}/adopted-visual-evidence/{evidence_id}`
@@ -367,6 +437,9 @@ runtime/source-evidence/
 
 - 新增飞书文档 URL 来源类型。
 - 读取后展示 Source Evidence Run 状态、TTL、来源标题、纳入范围和 warnings。
+- 当 run/resource 为 `pending_permission`，或资源下载状态为 `download_failed` 时，在 Source Evidence 状态区显示“申请授权”按钮；点击后调用 `authorization-request`，展示发送目标摘要和“等待作者授权，授权后请点击重试读取”。不新增独立授权管理页，项目管理员授权审计列表本阶段可先只做 API。
+- `authorization-request` 前端状态映射固定：`authorization_sent`/`already_sent` 展示“等待作者授权”，禁用重复申请并保留“重试读取”；`already_authorized`/`already_readable` 提示可直接重试读取，不再显示申请按钮；`send_failed`/`bot_not_configured` 展示脱敏错误摘要并允许再次点击申请；`expired_or_cleaned` 禁用申请和生成并提示重新读取来源；`invalid_run_state` 展示当前状态不可申请，不自动改变 run。
+- 页面不自动轮询授权状态；授权卡发送后只展示等待提示，用户点击“重试读取”或再次显式申请授权时，后端才重新检查授权记录和读取能力。
 - 原飞书电子表格单 Sheet 入口继续存在，适合快速读取单个 Planning Sheet。
 
 ### 11.2 02 生成输入
@@ -449,6 +522,8 @@ runtime/source-evidence/
 - 最小审计元数据在 TTL 清理后仍保留。
 - 访问过期 run 触发懒清理。
 - generate 在 evidence 过期时拒绝使用旧证据。
+- Source Evidence 授权一刀最低覆盖：专用授权表 migration 索引/唯一键；`authorization-request` 拒绝公共知识字段；跨项目 run 返回 `404`；普通成员不能查看授权审计列表或手动失效授权；OAuth callback 不要求点击人是系统项目成员；originating run 过期或 cleaned 时 callback 失败；OAuth `state` 不包含 URL/token；已有未过期 `authorization_sent` 不重复发卡；`ready` 且无权限失败的 run 不发授权卡。
+- Source Evidence 授权一刀后端最小命令：`python -m pytest backend/tests/test_source_evidence_authorization.py backend/tests/test_alembic_migrations.py backend/tests/test_source_evidence_permissions.py`。
 
 ### 13.2 前端
 
@@ -459,12 +534,14 @@ runtime/source-evidence/
 - observation 结果采纳后生成按钮使用已采纳证据。
 - 切换来源或证据状态变化后旧结果失效，导出禁用。
 - TTL 过期后提示重新读取来源。
+- Source Evidence 授权按钮前端最小命令：`cd frontend && npm run test:unit -- testCasesApi TestCaseGeneratorView && npm run build`。
 
 ### 13.3 清理与安全
 
 - 源码包不包含 `runtime/source-evidence`。
 - 清理脚本不删除参考案例库，但会清理过期 Source Evidence Run。
 - 错误、日志、页面和导出不泄露 App Secret、AI Key、Feishu token、OAuth code、原始 prompt。
+- 文档-only 决策阶段不跑测试；实现阶段完成后必须执行对应后端/前端最小命令。
 
 ## 14. 实施顺序建议
 
@@ -480,6 +557,88 @@ runtime/source-evidence/
 10. 端到端验收：真实飞书文档、权限不足、Vision 缺失、TTL 过期、导出复查。
 
 建议先完成 1-5，形成不依赖 Vision 的可用闭环；再做 6-8。这样可以尽快替换现有不足的飞书文档读取，同时不让视觉模型成为主链路阻塞点。
+
+Source Evidence 授权能力建议独立成一刀：先实现后端专用授权模型、Alembic migration、service、`authorization-request`、专用 OAuth callback、管理员审计/失效 API 和权限/安全测试；再接 `/test-cases` 前端“申请授权”按钮；最后把 retry 与授权复用状态打通。不要把这刀和飞书富 reader 文本/表格解析逻辑混在一起。
+
+Source Evidence 授权一刀明确不做：
+
+- 不自动从飞书源文档移除项目 App/Bot 协作者。
+- 不自动轮询授权状态。
+- 不新增前端管理员授权列表页。
+- 不把授权记录纳入 `Source Evidence Run` 7 天 TTL 清理。
+- 不保存完整 source URL、doc token、wiki token、file token、OAuth code、`user_access_token` 或 App Secret。
+
+Source Evidence 授权一刀建议文件边界：
+
+- 后端 service：新增 `backend/app/test_cases/source_evidence_authorization.py`，承载授权复用查询、状态机、owner/creator/default chat 发送策略、OAuth callback 校验和最小审计构造。
+- 后端 API：先挂在现有 `backend/app/api/test_cases_api.py`，新增 `authorization-request`、专用 OAuth callback、授权审计列表和手动失效接口；如果文件继续变重，再拆独立 router。
+- 后端模型/迁移：扩展 `backend/app/models.py` 并新增独立 Alembic migration；迁移必须覆盖唯一键和查询索引。
+- 授权模型：新增 `source_evidence_authorizations` 表，唯一键 `project_id + app_id + source_token_hash + permission`；`source_token_hash` 使用 wiki resolve 后真实 `obj_token` 的 sha256，wiki token 只作为 alias/audit hash；查询索引覆盖 `project_id + status + expires_at`、唯一 `state_hash`、`project_id + originating_run_id`；`originating_run_id` 不建外键，只作为审计值，避免和 Source Evidence Run 7 天 TTL 耦合；`source_token_alias_hashes_json` 不建索引。
+- 后端测试：新增 `backend/tests/test_source_evidence_authorization.py`，并扩展 `backend/tests/test_alembic_migrations.py`。
+- 前端：只改 `frontend/src/types/testCases.ts`、`frontend/src/api/testCases.ts`、`frontend/src/views/TestCaseGeneratorView.vue`；不新增独立授权管理页，不改 V1 飞书电子表格单 Sheet 授权入口。
+
+### 14.1 Source Evidence 授权能力实施计划
+
+本切片目标是让 Source Evidence Run 在读取飞书文档、图片或附件权限不足时，能由项目成员显式向文档 owner / creator 申请把项目 App/Bot 加为整篇源文档 `edit` 协作者；授权成功后，后续 run 可按 `project_id + app_id + resolved obj_token hash + permission=edit` 复用读取权限。该切片不改变 V1 飞书电子表格单 Sheet `view` 授权链路，不自动发卡、不自动轮询、不自动撤销飞书侧协作者、不保存个人 token，不接 Vision。
+
+#### 后端切片
+
+1. 模型与迁移：
+   - 在 `backend/app/models.py` 新增 `SourceEvidenceAuthorizationRecord`，表名 `source_evidence_authorizations`。
+   - 新增独立 Alembic migration，包含唯一键 `project_id + app_id + source_token_hash + permission`，索引 `project_id + status + expires_at`、唯一 `state_hash`、`project_id + originating_run_id`。
+   - `originating_run_id` 不建外键，只作审计值；`source_token_alias_hashes_json` 不建索引。
+
+2. Service：
+   - 新增 `backend/app/test_cases/source_evidence_authorization.py`。
+   - 实现 token hash、展示指纹、状态机、复用查询、过期判断、手动失效、授权卡发送、OAuth state 生成/校验、callback 成功/失败处理和最小审计摘要。
+   - owner / creator 发送策略：owner 优先，最多 3 个；owner 不可达再 creator；全部直发失败再默认群；部分成功即 `authorization_sent`。
+   - 所有错误摘要必须复用 Feishu 脱敏规则。
+
+3. API / callback：
+   - 在 `backend/app/api/test_cases_api.py` 增加：
+     - `POST /api/v1/test-cases/source-evidence-runs/{run_id}/authorization-request`
+     - `GET /api/v1/test-cases/source-evidence-authorizations/oauth/callback`
+     - `GET /api/v1/test-cases/source-evidence-authorizations?limit=50&offset=0`
+     - `POST /api/v1/test-cases/source-evidence-authorizations/{authorization_id}/invalidate`
+   - `authorization-request` 要求项目成员；审计列表和失效只允许项目管理员/超级管理员；callback 不要求点击人是系统项目成员。
+   - `authorization-request` 拒绝 `knowledge_context`、`qa_knowledge_context`、`project_qa_knowledge`。
+   - originating run 过期或 cleaned 时，发卡和 callback 均拒绝继续使用旧证据。
+
+4. Reader / retry 接入：
+   - Source Evidence 首次读取权限不足时只标记 `pending_permission`，资源权限不足时标记 `pending_permission` 或 `download_failed`，均不自动发送授权卡。
+   - retry 时优先检查有效授权记录；授权有效但仍读不到时不自动发卡，保持 `pending_permission` 或 `download_failed`，由用户显式重新申请。
+
+#### 前端切片
+
+1. 类型与 API：
+   - `frontend/src/types/testCases.ts` 增加授权请求/响应、`target_mode`、`status` 类型。
+   - `frontend/src/api/testCases.ts` 增加 `requestSourceEvidenceAuthorization(runId)`。
+
+2. 页面：
+   - 在 `frontend/src/views/TestCaseGeneratorView.vue` 的 Source Evidence 状态区显示“申请授权”按钮。
+   - `authorization_sent` / `already_sent`：展示“等待作者授权”，禁用重复申请，保留“重试读取”。
+   - `already_authorized` / `already_readable`：提示可直接重试读取，不再显示申请按钮。
+   - `send_failed` / `bot_not_configured`：展示脱敏错误摘要，允许再次点击申请。
+   - `expired_or_cleaned`：禁用申请和生成，提示重新读取来源。
+   - `invalid_run_state`：展示当前状态不可申请，不自动改变 run。
+
+#### 测试与验收
+
+后端最小命令：
+
+```powershell
+python -m pytest backend/tests/test_source_evidence_authorization.py backend/tests/test_alembic_migrations.py backend/tests/test_source_evidence_permissions.py
+```
+
+前端最小命令：
+
+```powershell
+cd frontend
+npm run test:unit -- testCasesApi TestCaseGeneratorView
+npm run build
+```
+
+最低测试覆盖：专用授权表 migration 索引/唯一键；公共知识字段拒绝；跨项目 run 返回 `404`；普通成员不能查看审计列表或手动失效；callback 不要求系统项目成员；过期/cleaned run callback 失败；OAuth `state` 不含 URL/token；已有未过期 `authorization_sent` 不重复发卡；`ready` 且无权限失败的 run 不发授权卡；前端状态映射和按钮禁用逻辑。
 
 ## 15. 主要风险
 

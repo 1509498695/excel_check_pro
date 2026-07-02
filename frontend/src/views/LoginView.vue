@@ -52,7 +52,7 @@ async function handleLogin(): Promise<void> {
     <!-- 品牌：方块 + 表格 SVG（与左边栏同款，强化一致性） -->
     <div class="flex flex-col items-center gap-3 mb-8">
       <div class="flex h-12 w-12 items-center justify-center rounded-md bg-accent text-white">
-        <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2">
+        <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path d="M4 5h16v14H4z M4 10h16 M9 5v14" />
         </svg>
       </div>
@@ -76,11 +76,26 @@ async function handleLogin(): Promise<void> {
       <div class="flex flex-col gap-4">
         <div>
           <label class="mb-1.5 block text-[12px] font-medium text-ink-500">用户名</label>
-          <el-input v-model="username" placeholder="例如：admin" autofocus data-testid="login-username" />
+          <el-input
+            v-model="username"
+            name="username"
+            autocomplete="username"
+            :spellcheck="false"
+            placeholder="例如：admin…"
+            data-testid="login-username"
+          />
         </div>
         <div>
           <label class="mb-1.5 block text-[12px] font-medium text-ink-500">密码</label>
-          <el-input v-model="password" type="password" placeholder="密码" show-password data-testid="login-password" />
+          <el-input
+            v-model="password"
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            placeholder="密码…"
+            show-password
+            data-testid="login-password"
+          />
         </div>
 
         <button

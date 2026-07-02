@@ -16,13 +16,19 @@ from backend.app.integrations.feishu_client import (
     FEISHU_DOCUMENT_NOT_FOUND,
     FEISHU_DOCUMENT_PERMISSION_DENIED,
     FEISHU_INVALID_URL,
+    FEISHU_METADATA_UNAVAILABLE,
     FEISHU_READ_RANGE_TOO_LARGE,
     FeishuClientError,
+    add_source_document_collaborator,
+    feishu_json_request,
+    get_drive_metadata,
     get_feishu_tenant_access_token,
     get_spreadsheet_metadata,
     list_spreadsheet_sheets,
     read_sheet_columns,
     read_sheet_values,
+    resolve_feishu_wiki_node,
+    resolve_source_evidence_wiki_node,
     resolve_wiki_sheet_locator,
 )
 from backend.app.loaders.feishu_reader import parse_feishu_sheet_url
@@ -204,6 +210,85 @@ async def test_get_feishu_tenant_access_token_reuses_bot_config_and_cache(
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("doc_type", "expected_drive_type"),
+    [
+        ("docx", "doc"),
+        ("docs", "doc"),
+        ("sheets", "sheet"),
+        ("base", "bitable"),
+        ("bitable", "bitable"),
+    ],
+)
+async def test_add_source_document_collaborator_supports_edit_permission(
+    monkeypatch: pytest.MonkeyPatch,
+    doc_type: str,
+    expected_drive_type: str,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/open-apis/drive/permission/member/create"
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={"code": 0, "msg": "success", "data": {"is_all_success": True}},
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+
+    result = await add_source_document_collaborator(
+        user_access_token="u_source",
+        source_token="src_token",
+        bot_open_id="ou_bot",
+        doc_type=doc_type,
+        perm="edit",
+    )
+
+    assert result["is_all_success"] is True
+    assert captured["headers"].get("authorization") == "Bearer u_source"
+    assert captured["body"] == {
+        "token": "src_token",
+        "type": expected_drive_type,
+        "members": [
+            {"member_type": "openid", "member_id": "ou_bot", "perm": "edit"}
+        ],
+        "notify_lark": False,
+    }
+
+
+@pytest.mark.anyio
+async def test_add_sheet_viewer_collaborator_keeps_view_permission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/open-apis/drive/v1/permissions/shtcnabc123/members"
+        captured["query"] = dict(request.url.params)
+        captured["headers"] = dict(request.headers)
+        captured["body"] = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(200, json={"code": 0, "msg": "success"})
+
+    _install_mock_transport(monkeypatch, handler)
+
+    await feishu_client.add_sheet_viewer_collaborator(
+        user_access_token="u_sheet",
+        spreadsheet_token="shtcnabc123",
+        bot_open_id="ou_bot",
+    )
+
+    assert captured["query"] == {"type": "sheet"}
+    assert captured["headers"].get("authorization") == "Bearer u_sheet"
+    assert captured["body"] == {
+        "member_type": "openid",
+        "member_id": "ou_bot",
+        "perm": "view",
+    }
+
+
+@pytest.mark.anyio
 async def test_get_spreadsheet_metadata_success(
     test_db,
     test_project_id: int,
@@ -231,6 +316,118 @@ async def test_get_spreadsheet_metadata_success(
     assert metadata.token == "shtcnabc123"
     assert metadata.title == "需求明细"
     assert metadata.owner_id == "ou_owner"
+
+
+@pytest.mark.anyio
+async def test_get_drive_metadata_normalizes_owner_and_creator(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_config(test_project_id)
+    captured_body: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_body
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response("t_drive")
+        assert request.headers["authorization"] == "Bearer t_drive"
+        if request.url.path == "/open-apis/drive/v1/metas/batch_query":
+            captured_body = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "success",
+                    "data": {
+                        "metas": [
+                            {
+                                "doc_token": "doccnabc123",
+                                "doc_type": "doc",
+                                "title": "源需求文档",
+                                "owner_id": "ou_owner",
+                                "creator": {"open_id": "ou_creator"},
+                            }
+                        ]
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    async with async_session_factory() as session:
+        metadata = await get_drive_metadata(
+            session,
+            test_project_id,
+            "doccnabc123",
+            "docx",
+        )
+
+    assert captured_body == {
+        "request_docs": [{"doc_token": "doccnabc123", "doc_type": "doc"}],
+        "with_url": True,
+    }
+    assert metadata.token == "doccnabc123"
+    assert metadata.doc_type == "docx"
+    assert metadata.drive_type == "doc"
+    assert metadata.title == "源需求文档"
+    assert metadata.owner_ids == ["ou_owner"]
+    assert metadata.creator_ids == ["ou_creator"]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "metadata_response",
+    [
+        httpx.Response(403, json={"code": 99991663, "msg": "missing scope"}),
+        httpx.Response(
+            200,
+            json={
+                "code": 0,
+                "msg": "success",
+                "data": {
+                    "failed_list": [
+                        {
+                            "doc_token": "doccnabc123",
+                            "reason": "metadata permission denied",
+                        }
+                    ],
+                    "metas": [],
+                },
+            },
+        ),
+        httpx.Response(200, json={"code": 0, "msg": "success", "data": {"metas": []}}),
+    ],
+)
+async def test_get_drive_metadata_failure_is_degradable(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    metadata_response: httpx.Response,
+) -> None:
+    await _seed_feishu_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response("t_drive")
+        if request.url.path == "/open-apis/drive/v1/metas/batch_query":
+            return metadata_response
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    async with async_session_factory() as session:
+        with pytest.raises(FeishuClientError) as exc_info:
+            await get_drive_metadata(
+                session,
+                test_project_id,
+                "doccnabc123",
+                "docx",
+            )
+
+    assert exc_info.value.code == FEISHU_METADATA_UNAVAILABLE
+    assert "metadata 不可用" in str(exc_info.value)
 
 
 @pytest.mark.anyio
@@ -317,6 +514,50 @@ async def test_wiki_node_that_is_not_sheet_maps_to_invalid_url(
 
     assert exc_info.value.code == FEISHU_INVALID_URL
     assert "不是飞书电子表格" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_resolve_source_evidence_wiki_node_returns_real_token_and_alias(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        if request.url.path == "/open-apis/wiki/v2/spaces/get_node":
+            assert request.url.params["token"] == "wikcnabc123"
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "success",
+                    "data": {
+                        "node": {
+                            "obj_token": "doccnreal123",
+                            "obj_type": "docx",
+                            "title": "源需求文档",
+                        }
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    async with async_session_factory() as session:
+        node = await resolve_source_evidence_wiki_node(
+            session,
+            test_project_id,
+            "wikcnabc123",
+        )
+
+    assert node.wiki_token == "wikcnabc123"
+    assert node.obj_token == "doccnreal123"
+    assert node.doc_type == "docx"
+    assert node.title == "源需求文档"
 
 
 @pytest.mark.anyio
@@ -543,7 +784,11 @@ async def test_error_message_redacts_sensitive_markers(
             return _token_response()
         return httpx.Response(
             500,
-            text="app_secret=secret_unit tenant_access_token=t_sheet user_access_token=u_x OAuth code=abc",
+            text=(
+                "app_secret=secret_unit tenant_access_token=t_sheet "
+                "user_access_token=u_x OAuth code=abc "
+                "Authorization: Bearer t_header Bearer u_header"
+            ),
         )
 
     _install_mock_transport(monkeypatch, handler)
@@ -561,6 +806,142 @@ async def test_error_message_redacts_sensitive_markers(
     assert "tenant_access_token" not in message
     assert "user_access_token" not in message
     assert "OAuth code" not in message
+    assert "Authorization" not in message
+    assert "Bearer" not in message
     assert "secret_unit" not in message
     assert "t_sheet" not in message
     assert "u_x" not in message
+    assert "t_header" not in message
+    assert "u_header" not in message
+
+
+@pytest.mark.anyio
+async def test_feishu_json_request_supports_post_json_payload(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_config(test_project_id)
+    captured_body: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_body
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response("t_post")
+        assert request.headers["authorization"] == "Bearer t_post"
+        if request.url.path == "/open-apis/bitable/v1/apps/app123/tables/tbl123/records/search":
+            captured_body = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                json={"code": 0, "msg": "success", "data": {"items": [{"record_id": "rec1"}]}},
+            )
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    async with async_session_factory() as session:
+        payload = await feishu_json_request(
+            session,
+            test_project_id,
+            "POST",
+            "/bitable/v1/apps/app123/tables/tbl123/records/search",
+            json_payload={"view_id": "vew1"},
+        )
+
+    assert captured_body == {"view_id": "vew1"}
+    assert payload["data"]["items"][0]["record_id"] == "rec1"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("obj_type", "expected_doc_type"),
+    [
+        ("docx", "docx"),
+        ("sheet", "sheets"),
+        ("bitable", "bitable"),
+        ("base", "bitable"),
+    ],
+)
+async def test_resolve_feishu_wiki_node_returns_supported_object_types(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+    obj_type: str,
+    expected_doc_type: str,
+) -> None:
+    await _seed_feishu_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        if request.url.path == "/open-apis/wiki/v2/spaces/get_node":
+            assert request.url.params["token"] == "wikcnabc123"
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "success",
+                    "data": {
+                        "node": {
+                            "obj_type": obj_type,
+                            "obj_token": f"{obj_type}_token",
+                            "title": "Wiki 节点",
+                        }
+                    },
+                },
+            )
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    async with async_session_factory() as session:
+        node = await resolve_feishu_wiki_node(session, test_project_id, "wikcnabc123")
+
+    assert node.doc_type == expected_doc_type
+    assert node.obj_token == f"{obj_type}_token"
+    assert node.title == "Wiki 节点"
+
+
+@pytest.mark.anyio
+async def test_feishu_json_request_redacts_sensitive_markers(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return _token_response()
+        return httpx.Response(
+            500,
+            text=(
+                "app_secret=secret_unit tenant_access_token=t_sheet "
+                "user_access_token=u_x OAuth code=abc "
+                "Authorization: Bearer t_header Bearer u_header"
+            ),
+        )
+
+    _install_mock_transport(monkeypatch, handler)
+
+    async with async_session_factory() as session:
+        with pytest.raises(FeishuClientError) as exc_info:
+            await feishu_json_request(
+                session,
+                test_project_id,
+                "GET",
+                "/docx/v1/documents/doccnabc123/raw_content",
+            )
+
+    message = str(exc_info.value)
+    assert "app_secret" not in message
+    assert "tenant_access_token" not in message
+    assert "user_access_token" not in message
+    assert "OAuth code" not in message
+    assert "Authorization" not in message
+    assert "Bearer" not in message
+    assert "secret_unit" not in message
+    assert "t_sheet" not in message
+    assert "u_x" not in message
+    assert "t_header" not in message
+    assert "u_header" not in message

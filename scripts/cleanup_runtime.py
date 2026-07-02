@@ -28,6 +28,14 @@ def _print_human_report(report: dict) -> None:
         f"{len(execution_runs['run_ids'])} runs, "
         f"{execution_runs['item_count']} items"
     )
+    source_evidence_runs = report["source_evidence_runs"]
+    print(
+        "Source evidence runs: "
+        f"{len(source_evidence_runs['run_ids'])} runs, "
+        f"{source_evidence_runs['resource_count']} resources, "
+        f"{source_evidence_runs['observation_count']} observations, "
+        f"{source_evidence_runs['cleaned_count']} cleaned"
+    )
 
     for candidate in report["candidates"]:
         prefix = "WOULD DELETE" if report["dry_run"] else "CANDIDATE"

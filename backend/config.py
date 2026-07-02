@@ -120,6 +120,12 @@ class Settings:
             / "local_excel",
         )
     )
+    source_evidence_dir: Path = field(
+        default_factory=lambda: _parse_path_env(
+            "SOURCE_EVIDENCE_DIR",
+            Path(__file__).resolve().parent / ".runtime" / "source-evidence",
+        )
+    )
     frontend_dist_dir: Path = field(
         default_factory=lambda: Path(
             os.getenv(
@@ -162,6 +168,22 @@ class Settings:
             os.getenv("FEISHU_SHEET_OAUTH_SCOPE")
             or "sheets:spreadsheet:readonly wiki:node:read docs:permission.member:create"
         ).strip()
+    )
+    feishu_source_evidence_oauth_callback_url: str = field(
+        default_factory=lambda: (
+            os.getenv("FEISHU_SOURCE_EVIDENCE_OAUTH_CALLBACK_URL") or ""
+        ).strip()
+    )
+    feishu_source_evidence_oauth_scope: str = field(
+        default_factory=lambda: (
+            os.getenv("FEISHU_SOURCE_EVIDENCE_OAUTH_SCOPE") or ""
+        ).strip()
+    )
+    source_evidence_authorization_ttl_days: int = field(
+        default_factory=lambda: _parse_non_negative_int_env(
+            "SOURCE_EVIDENCE_AUTHORIZATION_TTL_DAYS",
+            90,
+        )
     )
     fixed_rules_config_path: Path = field(
         default_factory=lambda: Path(__file__).resolve().parent
@@ -220,6 +242,23 @@ class Settings:
         default_factory=lambda: _parse_non_negative_int_env(
             "EXECUTION_RESULT_RETENTION_DAYS",
             90,
+        )
+    )
+    source_evidence_ttl_days: int = field(
+        default_factory=lambda: _parse_non_negative_int_env(
+            "SOURCE_EVIDENCE_TTL_DAYS",
+            7,
+        )
+    )
+    source_evidence_soffice_executable: str = field(
+        default_factory=lambda: (
+            os.getenv("SOURCE_EVIDENCE_SOFFICE_EXECUTABLE") or ""
+        ).strip()
+    )
+    source_evidence_xls_convert_timeout_seconds: int = field(
+        default_factory=lambda: _parse_non_negative_int_env(
+            "SOURCE_EVIDENCE_XLS_CONVERT_TIMEOUT_SECONDS",
+            60,
         )
     )
     log_retention_days: int = field(

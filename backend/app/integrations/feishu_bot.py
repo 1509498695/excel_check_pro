@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,8 @@ __all__ = [
     "send_file_to_chat",
     "send_text_to_chat",
     "send_card_to_chat",
+    "send_text_to_open_id",
+    "send_card_to_open_id",
     "invalidate_token_cache",
 ]
 
@@ -102,15 +105,60 @@ def _summarize_response_body(response: httpx.Response, limit: int = 200) -> str:
     """截断响应体作为错误描述，避免日志过长。"""
     text = (response.text or "").strip()
     if len(text) <= limit:
-        return text
-    return text[:limit] + "…"
+        return _sanitize_error_message(text)
+    return _sanitize_error_message(text[:limit] + "…")
+
+
+def _sanitize_error_message(message: str) -> str:
+    """移除飞书错误中的敏感凭证、OAuth code 和 Authorization 头。"""
+    sanitized = re.sub(
+        r"(?i)([\"']?\b(?:app_secret|tenant_access_token|user_access_token)[\"']?\s*[:=]\s*[\"']?)[^,\"'}\s]+",
+        r"\1[REDACTED]",
+        message,
+    )
+    sanitized = re.sub(
+        r"(?i)(\b(?:oauth[\s_-]*code|authorization[\s_-]*code|auth[\s_-]*code)\s*[:=]\s*[\"']?)[^,\"'}\s]+",
+        r"\1[REDACTED]",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"(?i)\bAuthorization\s*[:=]\s*Bearer\s+[^,\s]+",
+        "Authorization=[REDACTED]",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"(?i)\bAuthorization\s*[:=]\s*[^,\s]+",
+        "Authorization=[REDACTED]",
+        sanitized,
+    )
+    sanitized = re.sub(
+        r"(?i)\bBearer\s+[^,\s]+",
+        "Bearer [REDACTED]",
+        sanitized,
+    )
+    for marker in (
+        "app_secret",
+        "tenant_access_token",
+        "user_access_token",
+        "authorization",
+        "Authorization",
+        "bearer",
+        "Bearer",
+        "oauth_code",
+        "authorization_code",
+        "auth_code",
+        "oauth code",
+        "OAuth code",
+    ):
+        sanitized = sanitized.replace(marker, "[REDACTED]")
+    return sanitized
 
 
 def _raise_for_http_status(response: httpx.Response) -> None:
     """HTTP 4xx/5xx 统一抛 FeishuApiError，message 含状态码与响应摘要。"""
     if response.is_success:
         return
-    detail = _summarize_response_body(response)
+    detail = _sanitize_error_message(_summarize_response_body(response))
     raise FeishuApiError(
         f"飞书 API 调用失败：HTTP {response.status_code} {detail}".strip()
     )
@@ -128,7 +176,7 @@ def _parse_business_payload(response: httpx.Response) -> dict[str, Any]:
 
     code = payload.get("code", -1)
     if code != 0:
-        msg = str(payload.get("msg") or "未知错误")
+        msg = _sanitize_error_message(str(payload.get("msg") or "未知错误"))
         raise FeishuApiError(f"飞书 API 错误（code={code}）：{msg}")
     return payload
 
@@ -145,7 +193,9 @@ async def _request_tenant_access_token(
     except httpx.TimeoutException as exc:
         raise FeishuApiError("飞书 API 网络异常：请求超时") from exc
     except httpx.HTTPError as exc:
-        raise FeishuApiError(f"飞书 API 网络异常：{exc}") from exc
+        raise FeishuApiError(
+            _sanitize_error_message(f"飞书 API 网络异常：{exc}")
+        ) from exc
 
     _raise_for_http_status(response)
     body = _parse_business_payload(response)
@@ -189,17 +239,22 @@ async def get_tenant_access_token(db: AsyncSession, project_id: int) -> str:
 async def _send_message(
     db: AsyncSession,
     project_id: int,
-    chat_id: str,
+    receive_id: str,
     msg_type: str,
     content: dict[str, Any],
+    *,
+    receive_id_type: str = "chat_id",
 ) -> dict[str, Any]:
-    """统一发送入口：组装 receive_id_type=chat_id 的消息体并提取 message_id。"""
-    if not chat_id or not chat_id.strip():
-        raise FeishuApiError("chat_id 不能为空")
+    """统一发送入口：按 receive_id_type 组装消息体并提取 message_id。"""
+    normalized_receive_id_type = (receive_id_type or "").strip().lower()
+    if normalized_receive_id_type not in {"chat_id", "open_id"}:
+        raise FeishuApiError("receive_id_type 仅支持 chat_id 或 open_id")
+    if not receive_id or not receive_id.strip():
+        raise FeishuApiError(f"{normalized_receive_id_type} 不能为空")
 
     token = await get_tenant_access_token(db, project_id)
     payload = {
-        "receive_id": chat_id.strip(),
+        "receive_id": receive_id.strip(),
         "msg_type": msg_type,
         "content": json.dumps(content, ensure_ascii=False),
     }
@@ -209,14 +264,16 @@ async def _send_message(
         async with _create_async_client() as client:
             response = await client.post(
                 SEND_MESSAGE_PATH,
-                params={"receive_id_type": "chat_id"},
+                params={"receive_id_type": normalized_receive_id_type},
                 json=payload,
                 headers=headers,
             )
     except httpx.TimeoutException as exc:
         raise FeishuApiError("飞书 API 网络异常：请求超时") from exc
     except httpx.HTTPError as exc:
-        raise FeishuApiError(f"飞书 API 网络异常：{exc}") from exc
+        raise FeishuApiError(
+            _sanitize_error_message(f"飞书 API 网络异常：{exc}")
+        ) from exc
 
     _raise_for_http_status(response)
     body = _parse_business_payload(response)
@@ -270,7 +327,9 @@ async def upload_file(
     except httpx.TimeoutException as exc:
         raise FeishuApiError("飞书 API 网络异常：请求超时") from exc
     except httpx.HTTPError as exc:
-        raise FeishuApiError(f"飞书 API 网络异常：{exc}") from exc
+        raise FeishuApiError(
+            _sanitize_error_message(f"飞书 API 网络异常：{exc}")
+        ) from exc
     except OSError as exc:
         raise FeishuApiError(f"读取待上传文件失败：{exc}") from exc
 
@@ -306,9 +365,10 @@ async def send_file_to_chat(
     message_result = await _send_message(
         db=db,
         project_id=project_id,
-        chat_id=chat_id,
+        receive_id=chat_id,
         msg_type="file",
         content={"file_key": file_key},
+        receive_id_type="chat_id",
     )
     return {
         "message_id": message_result.get("message_id", ""),
@@ -330,9 +390,10 @@ async def send_text_to_chat(
     return await _send_message(
         db=db,
         project_id=project_id,
-        chat_id=chat_id,
+        receive_id=chat_id,
         msg_type="text",
         content={"text": str(text)},
+        receive_id_type="chat_id",
     )
 
 
@@ -348,7 +409,46 @@ async def send_card_to_chat(
     return await _send_message(
         db=db,
         project_id=project_id,
-        chat_id=chat_id,
+        receive_id=chat_id,
         msg_type="interactive",
         content=card,
+        receive_id_type="chat_id",
+    )
+
+
+async def send_text_to_open_id(
+    db: AsyncSession,
+    project_id: int,
+    open_id: str,
+    text: str,
+) -> dict[str, Any]:
+    """向指定用户 open_id 发送纯文本消息，返回 {"message_id": str, "raw": dict}。"""
+    if text is None or not str(text).strip():
+        raise FeishuApiError("发送内容不能为空")
+    return await _send_message(
+        db=db,
+        project_id=project_id,
+        receive_id=open_id,
+        msg_type="text",
+        content={"text": str(text)},
+        receive_id_type="open_id",
+    )
+
+
+async def send_card_to_open_id(
+    db: AsyncSession,
+    project_id: int,
+    open_id: str,
+    card: dict[str, Any],
+) -> dict[str, Any]:
+    """向指定用户 open_id 发送富文本卡片消息（msg_type=interactive）。"""
+    if not isinstance(card, dict) or not card:
+        raise FeishuApiError("卡片内容必须为非空字典")
+    return await _send_message(
+        db=db,
+        project_id=project_id,
+        receive_id=open_id,
+        msg_type="interactive",
+        content=card,
+        receive_id_type="open_id",
     )

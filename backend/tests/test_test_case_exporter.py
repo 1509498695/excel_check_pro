@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import datetime
+import json
 from io import BytesIO
+from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -11,8 +15,26 @@ from openpyxl import load_workbook
 from sqlalchemy import func, select
 
 from backend.app.database import async_session_factory
-from backend.app.models import ExecutionRunRecord
+from backend.app.models import (
+    ExecutionRunRecord,
+    SourceEvidenceResourceRecord,
+    SourceEvidenceRunRecord,
+    SourceEvidenceVisualObservationRecord,
+)
+from backend.app.test_cases import source_evidence_storage
 from backend.app.test_cases.constants import STANDARD_CASE_FIELD_LABELS, STANDARD_CASE_FIELDS
+
+
+@pytest.fixture(autouse=True)
+def _source_evidence_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        source_evidence_storage,
+        "settings",
+        SimpleNamespace(source_evidence_dir=tmp_path / "source-evidence"),
+    )
 
 
 def _blueprint() -> dict[str, Any]:
@@ -128,6 +150,210 @@ async def _execution_run_count() -> int:
     async with async_session_factory() as session:
         result = await session.execute(select(func.count(ExecutionRunRecord.id)))
         return int(result.scalar_one())
+
+
+async def _seed_source_evidence_run(
+    project_id: int,
+    *,
+    status: str = "ready",
+    expires_at: datetime.datetime | None = None,
+) -> int:
+    expires_at = expires_at or (
+        datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)
+    )
+    async with async_session_factory() as session:
+        run = SourceEvidenceRunRecord(
+            project_id=project_id,
+            source_type="feishu",
+            source_url="https://demo.feishu.cn/docx/doccn-secret-token",
+            source_token="doccn-secret-token",
+            source_identifier="doccn-secret-token",
+            source_title="活动需求文档",
+            status=status,
+            expires_at=expires_at,
+            raw_manifest_json=json.dumps(
+                {
+                    "run_id": 0,
+                    "project_id": project_id,
+                    "source_type": "feishu",
+                    "source_title": "活动需求文档",
+                    "doc_type": "docx",
+                    "counts": {
+                        "source_unit_count": 1,
+                        "resource_count": 1,
+                        "downloaded_resource_count": 0,
+                        "failed_resource_count": 1,
+                        "warning_count": 1,
+                    },
+                    "warnings": [
+                        {
+                            "source": "source_evidence",
+                            "level": "warning",
+                            "message": "资源 docx_img_001 待观察。",
+                        }
+                    ],
+                    "expires_at": expires_at.isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        session.add(run)
+        await session.flush()
+        run.raw_manifest_json = json.dumps(
+            {**json.loads(run.raw_manifest_json), "run_id": run.id},
+            ensure_ascii=False,
+        )
+        session.add(
+            SourceEvidenceResourceRecord(
+                run_id=run.id,
+                project_id=project_id,
+                ref="docx_img_001",
+                resource_type="image",
+                position="docx:block:img",
+                filename="ui.png",
+                file_token="file-secret-token",
+                status="unobserved",
+                download_status="download_failed",
+                local_path="D:/runtime/source-evidence/secret/ui.png",
+                mime_type="image/png",
+            )
+        )
+        await session.commit()
+        return run.id
+
+
+async def _seed_visual_evidence(
+    project_id: int,
+    run_id: int,
+    *,
+    status: str = "adopted",
+) -> int:
+    async with async_session_factory() as session:
+        run = await session.get(SourceEvidenceRunRecord, run_id)
+        assert run is not None
+        resource = (
+            await session.execute(
+                select(SourceEvidenceResourceRecord).where(
+                    SourceEvidenceResourceRecord.project_id == project_id,
+                    SourceEvidenceResourceRecord.run_id == run_id,
+                    SourceEvidenceResourceRecord.ref == "docx_img_001",
+                )
+            )
+        ).scalar_one()
+        observation = SourceEvidenceVisualObservationRecord(
+            run_id=run_id,
+            project_id=project_id,
+            resource_id=resource.id,
+            ref=resource.ref,
+            position=resource.position,
+            filename=resource.filename,
+            status=status,
+            observation_path="",
+            created_by=run.created_by,
+            adopted_by=run.created_by if status == "adopted" else None,
+            adopted_at=datetime.datetime.now(datetime.UTC) if status == "adopted" else None,
+        )
+        session.add(observation)
+        await session.flush()
+        observation_path = f"visual_evidence/observations/{observation.id}.json"
+        source_evidence_storage.write_source_evidence_json(
+            project_id,
+            run_id,
+            observation_path,
+            {
+                "id": observation.id,
+                "run_id": run_id,
+                "resource_id": resource.id,
+                "ref": resource.ref,
+                "position": resource.position,
+                "summary": "图中展示活动入口按钮，按钮文案为“参与活动”。",
+                "visible_text": "参与活动",
+                "confidence": 0.87,
+                "limitations": ["只能确认截图可见内容，不能确认配置规则。"],
+                "source": {"provider": "openai", "model": "gpt-4o-mini"},
+                "created_by": run.created_by,
+                "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
+            },
+        )
+        observation.observation_path = observation_path
+        resource.status = status
+        resource.local_path = "visual_evidence/images/secret.jpg"
+        await session.commit()
+        return observation.id
+
+
+async def _seed_adopted_visual_evidence(project_id: int, run_id: int) -> int:
+    return await _seed_visual_evidence(project_id, run_id, status="adopted")
+
+
+async def _seed_textless_image_source_evidence_run(project_id: int) -> int:
+    expires_at = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)
+    async with async_session_factory() as session:
+        run = SourceEvidenceRunRecord(
+            project_id=project_id,
+            source_type="local_file",
+            source_url="",
+            source_token="sha256:image",
+            source_identifier="sha256:image",
+            source_title="ui.png",
+            status="ready",
+            expires_at=expires_at,
+            raw_manifest_json=json.dumps(
+                {
+                    "run_id": 0,
+                    "project_id": project_id,
+                    "source_type": "local_file",
+                    "source_title": "ui.png",
+                    "doc_type": "image",
+                    "warnings": [],
+                    "expires_at": expires_at.isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        session.add(run)
+        await session.flush()
+        run.raw_manifest_json = json.dumps(
+            {**json.loads(run.raw_manifest_json), "run_id": run.id},
+            ensure_ascii=False,
+        )
+        source_evidence_storage.ensure_source_evidence_subdirs(
+            project_id=project_id,
+            run_id=run.id,
+        )
+        session.add(
+            SourceEvidenceResourceRecord(
+                run_id=run.id,
+                project_id=project_id,
+                ref="local_img_001",
+                resource_type="image",
+                position="local:image=1",
+                filename="local_img_001.png",
+                status="unobserved",
+                download_status="downloaded",
+                local_path="images/local_img_001.png",
+                mime_type="image/png",
+            )
+        )
+        source_evidence_storage.write_source_evidence_json(
+            project_id,
+            run.id,
+            "raw/parsed_source.json",
+            {
+                "source_type": "local_file",
+                "title": "ui.png",
+                "doc_type": "image",
+                "token": "sha256:image",
+                "url": "",
+                "markdown": '<image ref="local_img_001" position="local:image=1" />',
+                "source_units": [],
+                "resources": [],
+                "raw_manifest": {},
+                "warnings": [],
+            },
+        )
+        await session.commit()
+        return run.id
 
 
 @pytest.mark.anyio
@@ -262,3 +488,232 @@ async def test_export_uses_selected_excel_reference_sheet_columns(
     assert headers[:4] == ["优先级", "功能模块", "操作步骤", "用例标题"]
     assert "历史未知列" not in headers
     assert STANDARD_CASE_FIELD_LABELS["case_id"] in headers
+
+
+@pytest.mark.anyio
+async def test_export_writes_safe_source_evidence_summary_from_server(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    """传 run_id 时导出说明使用服务端安全摘要，并过滤敏感内容。"""
+    run_id = await _seed_source_evidence_run(test_project_id)
+
+    response = await auth_client.post(
+        "/api/v1/test-cases/export",
+        json=_export_payload(
+            source_evidence_run_id=run_id,
+            source_evidence_summary=(
+                "客户端摘要不可信 sk-secret doccn-secret-token file-secret-token "
+                "raw prompt provider_response"
+            ),
+        ),
+    )
+
+    assert response.status_code == 200, response.text
+    workbook = _load_response_workbook(response)
+    workbook_text = "\n".join(
+        str(cell.value)
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+        if cell.value is not None
+    )
+
+    assert "Source Evidence 摘要" in workbook_text
+    assert "活动需求文档" in workbook_text
+    assert "TTL" in workbook_text
+    assert "资源总数=1" in workbook_text
+    assert "未观察/未采纳" in workbook_text
+    assert "客户端摘要不可信" not in workbook_text
+    for forbidden in (
+        "sk-secret",
+        "doccn-secret-token",
+        "file-secret-token",
+        "docx_img_001",
+        "D:/runtime/source-evidence",
+        "raw prompt",
+        "provider_response",
+    ):
+        assert forbidden not in workbook_text
+
+
+@pytest.mark.anyio
+async def test_export_includes_only_adopted_visual_evidence_summary(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    """导出说明只包含已采纳视觉证据摘要，不包含路径、token 或模型原始内容。"""
+    run_id = await _seed_source_evidence_run(test_project_id)
+    evidence_id = await _seed_adopted_visual_evidence(test_project_id, run_id)
+
+    response = await auth_client.post(
+        "/api/v1/test-cases/export",
+        json=_export_payload(
+            source_evidence_run_id=run_id,
+            adopted_visual_evidence_ids=[evidence_id],
+        ),
+    )
+
+    assert response.status_code == 200, response.text
+    workbook = _load_response_workbook(response)
+    workbook_text = "\n".join(
+        str(cell.value)
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+        if cell.value is not None
+    )
+
+    assert "已采纳视觉证据" in workbook_text
+    assert "docx_img_001" in workbook_text
+    assert "图中展示活动入口按钮" in workbook_text
+    assert "只能确认截图可见内容" in workbook_text
+    for forbidden in (
+        "visual_evidence/observations",
+        "visual_evidence/images",
+        "file-secret-token",
+        "doccn-secret-token",
+        "prompt",
+        "provider_response",
+        "sk-",
+    ):
+        assert forbidden not in workbook_text
+
+
+@pytest.mark.anyio
+async def test_export_rejects_invalid_adopted_visual_evidence_ids(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    run_id = await _seed_source_evidence_run(test_project_id)
+    other_run_id = await _seed_source_evidence_run(test_project_id)
+    other_run_evidence_id = await _seed_adopted_visual_evidence(
+        test_project_id,
+        other_run_id,
+    )
+    observed_id = await _seed_visual_evidence(test_project_id, run_id, status="observed")
+
+    missing_response = await auth_client.post(
+        "/api/v1/test-cases/export",
+        json=_export_payload(
+            source_evidence_run_id=run_id,
+            adopted_visual_evidence_ids=[99999999],
+        ),
+    )
+    other_run_response = await auth_client.post(
+        "/api/v1/test-cases/export",
+        json=_export_payload(
+            source_evidence_run_id=run_id,
+            adopted_visual_evidence_ids=[other_run_evidence_id],
+        ),
+    )
+    observed_response = await auth_client.post(
+        "/api/v1/test-cases/export",
+        json=_export_payload(
+            source_evidence_run_id=run_id,
+            adopted_visual_evidence_ids=[observed_id],
+        ),
+    )
+
+    assert missing_response.status_code == 404
+    assert other_run_response.status_code == 404
+    assert observed_response.status_code == 400
+    assert "已采纳" in observed_response.text
+
+
+@pytest.mark.anyio
+async def test_export_rejects_textless_image_run_without_adopted_evidence(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    run_id = await _seed_textless_image_source_evidence_run(test_project_id)
+
+    response = await auth_client.post(
+        "/api/v1/test-cases/export",
+        json=_export_payload(source_evidence_run_id=run_id),
+    )
+
+    assert response.status_code == 409
+    assert "采纳视觉证据" in response.text
+
+
+@pytest.mark.anyio
+async def test_export_rejects_payload_referencing_unadopted_visual_ref(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    run_id = await _seed_source_evidence_run(test_project_id)
+    cases = _cases()
+    cases[0]["remarks"] = "错误引用未采纳图片 docx_img_001。"
+
+    response = await auth_client.post(
+        "/api/v1/test-cases/export",
+        json=_export_payload(
+            source_evidence_run_id=run_id,
+            cases=cases,
+        ),
+    )
+
+    assert response.status_code == 400
+    assert "未采纳" in response.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("status", "expires_at"),
+    [
+        ("cleaned", datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)),
+        ("ready", datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=1)),
+    ],
+)
+async def test_export_rejects_expired_or_cleaned_source_evidence_run(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    status: str,
+    expires_at: datetime.datetime,
+) -> None:
+    """过期或 cleaned run 不允许导出证据复查说明。"""
+    run_id = await _seed_source_evidence_run(
+        test_project_id,
+        status=status,
+        expires_at=expires_at,
+    )
+
+    response = await auth_client.post(
+        "/api/v1/test-cases/export",
+        json=_export_payload(source_evidence_run_id=run_id),
+    )
+
+    assert response.status_code == 409
+    assert "重新读取来源" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_export_without_run_id_sanitizes_client_evidence_summary(
+    auth_client: AsyncClient,
+) -> None:
+    """未传 run_id 时只写入脱敏后的客户端摘要。"""
+    response = await auth_client.post(
+        "/api/v1/test-cases/export",
+        json=_export_payload(
+            evidence_summary=(
+                "Source Evidence：待观察资源；api_key=sk-client-secret；"
+                "Authorization: Bearer token；prompt=raw"
+            ),
+        ),
+    )
+
+    assert response.status_code == 200, response.text
+    workbook = _load_response_workbook(response)
+    workbook_text = "\n".join(
+        str(cell.value)
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+        if cell.value is not None
+    )
+
+    assert "待观察资源" in workbook_text
+    assert "sk-client-secret" not in workbook_text
+    assert "Authorization" not in workbook_text
+    assert "prompt=raw" not in workbook_text

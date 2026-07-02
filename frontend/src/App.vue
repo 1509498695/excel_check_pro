@@ -113,12 +113,13 @@ async function handleSwitchProject(projectId: number): Promise<void> {
     v-if="showShell"
     class="ec-app-shell"
   >
+    <a class="ec-skip-link" href="#main-content">跳到主内容</a>
     <!-- ============= 左侧固定边栏 ============= -->
     <aside class="ec-sidebar">
       <!-- 品牌：主色方块 + 表格 SVG -->
       <div class="ec-sidebar-brand">
         <div class="ec-sidebar-brand__mark">
-          <svg viewBox="0 0 24 24" class="ec-sidebar-brand__icon" fill="none" stroke="currentColor" stroke-width="2">
+          <svg viewBox="0 0 24 24" class="ec-sidebar-brand__icon" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
             <path d="M4 5h16v14H4z M4 10h16 M9 5v14" />
           </svg>
         </div>
@@ -147,6 +148,7 @@ async function handleSwitchProject(projectId: number): Promise<void> {
             stroke-width="2"
             stroke-linecap="round"
             stroke-linejoin="round"
+            aria-hidden="true"
           >
             <path :d="item.icon" />
           </svg>
@@ -211,7 +213,7 @@ async function handleSwitchProject(projectId: number): Promise<void> {
     </aside>
 
     <!-- ============= 右侧主区：纯 router-view，TopBar 由各页面自己提供 ============= -->
-    <main class="ec-app-main">
+    <main id="main-content" class="ec-app-main" tabindex="-1">
       <router-view />
     </main>
   </div>

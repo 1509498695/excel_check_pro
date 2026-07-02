@@ -19,7 +19,7 @@ withDefaults(
 
 <template>
   <article class="ui-metric-card">
-    <div class="ui-metric-card__icon" :class="`ui-metric-card__icon--${iconTone}`">
+    <div class="ui-metric-card__icon" :class="`ui-metric-card__icon--${iconTone}`" aria-hidden="true">
       <slot name="icon">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <path d="M4 7h16M4 12h16M4 17h10" />

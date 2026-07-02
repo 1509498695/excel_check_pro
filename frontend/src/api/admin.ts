@@ -3,7 +3,10 @@ import type {
   FeishuBotConfigPayload,
   FeishuBotTestSendPayload,
   FeishuBotTestSendResult,
+  ProjectVisionAiConfig,
+  ProjectVisionAiConfigPayload,
   ProjectSvnCredentialTestResult,
+  SourceEvidenceSvnRootsConfig,
 } from '../types/admin'
 import type { ProjectDetail, ProjectMember } from '../types/auth'
 import { apiFetch } from '../utils/apiFetch'
@@ -182,6 +185,76 @@ export async function apiTestProjectSvnCredential(
 ): Promise<SingleResponse<ProjectSvnCredentialTestResult>> {
   return apiFetch<SingleResponse<ProjectSvnCredentialTestResult>>(
     `/api/v1/admin/projects/${projectId}/svn-credential/test`,
+    {
+      method: 'POST',
+    },
+  )
+}
+
+export async function apiGetSourceEvidenceSvnRoots(
+  projectId: number,
+): Promise<SingleResponse<SourceEvidenceSvnRootsConfig>> {
+  return apiFetch<SingleResponse<SourceEvidenceSvnRootsConfig>>(
+    `/api/v1/admin/projects/${projectId}/source-evidence-svn-roots`,
+  )
+}
+
+export async function apiSaveSourceEvidenceSvnRoots(
+  projectId: number,
+  payload: SourceEvidenceSvnRootsConfig,
+): Promise<SingleResponse<SourceEvidenceSvnRootsConfig>> {
+  return apiFetch<SingleResponse<SourceEvidenceSvnRootsConfig>>(
+    `/api/v1/admin/projects/${projectId}/source-evidence-svn-roots`,
+    {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+function projectVisionAiConfigPath(projectId: number): string {
+  return `/api/v1/admin/projects/${projectId}/vision-ai-config`
+}
+
+export async function apiGetProjectVisionAiConfig(
+  projectId: number,
+): Promise<SingleResponse<ProjectVisionAiConfig>> {
+  return apiFetch<SingleResponse<ProjectVisionAiConfig>>(projectVisionAiConfigPath(projectId))
+}
+
+export async function apiSaveProjectVisionAiConfig(
+  projectId: number,
+  payload: ProjectVisionAiConfigPayload,
+): Promise<SingleResponse<ProjectVisionAiConfig>> {
+  const body: Record<string, unknown> = {
+    provider: payload.provider,
+    model: payload.model,
+    base_url: payload.base_url,
+    enabled: payload.enabled,
+  }
+  if (payload.api_key) {
+    body.api_key = payload.api_key
+  }
+  if (payload.extra_headers) {
+    body.extra_headers = payload.extra_headers
+  }
+  return apiFetch<SingleResponse<ProjectVisionAiConfig>>(projectVisionAiConfigPath(projectId), {
+    method: 'PUT',
+    body: JSON.stringify(body),
+  })
+}
+
+export async function apiDeleteProjectVisionAiConfig(projectId: number): Promise<void> {
+  await apiFetch(projectVisionAiConfigPath(projectId), {
+    method: 'DELETE',
+  })
+}
+
+export async function apiTestProjectVisionAiConfig(
+  projectId: number,
+): Promise<SingleResponse<ProjectVisionAiConfig>> {
+  return apiFetch<SingleResponse<ProjectVisionAiConfig>>(
+    `${projectVisionAiConfigPath(projectId)}/test`,
     {
       method: 'POST',
     },

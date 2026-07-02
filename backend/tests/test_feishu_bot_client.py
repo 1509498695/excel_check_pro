@@ -16,8 +16,10 @@ from backend.app.integrations.feishu_bot import (
     get_tenant_access_token,
     invalidate_token_cache,
     send_card_to_chat,
+    send_card_to_open_id,
     send_file_to_chat,
     send_text_to_chat,
+    send_text_to_open_id,
 )
 from backend.app.models import FeishuBotConfigRecord
 from backend.app.security.crypto import encrypt_secret
@@ -217,7 +219,8 @@ async def test_get_tenant_access_token_raises_on_business_error(
 
     message = str(exc_info.value)
     assert "code=10003" in message
-    assert "invalid app_secret" in message
+    assert "app_secret" not in message
+    assert "invalid [REDACTED]" in message
 
 
 @pytest.mark.anyio
@@ -296,6 +299,7 @@ async def test_send_card_to_chat_serializes_card_dict(
                 },
             )
         if request.url.path == feishu_bot.SEND_MESSAGE_PATH:
+            captured["url"] = str(request.url)
             captured["body"] = json.loads(request.content.decode("utf-8"))
             return httpx.Response(
                 200,
@@ -322,9 +326,117 @@ async def test_send_card_to_chat_serializes_card_dict(
         )
 
     assert result["message_id"] == "om_demo_card"
+    assert "receive_id_type=chat_id" in captured["url"]
+    assert captured["body"]["receive_id"] == "oc_card_chat"
     assert captured["body"]["msg_type"] == "interactive"
     content = json.loads(captured["body"]["content"])
     assert content == card
+
+
+@pytest.mark.anyio
+async def test_send_card_to_open_id_uses_open_id_receive_type(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_config(test_project_id)
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "tenant_access_token": "t_open_card",
+                    "expire": 7200,
+                },
+            )
+        if request.url.path == feishu_bot.SEND_MESSAGE_PATH:
+            captured["url"] = str(request.url)
+            captured["headers"] = dict(request.headers)
+            captured["body"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "data": {"message_id": "om_open_card"},
+                },
+            )
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    card = {
+        "header": {"title": {"tag": "plain_text", "content": "授权提醒"}},
+        "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": "hi"}}],
+    }
+    async with async_session_factory() as session:
+        result = await send_card_to_open_id(
+            db=session,
+            project_id=test_project_id,
+            open_id="ou_unit_user",
+            card=card,
+        )
+
+    assert result["message_id"] == "om_open_card"
+    assert "receive_id_type=open_id" in captured["url"]
+    assert captured["headers"].get("authorization") == "Bearer t_open_card"
+    assert captured["body"]["receive_id"] == "ou_unit_user"
+    assert captured["body"]["msg_type"] == "interactive"
+    assert json.loads(captured["body"]["content"]) == card
+
+
+@pytest.mark.anyio
+async def test_send_text_to_open_id_uses_open_id_receive_type(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_config(test_project_id)
+    captured: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "tenant_access_token": "t_open_text",
+                    "expire": 7200,
+                },
+            )
+        if request.url.path == feishu_bot.SEND_MESSAGE_PATH:
+            captured["url"] = str(request.url)
+            captured["body"] = json.loads(request.content.decode("utf-8"))
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "data": {"message_id": "om_open_text"},
+                },
+            )
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    async with async_session_factory() as session:
+        result = await send_text_to_open_id(
+            db=session,
+            project_id=test_project_id,
+            open_id="ou_unit_user",
+            text="请完成授权",
+        )
+
+    assert result["message_id"] == "om_open_text"
+    assert "receive_id_type=open_id" in captured["url"]
+    assert captured["body"]["receive_id"] == "ou_unit_user"
+    assert captured["body"]["msg_type"] == "text"
+    assert json.loads(captured["body"]["content"]) == {"text": "请完成授权"}
 
 
 @pytest.mark.anyio
@@ -428,3 +540,58 @@ async def test_send_text_to_chat_raises_when_project_unconfigured(
 
     assert "未配置" in str(exc_info.value)
     assert network_calls["value"] == 0
+
+
+@pytest.mark.anyio
+async def test_bot_errors_redact_sensitive_markers(
+    test_db,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    await _seed_feishu_config(test_project_id)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == feishu_bot.TENANT_ACCESS_TOKEN_PATH:
+            return httpx.Response(
+                200,
+                json={
+                    "code": 0,
+                    "msg": "ok",
+                    "tenant_access_token": "t_send",
+                    "expire": 7200,
+                },
+            )
+        if request.url.path == feishu_bot.SEND_MESSAGE_PATH:
+            return httpx.Response(
+                500,
+                text=(
+                    "app_secret=secret_unit tenant_access_token=t_send "
+                    "user_access_token=u_x OAuth code=abc "
+                    "Authorization: Bearer t_header Bearer u_header"
+                ),
+            )
+        return httpx.Response(404)
+
+    _install_mock_transport(monkeypatch, handler)
+
+    async with async_session_factory() as session:
+        with pytest.raises(FeishuApiError) as exc_info:
+            await send_text_to_chat(
+                db=session,
+                project_id=test_project_id,
+                chat_id="oc_xxx",
+                text="hi",
+            )
+
+    message = str(exc_info.value)
+    assert "app_secret" not in message
+    assert "tenant_access_token" not in message
+    assert "user_access_token" not in message
+    assert "OAuth code" not in message
+    assert "Authorization" not in message
+    assert "Bearer" not in message
+    assert "secret_unit" not in message
+    assert "t_send" not in message
+    assert "u_x" not in message
+    assert "t_header" not in message
+    assert "u_header" not in message

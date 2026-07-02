@@ -561,7 +561,11 @@ V1 不做可维护 QA 知识库。后端内部可以预留 `knowledge_context` �
 
 ## 19. V2 候选
 
+用例生成 V2 的 Source Evidence 泛化、SVN/本地文件读取、`.xls` 图片转换、视觉证据采纳和校验规则已拆到 `docs/specs/test-case-generation-v2-source-evidence.md`。本文件继续作为 V1 基线和后续候选索引维护。
+
 - 飞书文档、图片、原型图和文档附件理解。
+- 本地文件和 SVN 文件通过 `Source Evidence Run` 读取策划案文本、表格和图片资源；旧 `Planning Sheet Snapshot` 只保留 V1 兼容。
+- `.xls` 内嵌图片进入 V2.0 首批范围，通过受控 `.xls -> .xlsx` 转换后复用图片解析能力。
 - `Source Evidence Run`：允许为飞书文档读取、图片/附件下载、视觉证据包和 observation 短期保存来源证据；按项目隔离，默认 7 天 TTL 自动清理，不进入生成历史。
 - `Source Evidence Run` TTL 到期清理时必须删除原文快照、图片/附件文件、视觉证据包和 observation 详情；只保留最小审计元数据，例如 run id、项目、来源标识、资源文件名、状态、操作人、创建时间和清理时间。最小审计元数据不随 7 天 TTL 删除，按项目审计数据保留策略保留。
 - 项目审计数据保留策略 V2 不新增独立项目配置页；沿用项目审计默认策略。只有超级管理员可配置全局默认值，项目管理员只能查看，不允许按项目覆盖审计保留期限。

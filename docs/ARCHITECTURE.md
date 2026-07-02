@@ -10,14 +10,16 @@ Excel Check 解决配置表规则校验的工程问题：把数据源、变量�
 |---|---|---|---|
 | 个人校验 | `/` | `project_id + user_id` | 临时排查、个人编排、IAP 礼包校验。 |
 | 项目校验 | `/fixed-rules` | `project_id` | 长期规则配置、导入个人规则、周期性复用。 |
+| 用例生成 | `/test-cases` | `project_id`，来源证据按 TTL 短期保留 | 把策划案文本、表格和已采纳视觉证据生成测试用例。 |
 
 明确不做：
 
 - 不做 SaaS 化、容器编排、反代、HTTPS。
 - 不恢复 CSV 数据源。
-- 飞书只支持电子表格和 wiki 电子表格链接；不支持多维表格、文档表格或任意 Drive 文件。
+- 个人/项目校验数据源中的飞书只支持电子表格和 wiki 电子表格链接；不支持多维表格、文档表格或任意 Drive 文件。
 - AI provider 基础能力只服务项目级 AI 配置、配置表查询 AI 名称匹配、礼包结构识别和活动任务建议；个人校验不提供自然语言生成规则入口。
-- SVN 远端只支持白名单 host、`http(s)://`、单文件 `.xls/.xlsx`。
+- 个人/项目校验数据源中的 SVN 远端只支持白名单 host、`http(s)://`、单文件 `.xls/.xlsx`。
+- 用例生成 V2 的飞书文档、本地文件、SVN 文件和图片读取走独立 `Source Evidence Run` 链路，见 [specs/test-case-generation-v2-source-evidence.md](specs/test-case-generation-v2-source-evidence.md)。
 
 ## 2. 核心契约
 
@@ -126,6 +128,7 @@ SVN 鉴权失败使用 HTTP 403，不触发前端登录态过期逻辑；HTTP 40
 - 配置表查询 AI 名称匹配：在确定性候选范围内做排序或归一化，不改变查询规则配置。
 - 礼包规划表结构识别。
 - 活动任务配置建议。
+- 用例生成 Source Evidence 视觉观察：使用独立的 Project Vision AI Credential，observation 只有被用户采纳后才能进入生成或导出说明。
 
 项目级 AI 不可用时，自动辅助能力应尽量回退到确定性逻辑并给出告警；用户显式触发的 AI 操作应提示联系项目管理员配置项目级 AI 凭据。任何接口、日志和持久化摘要都不得暴露完整 API Key。
 
@@ -147,6 +150,6 @@ SVN 鉴权失败使用 HTTP 403，不触发前端登录态过期逻辑；HTTP 40
 | CSV 数据源 | 已下线，仅保留历史提示。 |
 | 多配置集切换 | 未开放。 |
 | SVN 远端 | 仅支持白名单 host、`http(s)://`、单文件 Excel。 |
-| SVN 缓存清理 | 暂无定时清理策略。 |
+| SVN 缓存清理 | `runtime_cleanup` 按 `SVN_CACHE_RETENTION_DAYS` 清理过期全局 SVN cache；用例生成 Source Evidence 的 run 内 SVN 副本按 Source Evidence TTL 清理。 |
 | IAP 礼包校验 | 当前重点接在个人校验 03 规则页签；固定规则侧保留预览与运行时兼容能力，但不作为主要业务入口。 |
-| AI 能力 | 当前仅保留 provider 基础调用、礼包规划表结构识别和活动任务配置建议。 |
+| AI 能力 | 当前仅保留 provider 基础调用、配置表查询名称匹配、礼包规划表结构识别、活动任务配置建议和 Source Evidence 视觉观察。 |

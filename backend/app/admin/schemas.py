@@ -65,6 +65,32 @@ class FeishuBotQueryRootRequest(BaseModel):
         return value
 
 
+class SourceEvidenceSvnRootRequest(BaseModel):
+    """项目级 Source Evidence SVN 文件读取边界。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    alias: str = Field(min_length=1, max_length=64)
+    display_name: str = Field(default="", max_length=128)
+    svn_url: str = Field(max_length=2048)
+    enabled: bool = True
+
+    @field_validator("alias", "display_name", "svn_url", mode="before")
+    @classmethod
+    def _strip_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class SourceEvidenceSvnRootsUpdateRequest(BaseModel):
+    """替换保存项目级 Source Evidence SVN Roots。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[SourceEvidenceSvnRootRequest] = Field(default_factory=list)
+
+
 class ProjectSvnCredentialRequest(BaseModel):
     """项目级 SVN 凭据输入。"""
 
@@ -113,6 +139,26 @@ class ProjectAiConfigRequest(BaseModel):
     auto_match_threshold: float = Field(default=0.9, ge=0, le=1)
     candidate_threshold: float = Field(default=0.6, ge=0, le=1)
     max_candidates: int = Field(default=10, ge=1, le=20)
+    extra_headers: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("base_url", "model", "api_key", mode="before")
+    @classmethod
+    def _strip_optional_string(cls, value: object) -> object:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
+class ProjectVisionAiConfigRequest(BaseModel):
+    """项目级 Vision AI 凭据输入。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider: AiProviderPreset
+    model: str | None = Field(default=None, max_length=128)
+    api_key: str | None = Field(default=None, max_length=2048)
+    base_url: str | None = Field(default=None, max_length=2048)
+    enabled: bool = True
     extra_headers: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("base_url", "model", "api_key", mode="before")

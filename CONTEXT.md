@@ -217,12 +217,12 @@ Source material used to derive test cases from product or game design content. A
 _Avoid_: Configuration table, validation source, rule configuration, lookup source
 
 **Planning Sheet**:
-The single worksheet selected from a planning document as the complete source material for one test case generation. It is treated as whole-sheet input rather than a user-selected row/column range, workbook-wide source, or multi-sheet merge.
+The single worksheet selected from a planning document as the complete source material for one test case generation, including its text, table content, and visual resources located on that worksheet. It is treated as whole-sheet input rather than a user-selected row/column range, workbook-wide source, or multi-sheet merge.
 _Avoid_: Workbook bundle, multi-sheet source, arbitrary sheet merge, manual range selection
 
 **Planning Sheet Snapshot**:
-A bounded representation of a planning sheet prepared for test case generation, preserving the selected sheet's source identity while making content limits visible to the user.
-_Avoid_: Raw workbook, hidden truncation, user-selected range
+A bounded representation of a planning sheet prepared for test case generation, preserving the selected sheet's source identity and sheet-scoped resource references while making content limits visible to the user.
+_Avoid_: Raw workbook, full source evidence run, hidden truncation, user-selected range
 
 **AI-Assisted Snapshot Brief**:
 A human-readable Markdown brief organized from a planning sheet snapshot for planner and QA alignment. It may support later test case generation as auxiliary context, but the planning sheet snapshot remains the source of truth for requirements and traceability.
@@ -231,6 +231,10 @@ _Avoid_: Requirement source, raw snapshot replacement, Test Case Blueprint, gene
 **Source Evidence Run**:
 A short-lived, project-scoped source reading session that can hold planning document text, tables, images, attachments, and visual observations used to build or explain a test case generation input. It is supporting evidence for one generation workflow, not a generated result history or a maintained knowledge base.
 _Avoid_: Generation history, project QA knowledge library, reference test case library, permanent source archive, raw prompt log
+
+**Source Evidence SVN Root**:
+An administrator-approved SVN directory boundary from which source evidence runs may read planning documents and visual resources for test case generation. It is separate from configuration-table query roots and is not authored inside query rule configuration.
+_Avoid_: Remote SVN Query Root, user-provided SVN URL, query configuration root, personal SVN credential scope
 
 **Project Audit Retention Policy**:
 A project-level rule for retaining non-content audit metadata after sensitive source evidence or generated artifacts have been cleaned. It does not permit retaining raw planning text, images, attachments, visual observation details, prompts, or generated result history.

@@ -11,9 +11,19 @@ import type {
   ReferenceDeleteApiResponse,
   ReferenceFileApiResponse,
   ReferenceFileListApiResponse,
+  SourceEvidenceAdoptVisualEvidenceRequest,
+  SourceEvidenceCleanupAuditListApiResponse,
+  SourceEvidenceObservationListApiResponse,
+  SourceEvidenceResourceListApiResponse,
+  SourceEvidenceRunApiResponse,
+  SourceEvidenceRunCreateRequest,
+  SourceEvidenceVisualCandidatesApiResponse,
+  SourceEvidenceVisualSelectionRequest,
   TestCaseExportRequest,
   TestCaseGenerationApiResponse,
   TestCaseGenerationRequest,
+  SourceEvidenceAuthorizationRequestApiResponse,
+  SourceEvidenceCapabilityStatusApiResponse,
 } from '../types/testCases'
 import { apiDownloadFile, apiFetch } from '../utils/apiFetch'
 
@@ -33,6 +43,142 @@ export async function readPlanningSnapshotBrief(
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export async function createSourceEvidenceRun(
+  payload: SourceEvidenceRunCreateRequest,
+): Promise<SourceEvidenceRunApiResponse> {
+  return apiFetch<SourceEvidenceRunApiResponse>('/api/v1/test-cases/source-evidence-runs', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function createLocalFileSourceEvidenceRun(file: File): Promise<SourceEvidenceRunApiResponse> {
+  const formData = new FormData()
+  formData.append('file', file)
+  return apiFetch<SourceEvidenceRunApiResponse>('/api/v1/test-cases/source-evidence-runs/upload', {
+    method: 'POST',
+    body: formData,
+  })
+}
+
+export async function fetchSourceEvidenceRun(runId: number): Promise<SourceEvidenceRunApiResponse> {
+  return apiFetch<SourceEvidenceRunApiResponse>(`/api/v1/test-cases/source-evidence-runs/${runId}`)
+}
+
+export async function fetchSourceEvidenceCapabilities(): Promise<SourceEvidenceCapabilityStatusApiResponse> {
+  return apiFetch<SourceEvidenceCapabilityStatusApiResponse>('/api/v1/test-cases/source-evidence-capabilities')
+}
+
+export async function fetchSourceEvidenceResources(runId: number): Promise<SourceEvidenceResourceListApiResponse> {
+  return apiFetch<SourceEvidenceResourceListApiResponse>(
+    `/api/v1/test-cases/source-evidence-runs/${runId}/resources`,
+  )
+}
+
+export async function fetchSourceEvidenceVisualCandidates(
+  runId: number,
+): Promise<SourceEvidenceVisualCandidatesApiResponse> {
+  return apiFetch<SourceEvidenceVisualCandidatesApiResponse>(
+    `/api/v1/test-cases/source-evidence-runs/${runId}/visual-candidates`,
+  )
+}
+
+export async function saveSourceEvidenceVisualSelections(
+  runId: number,
+  payload: SourceEvidenceVisualSelectionRequest,
+): Promise<SourceEvidenceVisualCandidatesApiResponse> {
+  return apiFetch<SourceEvidenceVisualCandidatesApiResponse>(
+    `/api/v1/test-cases/source-evidence-runs/${runId}/visual-selections`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export async function observeSourceEvidenceRun(
+  runId: number,
+): Promise<SourceEvidenceObservationListApiResponse> {
+  return apiFetch<SourceEvidenceObservationListApiResponse>(
+    `/api/v1/test-cases/source-evidence-runs/${runId}/observations`,
+    {
+      method: 'POST',
+    },
+  )
+}
+
+export async function fetchSourceEvidenceObservations(
+  runId: number,
+): Promise<SourceEvidenceObservationListApiResponse> {
+  return apiFetch<SourceEvidenceObservationListApiResponse>(
+    `/api/v1/test-cases/source-evidence-runs/${runId}/observations`,
+  )
+}
+
+export async function adoptSourceEvidenceVisualEvidence(
+  runId: number,
+  payload: SourceEvidenceAdoptVisualEvidenceRequest,
+): Promise<SourceEvidenceObservationListApiResponse> {
+  return apiFetch<SourceEvidenceObservationListApiResponse>(
+    `/api/v1/test-cases/source-evidence-runs/${runId}/adopted-visual-evidence`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  )
+}
+
+export async function revokeSourceEvidenceVisualEvidence(
+  runId: number,
+  evidenceId: number,
+): Promise<SourceEvidenceObservationListApiResponse> {
+  return apiFetch<SourceEvidenceObservationListApiResponse>(
+    `/api/v1/test-cases/source-evidence-runs/${runId}/adopted-visual-evidence/${evidenceId}`,
+    {
+      method: 'DELETE',
+    },
+  )
+}
+
+export async function readSourceEvidenceSnapshot(runId: number): Promise<PlanningSnapshotApiResponse> {
+  return apiFetch<PlanningSnapshotApiResponse>(`/api/v1/test-cases/source-evidence-runs/${runId}/snapshot`, {
+    method: 'POST',
+  })
+}
+
+export async function retrySourceEvidenceRun(runId: number): Promise<SourceEvidenceRunApiResponse> {
+  return apiFetch<SourceEvidenceRunApiResponse>(`/api/v1/test-cases/source-evidence-runs/${runId}/retry`, {
+    method: 'POST',
+  })
+}
+
+export async function requestSourceEvidenceAuthorization(
+  runId: number,
+): Promise<SourceEvidenceAuthorizationRequestApiResponse> {
+  return apiFetch<SourceEvidenceAuthorizationRequestApiResponse>(
+    `/api/v1/test-cases/source-evidence-runs/${runId}/authorization-request`,
+    {
+      method: 'POST',
+    },
+  )
+}
+
+export async function fetchSourceEvidenceCleanupAudits(
+  params: { limit?: number; offset?: number } = {},
+): Promise<SourceEvidenceCleanupAuditListApiResponse> {
+  const query = new URLSearchParams()
+  if (typeof params.limit === 'number') {
+    query.set('limit', String(params.limit))
+  }
+  if (typeof params.offset === 'number') {
+    query.set('offset', String(params.offset))
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return apiFetch<SourceEvidenceCleanupAuditListApiResponse>(
+    `/api/v1/test-cases/source-evidence-cleanup-audits${suffix}`,
+  )
 }
 
 export async function generateTestCases(

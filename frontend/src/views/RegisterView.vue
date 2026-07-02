@@ -72,7 +72,7 @@ async function handleRegister(): Promise<void> {
     <!-- 品牌 -->
     <div class="flex flex-col items-center gap-3 mb-8">
       <div class="flex h-12 w-12 items-center justify-center rounded-md bg-accent text-white">
-        <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2">
+        <svg viewBox="0 0 24 24" class="h-6 w-6" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
           <path d="M4 5h16v14H4z M4 10h16 M9 5v14" />
         </svg>
       </div>
@@ -95,19 +95,39 @@ async function handleRegister(): Promise<void> {
       <div class="flex flex-col gap-4">
         <div>
           <label class="mb-1.5 block text-[12px] font-medium text-ink-500">用户名</label>
-          <el-input v-model="username" placeholder="至少 2 个字符" autofocus />
+          <el-input
+            v-model="username"
+            name="username"
+            autocomplete="username"
+            :spellcheck="false"
+            placeholder="至少 2 个字符…"
+          />
         </div>
         <div>
           <label class="mb-1.5 block text-[12px] font-medium text-ink-500">密码</label>
-          <el-input v-model="password" type="password" placeholder="至少 4 个字符" show-password />
+          <el-input
+            v-model="password"
+            name="new-password"
+            type="password"
+            autocomplete="new-password"
+            placeholder="至少 4 个字符…"
+            show-password
+          />
         </div>
         <div>
           <label class="mb-1.5 block text-[12px] font-medium text-ink-500">确认密码</label>
-          <el-input v-model="confirmPassword" type="password" placeholder="再次输入密码" show-password />
+          <el-input
+            v-model="confirmPassword"
+            name="confirm-password"
+            type="password"
+            autocomplete="new-password"
+            placeholder="再次输入密码…"
+            show-password
+          />
         </div>
         <div>
           <label class="mb-1.5 block text-[12px] font-medium text-ink-500">归属项目</label>
-          <el-select v-model="selectedProjectId" placeholder="选择归属项目" class="w-full">
+          <el-select v-model="selectedProjectId" name="project" autocomplete="off" placeholder="选择归属项目…" class="w-full">
             <el-option
               v-for="project in projects"
               :key="project.id"

@@ -9,11 +9,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.ai.providers import mask_api_key
-from backend.app.models import ProjectAiCredentialRecord
+from backend.app.models import ProjectAiCredentialRecord, ProjectVisionAiCredentialRecord
 from backend.app.security.crypto import decrypt_secret
 
 
 PROJECT_AI_UNAVAILABLE_MESSAGE = "当前项目尚未配置或启用项目级 AI 凭据，请联系项目管理员在管理后台配置"
+PROJECT_VISION_AI_UNAVAILABLE_MESSAGE = "当前项目尚未配置或启用项目级 Vision AI 凭据，请联系项目管理员在管理后台配置"
 _SK_STYLE_KEY_RE = re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b")
 _BEARER_TOKEN_RE = re.compile(r"(?i)(Bearer\s+)[A-Za-z0-9._\-]{12,}")
 
@@ -24,6 +25,14 @@ class AiProviderNotConfigured(ValueError):
 
 class AiProviderInvalid(ValueError):
     """项目级 AI 凭据无法解密。"""
+
+
+class VisionAiProviderNotConfigured(ValueError):
+    """项目级 Vision AI 供应商尚未配置或未启用。"""
+
+
+class VisionAiProviderInvalid(ValueError):
+    """项目级 Vision AI 凭据无法解密。"""
 
 
 async def load_project_credential(
@@ -44,6 +53,24 @@ async def load_project_credential(
     return credential
 
 
+async def load_project_vision_credential(
+    db: AsyncSession,
+    project_id: int,
+) -> ProjectVisionAiCredentialRecord:
+    """Load the current project's Vision AI credential record."""
+    result = await db.execute(
+        select(ProjectVisionAiCredentialRecord).where(
+            ProjectVisionAiCredentialRecord.project_id == project_id
+        )
+    )
+    credential = result.scalar_one_or_none()
+    if credential is None or not credential.encrypted_api_key:
+        raise VisionAiProviderNotConfigured(PROJECT_VISION_AI_UNAVAILABLE_MESSAGE)
+    if not credential.enabled:
+        raise VisionAiProviderNotConfigured(PROJECT_VISION_AI_UNAVAILABLE_MESSAGE)
+    return credential
+
+
 def decrypt_credential_key(credential: ProjectAiCredentialRecord) -> str:
     """Decrypt a provider API key and normalize the domain error."""
     try:
@@ -52,6 +79,17 @@ def decrypt_credential_key(credential: ProjectAiCredentialRecord) -> str:
         raise AiProviderInvalid(PROJECT_AI_UNAVAILABLE_MESSAGE) from exc
     if not api_key:
         raise AiProviderNotConfigured(PROJECT_AI_UNAVAILABLE_MESSAGE)
+    return api_key
+
+
+def decrypt_vision_credential_key(credential: ProjectVisionAiCredentialRecord) -> str:
+    """Decrypt a Vision provider API key and normalize the domain error."""
+    try:
+        api_key = decrypt_secret(credential.encrypted_api_key)
+    except ValueError as exc:
+        raise VisionAiProviderInvalid(PROJECT_VISION_AI_UNAVAILABLE_MESSAGE) from exc
+    if not api_key:
+        raise VisionAiProviderNotConfigured(PROJECT_VISION_AI_UNAVAILABLE_MESSAGE)
     return api_key
 
 

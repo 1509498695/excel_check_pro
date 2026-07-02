@@ -104,7 +104,10 @@ async function handleSubmit(): Promise<void> {
         </label>
         <el-input
           v-model="form.chatId"
-          placeholder="例如：oc_1234567890abcdef"
+          name="test-send-chat-id"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="例如：oc_1234567890abcdef…"
           maxlength="128"
           show-word-limit
         />
@@ -117,9 +120,11 @@ async function handleSubmit(): Promise<void> {
           v-model="form.text"
           type="textarea"
           :rows="4"
+          name="test-send-text"
+          autocomplete="off"
           maxlength="4000"
           show-word-limit
-          placeholder="例如：来自 Excel-Check 的测试消息"
+          placeholder="例如：来自 Excel-Check 的测试消息…"
         />
       </div>
       <div class="flex items-center gap-2">

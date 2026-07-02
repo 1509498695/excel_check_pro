@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.ai.credentials import AiProviderInvalid, AiProviderNotConfigured
@@ -53,13 +53,55 @@ from backend.app.test_cases.schemas import (
     PlanningSnapshotRequest,
     ReferenceCategoryCreateRequest,
     ReferenceCategoryUpdateRequest,
+    SourceEvidenceAdoptVisualEvidenceRequest,
+    SourceEvidenceAuthorizationAuditItem,
+    SourceEvidenceAuthorizationAuditListResponse,
+    SourceEvidenceCleanupAuditItem,
+    SourceEvidenceCleanupAuditListResponse,
+    SourceEvidenceCapabilityStatusResponse,
+    SourceEvidenceRunCreateRequest,
+    SourceEvidenceVisualSelectionRequest,
     TestCaseExportRequest,
     TestCaseGenerationRequest,
+)
+from backend.app.test_cases.source_evidence_cleanup import (
+    list_source_evidence_cleanup_audits,
+)
+from backend.app.test_cases.source_evidence_capabilities import (
+    build_source_evidence_capability_status,
+)
+from backend.app.test_cases.source_evidence_authorization import (
+    REQUEST_EXPIRED_OR_CLEANED,
+    handle_source_evidence_oauth_callback,
+    invalidate_source_evidence_authorization,
+    list_source_evidence_authorizations,
+    render_callback_html,
+    request_source_evidence_authorization,
+)
+from backend.app.test_cases.source_evidence import (
+    SourceEvidenceError,
+    build_source_evidence_resources_response,
+    build_source_evidence_run_response,
+    build_source_evidence_safe_context,
+    build_source_evidence_snapshot,
+    create_source_evidence_run_from_request,
+    create_source_evidence_run_from_upload,
+    ensure_no_forbidden_visual_refs,
+    retry_source_evidence_run,
+)
+from backend.app.test_cases.visual_evidence import (
+    adopt_visual_evidence,
+    build_visual_candidates_response,
+    build_visual_observations_response,
+    create_visual_observations,
+    revoke_adopted_visual_evidence,
+    save_visual_selections,
 )
 from backend.app.test_cases.snapshot_brief import (
     SnapshotBriefPayloadError,
     generate_planning_snapshot_brief,
 )
+from backend.config import settings
 
 
 router = APIRouter(prefix="/test-cases", tags=["test-cases"])
@@ -121,6 +163,11 @@ def _require_test_case_admin(ctx: CurrentUserContext) -> int:
     return project_id
 
 
+def _is_project_admin(ctx: CurrentUserContext, project_id: int) -> bool:
+    """判断当前用户是否拥有当前项目管理权限。"""
+    return ctx.is_super_admin or ctx.role_in_project(project_id) == "admin"
+
+
 def _not_implemented_response(feature: str, project_id: int) -> JSONResponse:
     """返回稳定的骨架阶段占位响应。"""
     return JSONResponse(
@@ -153,6 +200,161 @@ def _raise_for_feishu_error(error: FeishuClientError) -> None:
 
 def _raise_reference_library_error(error: ReferenceLibraryError) -> None:
     raise HTTPException(status_code=error.status_code, detail=error.message)
+
+
+def _raise_source_evidence_error(error: SourceEvidenceError) -> None:
+    raise HTTPException(status_code=error.status_code, detail=error.message)
+
+
+def _resolve_source_evidence_oauth_callback_url(request: Request) -> str:
+    """返回 Source Evidence 专用 OAuth callback URL。"""
+    configured_callback_url = settings.feishu_source_evidence_oauth_callback_url.strip()
+    if configured_callback_url:
+        return configured_callback_url
+    return str(request.url_for("handle_source_evidence_authorization_oauth_callback_api"))
+
+
+@router.get("/source-evidence-cleanup-audits")
+async def get_source_evidence_cleanup_audits_api(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """项目管理员查看本项目 Source Evidence 清理审计摘要。"""
+    project_id = _require_test_case_admin(ctx)
+    items, total = await list_source_evidence_cleanup_audits(
+        db,
+        project_id=project_id,
+        limit=limit,
+        offset=offset,
+    )
+    response = SourceEvidenceCleanupAuditListResponse(
+        items=[SourceEvidenceCleanupAuditItem.model_validate(item) for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+    return {"code": 200, "msg": "ok", "data": response.model_dump(mode="json")}
+
+
+@router.get("/source-evidence-capabilities")
+async def get_source_evidence_capabilities_api(
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """读取当前项目 Source Evidence 运行能力状态。"""
+    project_id = _require_test_case_project(ctx)
+    result: SourceEvidenceCapabilityStatusResponse = await build_source_evidence_capability_status(
+        db,
+        project_id=project_id,
+        is_project_admin=_is_project_admin(ctx, project_id),
+    )
+    return {
+        "code": 200,
+        "msg": "ok",
+        "data": result.model_dump(mode="json", exclude_none=True),
+    }
+
+
+@router.post("/source-evidence-runs/{run_id}/authorization-request")
+async def request_source_evidence_authorization_api(
+    run_id: int,
+    request: Request,
+    _knowledge_guard: None = Depends(reject_public_knowledge_context),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    """显式发送 Source Evidence 飞书源文档授权卡。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await request_source_evidence_authorization(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+            requested_by=ctx.user.username,
+            callback_url=_resolve_source_evidence_oauth_callback_url(request),
+        )
+        await db.commit()
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    status_code = 409 if result.status == REQUEST_EXPIRED_OR_CLEANED else 200
+    return JSONResponse(
+        status_code=status_code,
+        content={
+            "code": status_code,
+            "msg": "ok",
+            "data": result.model_dump(mode="json"),
+        },
+    )
+
+
+@router.get(
+    "/source-evidence-authorizations/oauth/callback",
+    response_class=HTMLResponse,
+    name="handle_source_evidence_authorization_oauth_callback_api",
+)
+async def handle_source_evidence_authorization_oauth_callback_api(
+    request: Request,
+    code: str = Query(default=""),
+    state: str = Query(default=""),
+    db: AsyncSession = Depends(get_db),
+) -> HTMLResponse:
+    """Source Evidence 专用 OAuth callback，不要求系统登录。"""
+    result = await handle_source_evidence_oauth_callback(
+        db,
+        code=code,
+        state=state,
+        callback_url=_resolve_source_evidence_oauth_callback_url(request),
+    )
+    await db.commit()
+    return HTMLResponse(content=render_callback_html(result), status_code=200)
+
+
+@router.get("/source-evidence-authorizations")
+async def list_source_evidence_authorizations_api(
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """项目管理员查看 Source Evidence 飞书授权审计摘要。"""
+    project_id = _require_test_case_admin(ctx)
+    items, total = await list_source_evidence_authorizations(
+        db,
+        project_id=project_id,
+        limit=limit,
+        offset=offset,
+    )
+    response = SourceEvidenceAuthorizationAuditListResponse(
+        items=[SourceEvidenceAuthorizationAuditItem.model_validate(item) for item in items],
+        total=total,
+        limit=limit,
+        offset=offset,
+    )
+    return {"code": 200, "msg": "ok", "data": response.model_dump(mode="json")}
+
+
+@router.post("/source-evidence-authorizations/{authorization_id}/invalidate")
+async def invalidate_source_evidence_authorization_api(
+    authorization_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """项目管理员手动失效本系统授权复用，不移除飞书协作者。"""
+    project_id = _require_test_case_admin(ctx)
+    try:
+        item = await invalidate_source_evidence_authorization(
+            db,
+            project_id=project_id,
+            authorization_id=authorization_id,
+            invalidated_by=ctx.user_id,
+        )
+        await db.commit()
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    response = SourceEvidenceAuthorizationAuditItem.model_validate(item)
+    return {"code": 200, "msg": "ok", "data": response.model_dump(mode="json")}
 
 
 @router.post("/planning-snapshot")
@@ -234,6 +436,8 @@ async def generate_test_cases(
         raise HTTPException(status_code=error.status_code, detail=error.message) from error
     except ReferenceLibraryError as error:
         _raise_reference_library_error(error)
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
     except TestCaseGenerationPayloadError as error:
         raise HTTPException(status_code=502, detail=str(error)) from error
 
@@ -249,9 +453,37 @@ async def export_test_cases(
     payload: TestCaseExportRequest,
     _knowledge_guard: None = Depends(reject_public_knowledge_context),
     ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """基于当前页面提交结果导出测试用例 Excel。"""
-    _require_test_case_project(ctx)
+    project_id = _require_test_case_project(ctx)
+    if payload.source_evidence_run_id is not None:
+        try:
+            source_evidence_context = await build_source_evidence_safe_context(
+                db,
+                project_id=project_id,
+                run_id=payload.source_evidence_run_id,
+                adopted_visual_evidence_ids=payload.adopted_visual_evidence_ids,
+            )
+        except SourceEvidenceError as error:
+            _raise_source_evidence_error(error)
+        payload = payload.model_copy(
+            update={"source_evidence_summary": source_evidence_context.export_summary}
+        )
+        try:
+            ensure_no_forbidden_visual_refs(
+                {
+                    "blueprint": payload.blueprint.model_dump(mode="json"),
+                    "cases": [case.model_dump(mode="json") for case in payload.cases],
+                    "warnings": [warning.model_dump(mode="json") for warning in payload.warnings],
+                    "source_evidence_summary": payload.source_evidence_summary,
+                },
+                forbidden_refs=source_evidence_context.forbidden_visual_refs,
+                status_code=400,
+                message="导出内容引用了未采纳视觉证据。",
+            )
+        except SourceEvidenceError as error:
+            _raise_source_evidence_error(error)
     workbook = build_test_case_export_workbook(payload)
     filename = "test-cases-v1.xlsx"
     return StreamingResponse(
@@ -259,6 +491,259 @@ async def export_test_cases(
         media_type=TEST_CASE_EXPORT_MIME_TYPE,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+@router.post("/source-evidence-runs")
+async def create_source_evidence_run_api(
+    payload: SourceEvidenceRunCreateRequest,
+    _knowledge_guard: None = Depends(reject_public_knowledge_context),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """创建 Source Evidence Run，并同步读取富来源。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await create_source_evidence_run_from_request(
+            db,
+            project_id=project_id,
+            created_by=ctx.user_id,
+            payload=payload,
+        )
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.post("/source-evidence-runs/upload")
+async def upload_source_evidence_run_api(
+    file: UploadFile = File(...),
+    _knowledge_guard: None = Depends(reject_public_knowledge_context),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """上传本地文件并创建 local_file Source Evidence Run。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await create_source_evidence_run_from_upload(
+            db,
+            project_id=project_id,
+            created_by=ctx.user_id,
+            file=file,
+        )
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    finally:
+        await file.close()
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.get("/source-evidence-runs/{run_id}")
+async def get_source_evidence_run_api(
+    run_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """读取 Source Evidence Run 摘要。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await build_source_evidence_run_response(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+        )
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.get("/source-evidence-runs/{run_id}/resources")
+async def get_source_evidence_resources_api(
+    run_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """读取 Source Evidence Run 资源清单。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await build_source_evidence_resources_response(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+        )
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.get("/source-evidence-runs/{run_id}/visual-candidates")
+async def get_source_evidence_visual_candidates_api(
+    run_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """读取或懒生成 Source Evidence Run 视觉候选。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await build_visual_candidates_response(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+        )
+        await db.commit()
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.post("/source-evidence-runs/{run_id}/visual-selections")
+async def save_source_evidence_visual_selections_api(
+    run_id: int,
+    payload: SourceEvidenceVisualSelectionRequest,
+    _knowledge_guard: None = Depends(reject_public_knowledge_context),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """替换式保存 Source Evidence Run 的视觉观察选择。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await save_visual_selections(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+            selected_refs=payload.selected_refs,
+        )
+        await db.commit()
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.post("/source-evidence-runs/{run_id}/observations")
+async def create_source_evidence_observations_api(
+    run_id: int,
+    _knowledge_guard: None = Depends(reject_public_knowledge_context),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """对已保存视觉选择生成 observation，不自动采纳。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await create_visual_observations(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+            created_by=ctx.user_id,
+        )
+        await db.commit()
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.get("/source-evidence-runs/{run_id}/observations")
+async def get_source_evidence_observations_api(
+    run_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """读取 Source Evidence Run 的 observation 安全摘要。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await build_visual_observations_response(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+        )
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.post("/source-evidence-runs/{run_id}/adopted-visual-evidence")
+async def adopt_source_evidence_visual_evidence_api(
+    run_id: int,
+    payload: SourceEvidenceAdoptVisualEvidenceRequest,
+    _knowledge_guard: None = Depends(reject_public_knowledge_context),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """将已观察视觉证据显式采纳。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await adopt_visual_evidence(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+            observation_ids=payload.observation_ids,
+            adopted_by=ctx.user_id,
+        )
+        await db.commit()
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.delete("/source-evidence-runs/{run_id}/adopted-visual-evidence/{evidence_id}")
+async def revoke_source_evidence_visual_evidence_api(
+    run_id: int,
+    evidence_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """撤销已采纳视觉证据。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await revoke_adopted_visual_evidence(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+            evidence_id=evidence_id,
+            revoked_by=ctx.user_id,
+        )
+        await db.commit()
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.post("/source-evidence-runs/{run_id}/snapshot")
+async def create_source_evidence_snapshot_api(
+    run_id: int,
+    _knowledge_guard: None = Depends(reject_public_knowledge_context),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """把 Source Evidence Run 转成 PlanningSnapshotResponse。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await build_source_evidence_snapshot(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+        )
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.post("/source-evidence-runs/{run_id}/retry")
+async def retry_source_evidence_run_api(
+    run_id: int,
+    _knowledge_guard: None = Depends(reject_public_knowledge_context),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """重试读取 Source Evidence Run。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await retry_source_evidence_run(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+        )
+    except SourceEvidenceError as error:
+        _raise_source_evidence_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
 
 
 @router.get("/reference-categories")

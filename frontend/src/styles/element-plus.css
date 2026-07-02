@@ -199,7 +199,7 @@ body .el-select__wrapper,
 body .el-textarea__inner {
   min-height: var(--ui-control-height-md) !important;
   border: 0 !important;
-  border-radius: var(--ui-control-radius) !important;
+  border-radius: var(--ui-input-radius) !important;
   background: #ffffff !important;
   box-shadow: 0 0 0 1px var(--color-border) inset, 0 1px 2px rgba(15, 23, 42, 0.025) !important;
   color: var(--color-text-main) !important;
@@ -376,7 +376,7 @@ body .mono-chip {
   border-radius: var(--radius-pill) !important;
   color: var(--color-primary-hover) !important;
   background: var(--color-primary-soft) !important;
-  font-family: 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 12px !important;
   font-weight: 750 !important;
   padding: 2px 8px !important;

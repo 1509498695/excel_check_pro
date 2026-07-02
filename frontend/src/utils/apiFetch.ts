@@ -109,10 +109,15 @@ export async function apiFetch<T = unknown>(url: string, options: RequestInit = 
 
   if (!response.ok) {
     let message = '请求失败，请稍后重试。'
-    let payload: { detail?: unknown } | null = null
+    let payload: { detail?: unknown; msg?: unknown; message?: unknown } | null = null
     try {
-      payload = (await response.json()) as { detail?: unknown }
-      const extractedMessage = extractApiErrorMessage(payload.detail)
+      payload = (await response.json()) as {
+        detail?: unknown
+        msg?: unknown
+        message?: unknown
+      }
+      const extractedMessage =
+        extractApiErrorMessage(payload.detail) ?? extractApiErrorMessage(payload)
       if (extractedMessage) {
         message = extractedMessage
       }
@@ -159,10 +164,15 @@ export async function apiDownloadFile(
 
   if (!response.ok) {
     let message = '下载失败，请稍后重试。'
-    let payload: { detail?: unknown } | null = null
+    let payload: { detail?: unknown; msg?: unknown; message?: unknown } | null = null
     try {
-      payload = (await response.json()) as { detail?: unknown }
-      const extractedMessage = extractApiErrorMessage(payload.detail)
+      payload = (await response.json()) as {
+        detail?: unknown
+        msg?: unknown
+        message?: unknown
+      }
+      const extractedMessage =
+        extractApiErrorMessage(payload.detail) ?? extractApiErrorMessage(payload)
       if (extractedMessage) {
         message = extractedMessage
       }

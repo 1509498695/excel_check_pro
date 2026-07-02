@@ -5,29 +5,59 @@ import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  createLocalFileSourceEvidenceRun,
+  createSourceEvidenceRun,
   createReferenceCategory,
   deleteReferenceFile,
   exportTestCaseWorkbook,
+  fetchSourceEvidenceCapabilities,
+  fetchSourceEvidenceResources,
+  fetchSourceEvidenceVisualCandidates,
+  fetchSourceEvidenceObservations,
   fetchReferenceCategories,
   fetchReferenceFiles,
+  fetchSourceEvidenceRun,
   generateTestCases,
+  observeSourceEvidenceRun,
   readPlanningSnapshot,
   readPlanningSnapshotBrief,
+  readSourceEvidenceSnapshot,
+  requestSourceEvidenceAuthorization,
+  revokeSourceEvidenceVisualEvidence,
+  retrySourceEvidenceRun,
+  adoptSourceEvidenceVisualEvidence,
+  saveSourceEvidenceVisualSelections,
   setRecommendedPrimaryReference,
   uploadReferenceFile,
 } from '../../src/api/testCases'
-import { fetchSourceMetadata, fetchWorkbenchConfig, saveWorkbenchConfig } from '../../src/api/workbench'
+import { fetchSvnCredential, listSvnCredentialHosts, listSvnDirectory, SvnApiError } from '../../src/api/svn'
+import { fetchSourceMetadata, fetchWorkbenchConfig, saveWorkbenchConfig, uploadSourceFile } from '../../src/api/workbench'
+import type { DataSource } from '../../src/types/workbench'
 import TestCaseGeneratorView from '../../src/views/TestCaseGeneratorView.vue'
 
 vi.mock('../../src/api/testCases', () => ({
+  createLocalFileSourceEvidenceRun: vi.fn(),
+  createSourceEvidenceRun: vi.fn(),
   createReferenceCategory: vi.fn(),
   deleteReferenceFile: vi.fn(),
   exportTestCaseWorkbook: vi.fn(),
+  fetchSourceEvidenceCapabilities: vi.fn(),
+  fetchSourceEvidenceResources: vi.fn(),
+  fetchSourceEvidenceVisualCandidates: vi.fn(),
+  fetchSourceEvidenceObservations: vi.fn(),
   fetchReferenceCategories: vi.fn(),
   fetchReferenceFiles: vi.fn(),
+  fetchSourceEvidenceRun: vi.fn(),
   generateTestCases: vi.fn(),
+  observeSourceEvidenceRun: vi.fn(),
   readPlanningSnapshot: vi.fn(),
   readPlanningSnapshotBrief: vi.fn(),
+  readSourceEvidenceSnapshot: vi.fn(),
+  requestSourceEvidenceAuthorization: vi.fn(),
+  revokeSourceEvidenceVisualEvidence: vi.fn(),
+  retrySourceEvidenceRun: vi.fn(),
+  adoptSourceEvidenceVisualEvidence: vi.fn(),
+  saveSourceEvidenceVisualSelections: vi.fn(),
   setRecommendedPrimaryReference: vi.fn(),
   uploadReferenceFile: vi.fn(),
 }))
@@ -42,8 +72,46 @@ vi.mock('../../src/api/workbench', () => ({
   uploadSourceFile: vi.fn(),
 }))
 
+vi.mock('../../src/api/svn', () => {
+  class MockSvnApiError extends Error {
+    status: number
+    category: string
+
+    constructor(message: string, status: number, category: string) {
+      super(message)
+      this.name = 'SvnApiError'
+      this.status = status
+      this.category = category
+    }
+  }
+
+  return {
+    SvnApiError: MockSvnApiError,
+    ensureTrailingSlash: (input: string) => {
+      const trimmed = input.trim()
+      return trimmed && !trimmed.endsWith('/') ? `${trimmed}/` : trimmed
+    },
+    fetchSvnCredential: vi.fn(),
+    getDefaultSvnCredentialTestDirUrl: vi.fn((host: string) =>
+      host === 'samosvn' ? 'https://samosvn/data/project/samo/GameDatas/' : '',
+    ),
+    isHttpDirUrl: (input: string) => /^https?:\/\/[^\s]+/i.test(input.trim()),
+    listSvnCredentialHosts: vi.fn(),
+    listSvnDirectory: vi.fn(),
+    parseSvnHost: (input: string) => {
+      try {
+        return new URL(input.trim()).hostname.toLowerCase()
+      } catch {
+        return ''
+      }
+    },
+  }
+})
+
 vi.mock('element-plus', () => ({
   ElMessage: {
+    error: vi.fn(),
+    info: vi.fn(),
     success: vi.fn(),
     warning: vi.fn(),
   },
@@ -51,8 +119,22 @@ vi.mock('element-plus', () => ({
 
 const readPlanningSnapshotMock = vi.mocked(readPlanningSnapshot)
 const readPlanningSnapshotBriefMock = vi.mocked(readPlanningSnapshotBrief)
+const createLocalFileSourceEvidenceRunMock = vi.mocked(createLocalFileSourceEvidenceRun)
+const createSourceEvidenceRunMock = vi.mocked(createSourceEvidenceRun)
+const fetchSourceEvidenceRunMock = vi.mocked(fetchSourceEvidenceRun)
+const fetchSourceEvidenceResourcesMock = vi.mocked(fetchSourceEvidenceResources)
+const fetchSourceEvidenceVisualCandidatesMock = vi.mocked(fetchSourceEvidenceVisualCandidates)
+const fetchSourceEvidenceObservationsMock = vi.mocked(fetchSourceEvidenceObservations)
+const readSourceEvidenceSnapshotMock = vi.mocked(readSourceEvidenceSnapshot)
+const requestSourceEvidenceAuthorizationMock = vi.mocked(requestSourceEvidenceAuthorization)
+const observeSourceEvidenceRunMock = vi.mocked(observeSourceEvidenceRun)
+const retrySourceEvidenceRunMock = vi.mocked(retrySourceEvidenceRun)
+const adoptSourceEvidenceVisualEvidenceMock = vi.mocked(adoptSourceEvidenceVisualEvidence)
+const revokeSourceEvidenceVisualEvidenceMock = vi.mocked(revokeSourceEvidenceVisualEvidence)
+const saveSourceEvidenceVisualSelectionsMock = vi.mocked(saveSourceEvidenceVisualSelections)
 const generateTestCasesMock = vi.mocked(generateTestCases)
 const exportTestCaseWorkbookMock = vi.mocked(exportTestCaseWorkbook)
+const fetchSourceEvidenceCapabilitiesMock = vi.mocked(fetchSourceEvidenceCapabilities)
 const fetchReferenceCategoriesMock = vi.mocked(fetchReferenceCategories)
 const fetchReferenceFilesMock = vi.mocked(fetchReferenceFiles)
 const createReferenceCategoryMock = vi.mocked(createReferenceCategory)
@@ -62,6 +144,10 @@ const deleteReferenceFileMock = vi.mocked(deleteReferenceFile)
 const fetchSourceMetadataMock = vi.mocked(fetchSourceMetadata)
 const fetchWorkbenchConfigMock = vi.mocked(fetchWorkbenchConfig)
 const saveWorkbenchConfigMock = vi.mocked(saveWorkbenchConfig)
+const uploadSourceFileMock = vi.mocked(uploadSourceFile)
+const fetchSvnCredentialMock = vi.mocked(fetchSvnCredential)
+const listSvnCredentialHostsMock = vi.mocked(listSvnCredentialHosts)
+const listSvnDirectoryMock = vi.mocked(listSvnDirectory)
 
 const globalStubs = {
   DataSourcePanel: {
@@ -96,6 +182,20 @@ const globalStubs = {
       expose({ openCreateDialog: () => undefined })
     },
   },
+  SvnCredentialDialog: {
+    props: ['visible', 'host', 'defaultUsername', 'defaultPassword', 'defaultTestDirUrl'],
+    emits: ['update:visible', 'saved', 'cancel'],
+    template: `
+      <section v-if="visible" data-test="svn-credential-dialog">
+        <h2>配置 SVN 凭据 — {{ host }}</h2>
+        <p>{{ defaultUsername }}</p>
+        <p>{{ defaultTestDirUrl }}</p>
+        <button type="button" data-test="svn-credential-dialog-save" @click="$emit('saved', host)">
+          保存
+        </button>
+      </section>
+    `,
+  },
   'el-dialog': {
     props: ['modelValue', 'title'],
     template: `
@@ -103,6 +203,16 @@ const globalStubs = {
         <h2>{{ title }}</h2>
         <slot />
         <slot name="footer" />
+      </section>
+    `,
+  },
+  'el-drawer': {
+    props: ['modelValue', 'title'],
+    emits: ['update:modelValue'],
+    template: `
+      <section v-if="modelValue" class="el-drawer-stub" data-test="source-evidence-resources-drawer">
+        <h2>{{ title }}</h2>
+        <slot />
       </section>
     `,
   },
@@ -116,11 +226,24 @@ const globalStubs = {
   'el-select': {
     props: ['modelValue', 'disabled'],
     emits: ['update:modelValue', 'change'],
-    template: '<div class="el-select-stub" :data-disabled="disabled ? \'true\' : \'false\'"><slot /></div>',
+    template: `
+      <select
+        class="el-select-stub"
+        :data-disabled="disabled ? 'true' : 'false'"
+        :disabled="disabled"
+        :value="modelValue"
+        @change="
+          $emit('update:modelValue', $event.target.value);
+          $emit('change', $event.target.value)
+        "
+      >
+        <slot />
+      </select>
+    `,
   },
   'el-option': {
     props: ['label', 'value'],
-    template: '<span class="el-option-stub" :data-value="value">{{ label }}</span>',
+    template: '<option class="el-option-stub" :value="value">{{ label }}</option>',
   },
   'el-tag': {
     template: '<span class="el-tag-stub"><slot /></span>',
@@ -189,6 +312,370 @@ const snapshotBriefResponse = {
   data: {
     brief_markdown: snapshotBriefMarkdown,
     warnings: [],
+  },
+}
+
+const sourceEvidenceRunResponse = {
+  code: 200,
+  msg: 'ok',
+  data: {
+    id: 42,
+    status: 'ready',
+    source_type: 'feishu',
+    source_summary: '飞书 docx：活动富文档',
+    source_title: '活动富文档',
+    source_identifier: 'docx-token-redacted',
+    created_at: '2026-06-29T08:00:00Z',
+    expires_at: '2026-07-06T08:00:00Z',
+    warnings: [
+      {
+        source: 'source_evidence',
+        level: 'warning' as const,
+        message: '隐藏 Sheet 已排除。',
+      },
+    ],
+    resource_count: 2,
+  },
+}
+
+const localSourceEvidenceRunResponse = {
+  ...sourceEvidenceRunResponse,
+  data: {
+    ...sourceEvidenceRunResponse.data,
+    id: 43,
+    source_type: 'local_file',
+    source_summary: '本地文件：QuestReward.xlsx',
+    source_title: 'QuestReward.xlsx',
+    source_identifier: 'sha256-redacted',
+    warnings: [
+      {
+        source: 'local_file',
+        level: 'warning' as const,
+        message: '隐藏 Sheet 已排除；图片未参与语义理解。',
+      },
+    ],
+    resource_count: 1,
+  },
+}
+
+const svnSourceEvidenceRunResponse = {
+  ...sourceEvidenceRunResponse,
+  data: {
+    ...sourceEvidenceRunResponse.data,
+    id: 44,
+    source_type: 'svn_file',
+    source_summary: 'SVN 文件：QuestReward.xls',
+    source_title: 'QuestReward.xls',
+    source_identifier: 'svn-redacted',
+    warnings: [
+      {
+        source: 'svn_file',
+        level: 'warning' as const,
+        message: '.xls 图片转换失败；图片未参与语义理解。',
+      },
+    ],
+    resource_count: 1,
+  },
+}
+
+const textlessImageSourceEvidenceRunResponse = {
+  ...sourceEvidenceRunResponse,
+  data: {
+    ...sourceEvidenceRunResponse.data,
+    id: 45,
+    source_type: 'local_file',
+    source_summary: '本地图片：ui.png',
+    source_title: 'ui.png',
+    source_identifier: 'sha256-image-redacted',
+    warnings: [
+      {
+        source: 'local_file',
+        level: 'warning' as const,
+        message: '独立图片缺少文本主体；生成前需要先观察并采纳视觉证据。图片未参与语义理解。',
+      },
+    ],
+    resource_count: 1,
+  },
+}
+
+const sourceEvidenceCapabilitiesReadyResponse = {
+  code: 200,
+  msg: 'ok',
+  data: {
+    svn_credential_configured: true,
+    source_evidence_svn_roots_configured: true,
+    vision_ai_configured: true,
+    soffice_configured: true,
+    soffice_available: true,
+    is_project_admin: false,
+    items: [
+      {
+        key: 'vision_ai',
+        label: 'Vision AI',
+        configured: true,
+        available: true,
+        status: 'available',
+        message: '项目级视觉模型已配置。',
+        action: '',
+        level: 'info' as const,
+      },
+    ],
+    warnings: [],
+  },
+}
+
+const sourceEvidenceCapabilitiesMissingResponse = {
+  code: 200,
+  msg: 'ok',
+  data: {
+    svn_credential_configured: false,
+    source_evidence_svn_roots_configured: false,
+    vision_ai_configured: false,
+    soffice_configured: false,
+    soffice_available: false,
+    is_project_admin: false,
+    items: [
+      {
+        key: 'svn_credential',
+        label: '项目级 SVN 凭据',
+        configured: false,
+        available: false,
+        status: 'missing',
+        message: '当前未配置项目级 SVN 凭据，SVN 文件 Source Evidence 不可用。',
+        action: '请联系项目管理员配置项目级 SVN 凭据。',
+        level: 'warning' as const,
+      },
+      {
+        key: 'source_evidence_svn_roots',
+        label: 'Source Evidence SVN Root',
+        configured: false,
+        available: false,
+        status: 'missing',
+        message: '当前未配置 Source Evidence SVN Root，SVN 文件 Source Evidence 不可用。',
+        action: '请联系项目管理员配置 Source Evidence SVN Root。',
+        level: 'warning' as const,
+      },
+      {
+        key: 'vision_ai',
+        label: 'Vision AI',
+        configured: false,
+        available: false,
+        status: 'missing',
+        message: '当前未配置视觉模型，图片不会参与语义理解。',
+        action: '请联系项目管理员配置 Project Vision AI Credential。',
+        level: 'warning' as const,
+      },
+      {
+        key: 'soffice',
+        label: 'LibreOffice/soffice',
+        configured: false,
+        available: false,
+        status: 'missing',
+        message: '当前未配置 LibreOffice/soffice，.xls 图片不会参与语义理解。',
+        action: '请联系项目管理员配置 SOURCE_EVIDENCE_SOFFICE_EXECUTABLE。',
+        level: 'warning' as const,
+      },
+    ],
+    warnings: [
+      {
+        source: 'source_evidence_capabilities',
+        level: 'warning' as const,
+        message: '当前未配置视觉模型，图片不会参与语义理解，请联系项目管理员。',
+      },
+    ],
+  },
+}
+
+const sourceEvidenceCapabilitiesAdminDegradedResponse = {
+  code: 200,
+  msg: 'ok',
+  data: {
+    ...sourceEvidenceCapabilitiesMissingResponse.data,
+    is_project_admin: true,
+    admin_details: {
+      config_entry: '/admin',
+      enabled_source_evidence_svn_root_count: 0,
+      vision_ai_last_test_status: 'failed',
+      vision_ai_last_test_at: '2026-07-01T08:00:00Z',
+      vision_ai_last_test_error_summary: '连接测试失败',
+      soffice_detection_summary: 'LibreOffice/soffice 检测失败：退出码 1',
+    },
+  },
+}
+
+const sourceEvidencePendingPermissionRunResponse = {
+  ...sourceEvidenceRunResponse,
+  data: {
+    ...sourceEvidenceRunResponse.data,
+    status: 'pending_permission',
+  },
+}
+
+const sourceEvidenceResourceListResponse = {
+  code: 200,
+  msg: 'ok',
+  data: {
+    items: [
+      {
+        id: 11,
+        ref: 'img_001',
+        type: 'image',
+        position: 'docx:block:3',
+        filename: '入口示意图.png',
+        download_status: 'downloaded',
+        adoption_status: 'unobserved',
+        mime_type: 'image/png',
+      },
+    ],
+    run_status: 'ready',
+    warnings: [],
+  },
+}
+
+const sourceEvidenceAuthorizationSentResponse = {
+  code: 200,
+  msg: 'ok',
+  data: {
+    status: 'authorization_sent',
+    message: '等待作者授权，授权后请点击重试读取',
+    authorization_id: 701,
+    target_mode: 'owner_direct',
+    sent_targets_count: 1,
+    failed_targets_count: 0,
+    fallback_to_default_chat: false,
+    owner_candidates_truncated: false,
+    expires_at: '2026-06-29T08:10:00Z',
+    can_retry_read: false,
+  },
+}
+
+const sourceEvidenceVisualCandidatesResponse = {
+  code: 200,
+  msg: 'ok',
+  data: {
+    items: [
+      {
+        ref: 'img_001',
+        type: 'image',
+        position: 'docx:block:3',
+        filename: '入口示意图.png',
+        status: 'ready',
+        selectable: true,
+        recommended: true,
+        selected: true,
+        recommendation_reasons: ['附近文本包含视觉关键词'],
+        download_status: 'downloaded',
+        adoption_status: 'unobserved',
+        dimensions: {
+          original_width: 800,
+          original_height: 600,
+          optimized_width: 800,
+          optimized_height: 600,
+        },
+      },
+      {
+        ref: 'att_001',
+        type: 'attachment',
+        position: 'docx:block:8',
+        filename: '规则说明.pdf',
+        status: 'pending_permission',
+        selectable: false,
+        recommended: false,
+        selected: false,
+        recommendation_reasons: ['权限不足，暂不可观察'],
+        download_status: 'pending_permission',
+        adoption_status: 'unobserved',
+        dimensions: {},
+      },
+    ],
+    recommended_refs: ['img_001'],
+    selected_refs: ['img_001'],
+    warnings: [],
+  },
+}
+
+const sourceEvidenceObservedResponse = {
+  code: 200,
+  msg: 'ok',
+  data: {
+    items: [
+      {
+        id: 7,
+        ref: 'img_001',
+        resource_id: 11,
+        type: 'image',
+        position: 'docx:block:3',
+        filename: '入口示意图.png',
+        status: 'observed',
+        summary: '图中展示活动入口按钮，按钮文案为“参与活动”。',
+        visible_text: '参与活动',
+        confidence: 0.88,
+        limitations: ['只能确认截图可见内容，不能确认配置规则。'],
+        source: { provider: 'openai', model: 'gpt-4o-mini' },
+        created_by: 1,
+        created_at: '2026-06-29T08:10:00Z',
+        adopted_by: null,
+        adopted_at: null,
+        revoked_at: null,
+      },
+    ],
+    warnings: [],
+  },
+}
+
+const sourceEvidenceAdoptedResponse = {
+  ...sourceEvidenceObservedResponse,
+  data: {
+    ...sourceEvidenceObservedResponse.data,
+    items: [
+      {
+        ...sourceEvidenceObservedResponse.data.items[0],
+        status: 'adopted',
+        adopted_by: 1,
+        adopted_at: '2026-06-29T08:12:00Z',
+      },
+    ],
+  },
+}
+
+const sourceEvidenceSnapshotResponse = {
+  code: 200,
+  msg: 'ok',
+  data: {
+    source_summary: '飞书 docx：活动富文档',
+    sheet_name: 'Source Evidence',
+    columns: ['来源类型', '位置', '标题/页签', '内容', '证据状态'],
+    rows: [
+      {
+        row_index: 1,
+        cells: [
+          { row_index: 1, column_index: 1, column_name: '来源类型', value: 'docx' },
+          { row_index: 1, column_index: 2, column_name: '位置', value: 'docx:line:1' },
+          { row_index: 1, column_index: 3, column_name: '标题/页签', value: '活动富文档' },
+          { row_index: 1, column_index: 4, column_name: '内容', value: '活动入口按配置开放' },
+          { row_index: 1, column_index: 5, column_name: '证据状态', value: 'text' },
+        ],
+      },
+      {
+        row_index: 2,
+        cells: [
+          { row_index: 2, column_index: 1, column_name: '来源类型', value: 'resource' },
+          { row_index: 2, column_index: 2, column_name: '位置', value: 'docx:block:3' },
+          { row_index: 2, column_index: 3, column_name: '标题/页签', value: '活动富文档' },
+          { row_index: 2, column_index: 4, column_name: '内容', value: '<image ref="img_001" position="docx:block:3" />' },
+          { row_index: 2, column_index: 5, column_name: '证据状态', value: 'pending_visual' },
+        ],
+      },
+    ],
+    non_empty_cell_count: 10,
+    truncated: false,
+    warnings: [
+      {
+        source: 'source_evidence',
+        level: 'warning' as const,
+        message: '图片/附件待观察，未作为需求事实。',
+      },
+    ],
   },
 }
 
@@ -520,6 +1007,36 @@ const generationWithReferenceResponse = {
   },
 }
 
+const defaultPlanningSource: DataSource = {
+  id: 'new_plan',
+  type: 'feishu',
+  pathOrUrl: 'https://example.feishu.cn/sheets/shtcnNewPlan',
+}
+
+const secondPlanningSource: DataSource = {
+  id: 'second_plan',
+  type: 'feishu',
+  pathOrUrl: 'https://example.feishu.cn/sheets/shtcnSecondPlan',
+}
+
+function mockPlanningSourceConfig(
+  sources: DataSource[] = [defaultPlanningSource],
+  preferredSourceId = sources[0]?.id ?? null,
+  selectedSheetName = '新增Sheet',
+): void {
+  fetchWorkbenchConfigMock.mockResolvedValueOnce({
+    code: 200,
+    msg: 'ok',
+    data: {
+      test_case_generation: {
+        planning_sources: sources,
+        preferred_planning_source_id: preferredSourceId,
+        selected_planning_sheet_name: selectedSheetName,
+      },
+    },
+  })
+}
+
 async function flushPromises(): Promise<void> {
   await Promise.resolve()
   await Promise.resolve()
@@ -534,6 +1051,17 @@ function mountView(): VueWrapper {
   })
 }
 
+async function mountViewWithPlanningSource(
+  sources: DataSource[] = [defaultPlanningSource],
+  preferredSourceId = sources[0]?.id ?? null,
+  selectedSheetName = '新增Sheet',
+): Promise<VueWrapper> {
+  mockPlanningSourceConfig(sources, preferredSourceId, selectedSheetName)
+  const wrapper = mountView()
+  await flushPromises()
+  return wrapper
+}
+
 function findButton(wrapper: VueWrapper | DOMWrapper<Element>, text: string) {
   return wrapper.findAll('button').find((button) => button.text().includes(text))
 }
@@ -546,8 +1074,25 @@ async function selectCategory(wrapper: VueWrapper, categoryName: string): Promis
   await findButton(wrapper, categoryName)?.trigger('click')
 }
 
-async function addPlanningSource(wrapper: VueWrapper): Promise<void> {
-  await findButton(wrapper, '模拟保存策划案来源')?.trigger('click')
+async function createFeishuDocumentRun(wrapper: VueWrapper, url = 'https://example.feishu.cn/docx/doc123'): Promise<void> {
+  await findButton(wrapper, '飞书文档')?.trigger('click')
+  await wrapper.find('[data-test="source-evidence-url-input"]').setValue(url)
+  await wrapper.find('[data-test="source-evidence-create-button"]').trigger('click')
+  await flushPromises()
+}
+
+async function openSvnSourcePanel(wrapper: VueWrapper): Promise<void> {
+  await findButton(wrapper, 'SVN 文件')?.trigger('click')
+  await flushPromises()
+}
+
+async function uploadLocalPlanningFile(wrapper: VueWrapper, file: File): Promise<void> {
+  const input = wrapper.find('[data-test="local-source-upload-input"]')
+  Object.defineProperty(input.element, 'files', {
+    value: [file],
+    configurable: true,
+  })
+  await input.trigger('change')
   await flushPromises()
 }
 
@@ -555,8 +1100,22 @@ describe('TestCaseGeneratorView', () => {
   beforeEach(() => {
     readPlanningSnapshotMock.mockReset()
     readPlanningSnapshotBriefMock.mockReset()
+    createLocalFileSourceEvidenceRunMock.mockReset()
+    createSourceEvidenceRunMock.mockReset()
+    fetchSourceEvidenceRunMock.mockReset()
+    fetchSourceEvidenceResourcesMock.mockReset()
+    fetchSourceEvidenceVisualCandidatesMock.mockReset()
+    fetchSourceEvidenceObservationsMock.mockReset()
+    readSourceEvidenceSnapshotMock.mockReset()
+    requestSourceEvidenceAuthorizationMock.mockReset()
+    observeSourceEvidenceRunMock.mockReset()
+    retrySourceEvidenceRunMock.mockReset()
+    adoptSourceEvidenceVisualEvidenceMock.mockReset()
+    revokeSourceEvidenceVisualEvidenceMock.mockReset()
+    saveSourceEvidenceVisualSelectionsMock.mockReset()
     generateTestCasesMock.mockReset()
     exportTestCaseWorkbookMock.mockReset()
+    fetchSourceEvidenceCapabilitiesMock.mockReset()
     fetchReferenceCategoriesMock.mockReset()
     fetchReferenceFilesMock.mockReset()
     createReferenceCategoryMock.mockReset()
@@ -566,10 +1125,28 @@ describe('TestCaseGeneratorView', () => {
     fetchWorkbenchConfigMock.mockReset()
     fetchSourceMetadataMock.mockReset()
     saveWorkbenchConfigMock.mockReset()
+    uploadSourceFileMock.mockReset()
+    fetchSvnCredentialMock.mockReset()
+    listSvnCredentialHostsMock.mockReset()
+    listSvnDirectoryMock.mockReset()
     fetchWorkbenchConfigMock.mockResolvedValue({ code: 200, msg: 'ok', data: {} })
     readPlanningSnapshotMock.mockResolvedValue(snapshotResponse)
     readPlanningSnapshotBriefMock.mockResolvedValue(snapshotBriefResponse)
+    createLocalFileSourceEvidenceRunMock.mockResolvedValue(localSourceEvidenceRunResponse)
+    createSourceEvidenceRunMock.mockResolvedValue(sourceEvidenceRunResponse)
+    fetchSourceEvidenceRunMock.mockResolvedValue(sourceEvidenceRunResponse)
+    fetchSourceEvidenceResourcesMock.mockResolvedValue(sourceEvidenceResourceListResponse)
+    fetchSourceEvidenceVisualCandidatesMock.mockResolvedValue(sourceEvidenceVisualCandidatesResponse)
+    fetchSourceEvidenceObservationsMock.mockResolvedValue({ code: 200, msg: 'ok', data: { items: [], warnings: [] } })
+    readSourceEvidenceSnapshotMock.mockResolvedValue(sourceEvidenceSnapshotResponse)
+    requestSourceEvidenceAuthorizationMock.mockResolvedValue(sourceEvidenceAuthorizationSentResponse)
+    observeSourceEvidenceRunMock.mockResolvedValue(sourceEvidenceObservedResponse)
+    retrySourceEvidenceRunMock.mockResolvedValue(sourceEvidenceRunResponse)
+    adoptSourceEvidenceVisualEvidenceMock.mockResolvedValue(sourceEvidenceAdoptedResponse)
+    revokeSourceEvidenceVisualEvidenceMock.mockResolvedValue(sourceEvidenceObservedResponse)
+    saveSourceEvidenceVisualSelectionsMock.mockResolvedValue(sourceEvidenceVisualCandidatesResponse)
     generateTestCasesMock.mockResolvedValue(generationResponse)
+    fetchSourceEvidenceCapabilitiesMock.mockResolvedValue(sourceEvidenceCapabilitiesReadyResponse)
     saveWorkbenchConfigMock.mockResolvedValue({ code: 200, msg: 'ok' })
     exportTestCaseWorkbookMock.mockResolvedValue({
       blob: new Blob(['xlsx']),
@@ -602,8 +1179,24 @@ describe('TestCaseGeneratorView', () => {
       msg: 'ok',
       data: {
         source_id: 'new_plan',
-        source_type: 'local_excel',
+        source_type: 'feishu',
         sheets: [{ name: '新增Sheet', columns: ['模块', '需求点'] }],
+      },
+    })
+    fetchSvnCredentialMock.mockResolvedValue(null)
+    listSvnCredentialHostsMock.mockResolvedValue({
+      code: 200,
+      msg: 'ok',
+      data: { items: [] },
+    })
+    listSvnDirectoryMock.mockResolvedValue({
+      code: 200,
+      msg: 'ok',
+      data: {
+        dir_url: 'https://samosvn/data/project/samo/GameDatas/',
+        host: 'samosvn',
+        credential_username: '',
+        entries: [],
       },
     })
   })
@@ -612,10 +1205,11 @@ describe('TestCaseGeneratorView', () => {
     const wrapper = mountView()
     await flushPromises()
 
+    expect(fetchSourceEvidenceCapabilitiesMock).toHaveBeenCalledTimes(1)
     expect(wrapper.text()).toContain('用例生成')
-    expect(wrapper.text()).toContain('策划案来源')
+    expect(wrapper.text()).toContain('当前来源')
     expect(wrapper.text()).toContain('参考案例库')
-    expect(wrapper.text()).toContain('主参考设置')
+    expect(wrapper.text()).toContain('参考来源（可选）')
     expect(wrapper.text()).toContain('项目 AI 可用')
     expect(wrapper.text()).toContain('活动回归模板.xlsx')
     expect(wrapper.text()).toContain('参考用例数量')
@@ -624,15 +1218,110 @@ describe('TestCaseGeneratorView', () => {
     expect(wrapper.text()).toContain('核对整理稿、测试用例和限制提示，确认后导出 Excel。')
   })
 
-  it('renders the planning source data module without seeded demo data', () => {
+  it('hides Source Evidence runtime capability status when capability check endpoint is unavailable', async () => {
+    fetchSourceEvidenceCapabilitiesMock.mockRejectedValueOnce(new Error('Not Found'))
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(fetchSourceEvidenceCapabilitiesMock).toHaveBeenCalledTimes(1)
+    expect(wrapper.find('[data-test="source-evidence-capability-status"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('Not Found')
+  })
+
+  it('shows Source Evidence runtime capability warnings for normal members', async () => {
+    fetchSourceEvidenceCapabilitiesMock.mockResolvedValueOnce(sourceEvidenceCapabilitiesMissingResponse)
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const status = wrapper.find('[data-test="source-evidence-capability-status"]')
+    expect(status.exists()).toBe(true)
+    expect(status.text()).toContain('Source Evidence 运行能力')
+    expect(status.text()).toContain('当前未配置视觉模型，图片不会参与语义理解')
+    expect(status.text()).toContain('当前未配置 LibreOffice/soffice，.xls 图片不会参与语义理解')
+    expect(status.text()).toContain('请联系项目管理员')
+    expect(status.text()).not.toContain('去管理后台配置')
+  })
+
+  it('shows Source Evidence runtime admin details and configuration entry for project admins', async () => {
+    fetchSourceEvidenceCapabilitiesMock.mockResolvedValueOnce(sourceEvidenceCapabilitiesAdminDegradedResponse)
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    const status = wrapper.find('[data-test="source-evidence-capability-status"]')
+    expect(status.text()).toContain('去管理后台配置')
+    expect(status.text()).toContain('LibreOffice/soffice 检测失败：退出码 1')
+    expect(status.text()).toContain('连接测试失败')
+    expect(status.text()).not.toContain('sk-project-vision-secret')
+    expect(status.text()).not.toContain('C:/Sensitive')
+  })
+
+  it('disables SVN Source Evidence reading when project SVN capabilities are missing', async () => {
+    fetchSourceEvidenceCapabilitiesMock.mockResolvedValueOnce(sourceEvidenceCapabilitiesMissingResponse)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await openSvnSourcePanel(wrapper)
+    await wrapper.find('[data-test="svn-file-url-input"]').setValue('https://samosvn/data/project/samo/GameDatas/QuestReward.xls')
+    await flushPromises()
+
+    const readButton = wrapper.find('[data-test="svn-read-data"]')
+    expect(readButton.attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).toContain('SVN 文件 Source Evidence 不可用')
+    expect(createSourceEvidenceRunMock).not.toHaveBeenCalled()
+  })
+
+  it('does not block text generation when Vision AI capability is missing but disables observation', async () => {
+    fetchSourceEvidenceCapabilitiesMock.mockResolvedValueOnce(sourceEvidenceCapabilitiesMissingResponse)
+    createLocalFileSourceEvidenceRunMock.mockResolvedValueOnce(localSourceEvidenceRunResponse)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await uploadLocalPlanningFile(wrapper, new File(['xlsx'], 'QuestReward.xlsx'))
+    await wrapper.find('[data-test="source-evidence-resources-button"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('当前未配置视觉模型，图片不会参与语义理解')
+    expect(wrapper.find('[data-test="source-evidence-observe-button"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+
+    expect(generateTestCasesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source_evidence_run_id: 43,
+        adopted_visual_evidence_ids: [],
+      }),
+    )
+  })
+
+  it('renders the source shell with three source modes and compact summary chips by default', () => {
     const wrapper = mountView()
 
     expect(wrapper.text()).toContain('01')
     expect(wrapper.text()).toContain('数据源')
-    expect(wrapper.text()).toContain('新增来源')
-    expect(wrapper.text()).toContain('策划案来源')
-    expect(wrapper.text()).toContain('请先添加策划案来源')
-    expect(wrapper.text()).toContain('当前来源无可选 Sheet')
+    expect(wrapper.find('[data-test="source-mode-local"]').classes()).toContain('is-active')
+    expect(wrapper.text()).toContain('本地文件')
+    expect(wrapper.text()).toContain('SVN 文件')
+    expect(wrapper.text()).toContain('飞书文档')
+    expect(wrapper.text()).toContain('上传文件')
+    expect(wrapper.text()).toContain('待读取')
+    expect(wrapper.text()).toContain('SVN 文件')
+    expect(wrapper.text()).toContain('待选择文件')
+    expect(wrapper.text()).toContain('拖拽文件到这里，或点击上传')
+    expect(wrapper.text()).toContain('支持 .xlsx / .xls / .png / .jpg / .jpeg / .webp')
+    expect(findButton(wrapper, '选择文件')).toBeDefined()
+    expect(wrapper.find('[data-test="local-source-upload-input"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="source-path-input"]').exists()).toBe(false)
+    expect(wrapper.find('.data-source-panel-stub').exists()).toBe(false)
+    expect(wrapper.find('[data-test="planning-source-select"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('本地文件')
+    expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('等待上传本地文件')
+    expect(wrapper.find('[data-test="snapshot-readiness-card"]').text()).toContain('等待上传本地文件')
     expect(wrapper.text()).not.toContain('plan_feishu')
     expect(wrapper.text()).not.toContain('example.feishu.cn')
     expect(wrapper.text()).not.toContain('活动策划案 / Sheet1')
@@ -640,18 +1329,247 @@ describe('TestCaseGeneratorView', () => {
     expect(wrapper.find('[data-test="read-snapshot-button"]').attributes('disabled')).toBeDefined()
   })
 
-  it('adds a planning source through the embedded source panel store', async () => {
-    const wrapper = mountView()
+  it('does not restore persisted local Excel as a V2 Source Evidence input', async () => {
+    const wrapper = await mountViewWithPlanningSource([
+      { id: 'persisted_plan', type: 'local_excel', pathOrUrl: 'D:/plan/persisted.xlsx' },
+    ], 'persisted_plan', '策划Sheet')
 
-    await findButton(wrapper, '模拟保存策划案来源')?.trigger('click')
-    await flushPromises()
-
-    expect(wrapper.text()).toContain('new_plan')
-    expect(wrapper.text()).toContain('新增Sheet')
-    expect(fetchSourceMetadataMock).toHaveBeenCalled()
+    expect(wrapper.find('[data-test="source-mode-local"]').classes()).toContain('is-active')
+    expect(wrapper.text()).toContain('本地文件')
+    expect(wrapper.text()).toContain('待读取')
+    expect(wrapper.text()).toContain('Source Evidence 状态')
+    expect(wrapper.text()).not.toContain('D:/plan/persisted.xlsx')
+    expect(wrapper.text()).not.toContain('persisted.xlsx')
+    expect(wrapper.find('[data-test="read-snapshot-button"]').attributes('disabled')).toBeDefined()
   })
 
-  it('restores persisted planning sources for the current project user', async () => {
+  it('uploads a local file as a Source Evidence Run and does not use legacy source metadata', async () => {
+    createLocalFileSourceEvidenceRunMock.mockResolvedValueOnce(localSourceEvidenceRunResponse)
+    const wrapper = mountView()
+    await flushPromises()
+    fetchSourceMetadataMock.mockClear()
+
+    await uploadLocalPlanningFile(wrapper, new File(['excel'], 'QuestReward.xlsx'))
+
+    expect(createLocalFileSourceEvidenceRunMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'QuestReward.xlsx' }))
+    expect(uploadSourceFileMock).not.toHaveBeenCalled()
+    expect(fetchSourceMetadataMock).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="source-chip-local"]').text()).toContain('本地文件 · 已读取')
+    const status = wrapper.find('[data-test="local-source-file-status"]').text()
+    expect(status).toContain('Source Evidence 状态')
+    expect(status).toContain('QuestReward.xlsx')
+    expect(status).toContain('1 个资源')
+    expect(wrapper.find('[data-test="source-evidence-document-card"]').text()).toContain('本地文件：QuestReward.xlsx')
+    expect(wrapper.find('[data-test="source-evidence-document-card"]').text()).toContain('图片未参与语义理解')
+    expect(wrapper.text()).not.toContain('D:/runtime/uploads/project-1/20260701_quest_reward.xlsx')
+    expect(wrapper.text()).not.toContain('20260701_quest_reward.xlsx')
+
+    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await flushPromises()
+
+    expect(readSourceEvidenceSnapshotMock).toHaveBeenCalledWith(43)
+    expect(readPlanningSnapshotMock).not.toHaveBeenCalled()
+  })
+
+  it('blocks generation for a standalone image Source Evidence run without adopted visual evidence', async () => {
+    createLocalFileSourceEvidenceRunMock.mockResolvedValueOnce(textlessImageSourceEvidenceRunResponse)
+    readSourceEvidenceSnapshotMock.mockResolvedValueOnce({
+      ...sourceEvidenceSnapshotResponse,
+      data: {
+        ...sourceEvidenceSnapshotResponse.data,
+        source_summary: '本地图片：ui.png',
+        warnings: [
+          {
+            source: 'local_file',
+            level: 'warning' as const,
+            message: '无文本主体，需先观察并采纳视觉证据后才能作为需求事实。',
+          },
+        ],
+      },
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await uploadLocalPlanningFile(wrapper, new File(['png'], 'ui.png', { type: 'image/png' }))
+    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await flushPromises()
+
+    expect(createLocalFileSourceEvidenceRunMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'ui.png' }))
+    expect(readSourceEvidenceSnapshotMock).toHaveBeenCalledWith(45)
+    expect(wrapper.text()).toContain('缺少文本主体')
+    expect(wrapper.text()).toContain('图片未参与语义理解')
+    expect(wrapper.text()).toContain('先观察并采纳视觉证据')
+    expect(wrapper.find('[data-test="preview-generate-button"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+
+    expect(generateTestCasesMock).not.toHaveBeenCalled()
+  })
+
+  it('updates 02 current source summary when switching V2 Source Evidence source modes', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await uploadLocalPlanningFile(wrapper, new File(['excel'], 'QuestReward.xlsx'))
+
+    expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('本地文件')
+    expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('QuestReward.xls')
+    expect(wrapper.find('[data-test="planning-sheet-select"]').exists()).toBe(false)
+
+    createSourceEvidenceRunMock.mockResolvedValueOnce(svnSourceEvidenceRunResponse)
+    await openSvnSourcePanel(wrapper)
+    await wrapper.find('[data-test="svn-file-url-input"]').setValue('https://samosvn/data/project/samo/GameDatas/QuestReward.xls')
+    await wrapper.find('[data-test="svn-read-data"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('SVN 文件')
+    expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('QuestReward.xls')
+
+    await createFeishuDocumentRun(wrapper)
+
+    expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('飞书文档')
+    expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('活动富文档')
+    expect(wrapper.find('[data-test="snapshot-readiness-card"]').text()).toContain('可生成兼容快照')
+  })
+
+  it('clears the current local Source Evidence run without writing legacy planning source config', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await uploadLocalPlanningFile(wrapper, new File(['excel'], 'QuestReward.xlsx'))
+    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.text()).toContain('活动入口按配置展示')
+
+    await wrapper.find('[data-test="local-source-clear-file"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="read-snapshot-button"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.text()).not.toContain('活动入口按配置展示')
+    expect(wrapper.find('[data-test="source-chip-local"]').text()).toContain('本地文件 · 待读取')
+    expect(saveWorkbenchConfigMock).not.toHaveBeenCalled()
+  })
+
+  it('shows a safe upload error summary without leaking local paths or tokens', async () => {
+    createLocalFileSourceEvidenceRunMock.mockRejectedValueOnce(
+      new Error('上传失败 D:/secret/QuestReward.xlsx token=abc123 open_id=ou_123456'),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    await uploadLocalPlanningFile(wrapper, new File(['bad'], 'QuestReward.xlsx'))
+
+    expect(createLocalFileSourceEvidenceRunMock).toHaveBeenCalledTimes(1)
+    expect(uploadSourceFileMock).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="local-source-upload-error"]').text()).toContain('上传文件失败')
+    expect(wrapper.text()).not.toContain('D:/secret')
+    expect(wrapper.text()).not.toContain('abc123')
+    expect(wrapper.text()).not.toContain('ou_123456')
+  })
+
+  it('does not restore persisted SVN Excel as a V2 Source Evidence input', async () => {
+    const svnSource: DataSource = {
+      id: 'svn_plan',
+      type: 'svn',
+      pathOrUrl: 'https://samosvn/data/project/samo/GameDatas/datas_qa88/QuestReward.xlsx',
+    }
+    const wrapper = await mountViewWithPlanningSource([svnSource], 'svn_plan', 'Reward')
+
+    await openSvnSourcePanel(wrapper)
+
+    expect(wrapper.find('[data-test="source-mode-svn"]').classes()).toContain('is-active')
+    expect(wrapper.text()).toContain('SVN 文件')
+    expect(wrapper.text()).toContain('待选择文件')
+    expect(wrapper.text()).toContain('SVN 文件读取')
+    expect(wrapper.text()).not.toContain('https://samosvn')
+    expect(wrapper.find('[data-test="read-snapshot-button"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('creates an SVN file Source Evidence run from a URL without legacy directory metadata', async () => {
+    createSourceEvidenceRunMock.mockResolvedValueOnce(svnSourceEvidenceRunResponse)
+    const wrapper = mountView()
+    await flushPromises()
+    fetchSourceMetadataMock.mockClear()
+
+    await openSvnSourcePanel(wrapper)
+    await wrapper.find('[data-test="svn-file-url-input"]').setValue('https://samosvn/data/project/samo/GameDatas/QuestReward.xls')
+    await wrapper.find('[data-test="svn-read-data"]').trigger('click')
+    await flushPromises()
+
+    expect(createSourceEvidenceRunMock).toHaveBeenCalledWith({
+      source_type: 'svn_file',
+      source_url: 'https://samosvn/data/project/samo/GameDatas/QuestReward.xls',
+    })
+    expect(listSvnDirectoryMock).not.toHaveBeenCalled()
+    expect(fetchSourceMetadataMock).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="source-chip-svn"]').text()).toContain('SVN 文件 · 已读取')
+    expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('QuestReward.xls')
+    expect(wrapper.find('[data-test="source-evidence-document-card"]').text()).toContain('SVN 文件：QuestReward.xls')
+    expect(wrapper.text()).toContain('图片未参与语义理解')
+
+    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await flushPromises()
+
+    expect(readSourceEvidenceSnapshotMock).toHaveBeenCalledWith(44)
+    expect(readPlanningSnapshotMock).not.toHaveBeenCalled()
+  })
+
+  it('shows a sanitized SVN Source Evidence creation error without opening personal credential controls', async () => {
+    createSourceEvidenceRunMock.mockRejectedValueOnce(
+      new Error('缺少项目级 SVN 凭据 Authorization Bearer token=abc123 password=secret'),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    await openSvnSourcePanel(wrapper)
+    await wrapper.find('[data-test="svn-file-url-input"]').setValue('https://samosvn/data/project/samo/GameDatas/QuestReward.xls')
+    await wrapper.find('[data-test="svn-read-data"]').trigger('click')
+    await flushPromises()
+
+    expect(createSourceEvidenceRunMock).toHaveBeenCalledWith({
+      source_type: 'svn_file',
+      source_url: 'https://samosvn/data/project/samo/GameDatas/QuestReward.xls',
+    })
+    expect(wrapper.find('[data-test="svn-directory-error"]').text()).toContain('缺少项目级 SVN 凭据')
+    expect(wrapper.text()).not.toContain('Authorization')
+    expect(wrapper.text()).not.toContain('Bearer')
+    expect(wrapper.text()).not.toContain('abc123')
+    expect(wrapper.text()).not.toContain('secret')
+    expect(listSvnDirectoryMock).not.toHaveBeenCalled()
+    expect(fetchSvnCredentialMock).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-test="svn-credential-dialog"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="svn-main-username-input"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="svn-main-password-input"]').exists()).toBe(false)
+  })
+
+  it('does not read persisted SVN sources through uploaded Excel planning snapshot mode', async () => {
+    const svnSource: DataSource = {
+      id: 'svn_plan',
+      type: 'svn',
+      pathOrUrl: 'https://samosvn/data/project/samo/GameDatas/datas_qa88/QuestReward.xlsx',
+    }
+    fetchSourceMetadataMock.mockResolvedValueOnce({
+      code: 200,
+      msg: 'ok',
+      data: {
+        source_id: 'svn_plan',
+        source_type: 'svn',
+        sheets: [{ name: 'Reward', columns: ['ID', '奖励'] }],
+      },
+    })
+    const wrapper = await mountViewWithPlanningSource([svnSource], 'svn_plan', 'Reward')
+
+    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await flushPromises()
+
+    expect(readPlanningSnapshotMock).not.toHaveBeenCalled()
+    expect(readSourceEvidenceSnapshotMock).not.toHaveBeenCalled()
+  })
+
+  it('does not restore persisted local planning sources into V2 generation input', async () => {
     const persistedSource = {
       id: 'persisted_plan',
       type: 'local_excel' as const,
@@ -668,31 +1586,20 @@ describe('TestCaseGeneratorView', () => {
         },
       },
     })
-    fetchSourceMetadataMock.mockResolvedValueOnce({
-      code: 200,
-      msg: 'ok',
-      data: {
-        source_id: 'persisted_plan',
-        source_type: 'local_excel',
-        sheets: [{ name: '策划Sheet', columns: ['模块', '需求点'] }],
-      },
-    })
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.find('[data-source-id="persisted_plan"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="source-mode-local"]').classes()).toContain('is-active')
+    expect(wrapper.find('.data-source-panel-stub').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('D:/plan/persisted.xlsx')
 
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
 
-    expect(readPlanningSnapshotMock).toHaveBeenCalledWith({
-      source_type: 'uploaded_excel',
-      source: persistedSource,
-      sheet_name: '策划Sheet',
-    })
+    expect(readPlanningSnapshotMock).not.toHaveBeenCalled()
   })
 
-  it('persists planning sources without overwriting existing workbench config', async () => {
+  it('persists planning sheet selection without overwriting existing workbench config', async () => {
     const personalSources = [{ id: 'personal_check_source', type: 'local_excel' as const, pathOrUrl: 'D:/check.xlsx' }]
     const variables = [{ tag: 'items', source_id: 'personal_check_source', sheet: 'Sheet1', column: 'ID' }]
     fetchWorkbenchConfigMock.mockResolvedValueOnce({
@@ -703,29 +1610,42 @@ describe('TestCaseGeneratorView', () => {
         variables,
         ruleGroups: [{ id: 'ungrouped', name: '未分组' }],
         test_case_generation: {
-          planning_sources: [],
-          preferred_planning_source_id: null,
-          selected_planning_sheet_name: null,
+          planning_sources: [defaultPlanningSource, secondPlanningSource],
+          preferred_planning_source_id: 'new_plan',
+          selected_planning_sheet_name: '新增Sheet',
         },
+      },
+    })
+    fetchSourceMetadataMock.mockResolvedValueOnce({
+      code: 200,
+      msg: 'ok',
+      data: {
+        source_id: 'new_plan',
+        source_type: 'feishu',
+        sheets: [
+          { name: '新增Sheet', columns: ['模块'] },
+          { name: '第二Sheet', columns: ['模块'] },
+        ],
       },
     })
     const wrapper = mountView()
     await flushPromises()
 
-    await addPlanningSource(wrapper)
+    await wrapper.find('[data-test="planning-sheet-select"]').setValue('第二Sheet')
+    await flushPromises()
 
     const savedPayload = saveWorkbenchConfigMock.mock.calls.at(-1)?.[0] as Record<string, unknown>
     expect(savedPayload.sources).toEqual(personalSources)
     expect(savedPayload.variables).toEqual(variables)
     expect(savedPayload.ruleGroups).toEqual([{ id: 'ungrouped', name: '未分组' }])
     expect(savedPayload.test_case_generation).toEqual({
-      planning_sources: [{ id: 'new_plan', type: 'local_excel', pathOrUrl: 'D:/plan/new_plan.xlsx' }],
+      planning_sources: [defaultPlanningSource, secondPlanningSource],
       preferred_planning_source_id: 'new_plan',
-      selected_planning_sheet_name: '新增Sheet',
+      selected_planning_sheet_name: '第二Sheet',
     })
   })
 
-  it('persists planning source removal without relying on the saved event', async () => {
+  it('does not expose the old source management table controls in the 01 shell', async () => {
     const persistedSource = {
       id: 'persisted_plan',
       type: 'local_excel' as const,
@@ -745,15 +1665,9 @@ describe('TestCaseGeneratorView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await wrapper.find('[data-test="delete-source-persisted_plan"]').trigger('click')
-    await flushPromises()
-
-    const savedPayload = saveWorkbenchConfigMock.mock.calls.at(-1)?.[0] as Record<string, unknown>
-    expect(savedPayload.test_case_generation).toEqual({
-      planning_sources: [],
-      preferred_planning_source_id: null,
-      selected_planning_sheet_name: null,
-    })
+    expect(wrapper.find('.data-source-panel-stub').exists()).toBe(false)
+    expect(wrapper.find('[data-test="delete-source-persisted_plan"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('D:/plan/persisted.xlsx')
   })
 
   it('renders generation input and preview as full-width modules', () => {
@@ -762,8 +1676,8 @@ describe('TestCaseGeneratorView', () => {
     expect(wrapper.find('.tcg-content > [data-test="generation-input-module"]').exists()).toBe(true)
     expect(wrapper.find('.tcg-setup').exists()).toBe(false)
     expect(wrapper.find('.tcg-workspace').exists()).toBe(false)
-    expect(wrapper.find('[data-test="generation-input-module"]').text()).toContain('策划案来源')
-    expect(wrapper.find('[data-test="generation-input-module"]').text()).toContain('主参考设置')
+    expect(wrapper.find('[data-test="generation-input-module"]').text()).toContain('当前来源')
+    expect(wrapper.find('[data-test="generation-input-module"]').text()).toContain('参考来源（可选）')
     expect(wrapper.find('.tcg-content > .tcg-preview').exists()).toBe(true)
     expect(wrapper.find('[data-test="generation-input-module"]').text()).toContain('02')
     expect(wrapper.find('[data-test="reference-library"]').text()).toContain('03')
@@ -800,20 +1714,19 @@ describe('TestCaseGeneratorView', () => {
   })
 
   it('keeps generation disabled until a snapshot is read', async () => {
-    const wrapper = mountView()
+    const wrapper = await mountViewWithPlanningSource()
 
     expect(wrapper.find('[data-test="preview-generate-button"]').attributes('disabled')).toBeDefined()
 
-    await addPlanningSource(wrapper)
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
 
     expect(readPlanningSnapshotMock).toHaveBeenCalledWith({
-      source_type: 'uploaded_excel',
+      source_type: 'feishu',
       source: {
         id: 'new_plan',
-        type: 'local_excel',
-        pathOrUrl: 'D:/plan/new_plan.xlsx',
+        type: 'feishu',
+        pathOrUrl: 'https://example.feishu.cn/sheets/shtcnNewPlan',
       },
       sheet_name: '新增Sheet',
     })
@@ -821,11 +1734,488 @@ describe('TestCaseGeneratorView', () => {
     expect(wrapper.text()).toContain('按配置开放入口')
   })
 
-  it('automatically requests a snapshot brief after reading the planning snapshot', async () => {
+  it('creates a Source Evidence Run and reads its compatible snapshot', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await addPlanningSource(wrapper)
+    await createFeishuDocumentRun(wrapper)
+
+    expect(createSourceEvidenceRunMock).toHaveBeenCalledWith({
+      source_type: 'feishu',
+      source_url: 'https://example.feishu.cn/docx/doc123',
+    })
+    expect(wrapper.text()).toContain('活动富文档')
+    expect(wrapper.text()).toContain('飞书 docx：活动富文档')
+    expect(wrapper.text()).toContain('ready')
+    expect(wrapper.text()).toContain('2026-07-06')
+    expect(wrapper.text()).toContain('2 个资源')
+    expect(wrapper.text()).toContain('隐藏 Sheet 已排除。')
+    expect(wrapper.text()).toContain('文本/表格可继续，图片/附件待观察')
+    expect(wrapper.text()).not.toContain('docx-token-redacted')
+
+    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await flushPromises()
+
+    expect(readSourceEvidenceSnapshotMock).toHaveBeenCalledWith(42)
+    expect(readPlanningSnapshotMock).not.toHaveBeenCalled()
+    expect(readPlanningSnapshotBriefMock).toHaveBeenCalledWith({
+      planning_snapshot: sourceEvidenceSnapshotResponse.data,
+    })
+    expect(wrapper.text()).toContain('快照行数2 行')
+  })
+
+  it('renders the redesigned Feishu document source layout with safe status and pipeline', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper)
+
+    const urlInput = wrapper.find('[data-test="source-evidence-url-input"]')
+    expect(urlInput.attributes('placeholder')).toBe('粘贴 docx / docs / wiki / sheets / base 链接')
+
+    const readPanel = wrapper.find('[data-test="source-evidence-read-panel"]')
+    expect(readPanel.exists()).toBe(true)
+    expect(readPanel.text()).toContain('飞书文档读取')
+
+    const summaryCard = wrapper.find('[data-test="source-evidence-document-card"]')
+    expect(summaryCard.text()).toContain('活动富文档')
+    expect(summaryCard.text()).toContain('飞书 docx：活动富文档')
+    expect(summaryCard.text()).toContain('ready')
+    expect(summaryCard.text()).toContain('2 个资源')
+    expect(summaryCard.text()).toContain('隐藏 Sheet 已排除。')
+
+    const authorizationStatus = wrapper.find('[data-test="source-evidence-authorization-status"]')
+    expect(authorizationStatus.text()).toContain('授权与资源状态')
+    expect(authorizationStatus.text()).toContain('已可读取')
+    expect(authorizationStatus.text()).toContain('仅用于读取正文、表格、下载图片/附件和生成证据，不修改源文档')
+
+    const pipeline = wrapper.find('[data-test="source-evidence-pipeline"]')
+    expect(pipeline.exists()).toBe(true)
+    for (const step of ['读取链接', '识别 owner/creator', '申请授权', '作者授权', '重试读取', '下载图片/附件', '生成快照']) {
+      expect(pipeline.text()).toContain(step)
+    }
+  })
+
+  it('shows authorization request button for pending permission Source Evidence runs', async () => {
+    createSourceEvidenceRunMock.mockResolvedValueOnce(sourceEvidencePendingPermissionRunResponse)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper)
+
+    const authorizationButton = wrapper.find('[data-test="source-evidence-authorization-button"]')
+    expect(authorizationButton.exists()).toBe(true)
+    expect(authorizationButton.attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-test="source-evidence-authorization-status"]').text()).toContain('待作者授权')
+    expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('飞书文档')
+    expect(wrapper.find('[data-test="snapshot-readiness-card"]').text()).toContain('先申请授权或重试读取')
+    expect(wrapper.find('[data-test="read-snapshot-button"]').attributes('disabled')).toBeDefined()
+
+    await authorizationButton.trigger('click')
+    await flushPromises()
+
+    expect(requestSourceEvidenceAuthorizationMock).toHaveBeenCalledWith(42)
+    expect(wrapper.text()).toContain('等待作者授权，授权后请点击重试读取')
+  })
+
+  it('shows authorization request button for readable runs with failed resource downloads', async () => {
+    fetchSourceEvidenceResourcesMock.mockResolvedValueOnce({
+      ...sourceEvidenceResourceListResponse,
+      data: {
+        ...sourceEvidenceResourceListResponse.data,
+        items: [
+          {
+            ...sourceEvidenceResourceListResponse.data.items[0],
+            download_status: 'download_failed',
+          },
+        ],
+      },
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper)
+
+    expect(wrapper.find('[data-test="source-evidence-authorization-button"]').exists()).toBe(true)
+    expect(wrapper.find('[data-test="snapshot-readiness-card"]').text()).toContain('先申请授权或重试读取')
+    expect(wrapper.find('[data-test="read-snapshot-button"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('disables duplicate authorization request after already sent response and keeps retry available', async () => {
+    createSourceEvidenceRunMock.mockResolvedValueOnce(sourceEvidencePendingPermissionRunResponse)
+    requestSourceEvidenceAuthorizationMock.mockResolvedValueOnce({
+      ...sourceEvidenceAuthorizationSentResponse,
+      data: {
+        ...sourceEvidenceAuthorizationSentResponse.data,
+        status: 'already_sent',
+        message: '该源文档已有未过期的授权卡，不重复发送。',
+      },
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper)
+    const authorizationButton = wrapper.find('[data-test="source-evidence-authorization-button"]')
+    await authorizationButton.trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('等待作者授权，授权后请点击重试读取')
+    expect(wrapper.find('[data-test="source-evidence-authorization-status"]').text()).toContain('等待作者授权')
+    expect(wrapper.find('[data-test="source-evidence-authorization-button"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="source-evidence-retry-button"]').exists()).toBe(true)
+
+    await wrapper.find('[data-test="source-evidence-authorization-button"]').trigger('click')
+    await flushPromises()
+
+    expect(requestSourceEvidenceAuthorizationMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides authorization request after already authorized response and prompts retry', async () => {
+    createSourceEvidenceRunMock.mockResolvedValueOnce(sourceEvidencePendingPermissionRunResponse)
+    requestSourceEvidenceAuthorizationMock.mockResolvedValueOnce({
+      ...sourceEvidenceAuthorizationSentResponse,
+      data: {
+        ...sourceEvidenceAuthorizationSentResponse.data,
+        status: 'already_authorized',
+        message: '该源文档授权仍在有效期内，可回到用例生成页面重试读取。',
+        can_retry_read: true,
+      },
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper)
+    await wrapper.find('[data-test="source-evidence-authorization-button"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('已检测到授权，可点击重试读取')
+    expect(wrapper.find('[data-test="source-evidence-authorization-status"]').text()).toContain('已可读取')
+    expect(wrapper.find('[data-test="source-evidence-authorization-button"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="source-evidence-retry-button"]').exists()).toBe(true)
+  })
+
+  it('allows requesting authorization again after send failed response', async () => {
+    createSourceEvidenceRunMock.mockResolvedValueOnce(sourceEvidencePendingPermissionRunResponse)
+    requestSourceEvidenceAuthorizationMock
+      .mockResolvedValueOnce({
+        ...sourceEvidenceAuthorizationSentResponse,
+        data: {
+          ...sourceEvidenceAuthorizationSentResponse.data,
+          status: 'send_failed',
+          message: '发送授权卡失败：已脱敏错误摘要。',
+        },
+      })
+      .mockResolvedValueOnce(sourceEvidenceAuthorizationSentResponse)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper)
+    await wrapper.find('[data-test="source-evidence-authorization-button"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('发送授权卡失败：已脱敏错误摘要。')
+    expect(wrapper.find('[data-test="source-evidence-authorization-status"]').text()).toContain('发送失败')
+    expect(wrapper.find('[data-test="source-evidence-authorization-button"]').attributes('disabled')).toBeUndefined()
+
+    await wrapper.find('[data-test="source-evidence-authorization-button"]').trigger('click')
+    await flushPromises()
+
+    expect(requestSourceEvidenceAuthorizationMock).toHaveBeenCalledTimes(2)
+    expect(wrapper.text()).toContain('等待作者授权，授权后请点击重试读取')
+  })
+
+  it('disables Source Evidence actions after authorization request reports expired or cleaned', async () => {
+    fetchSourceEvidenceResourcesMock.mockResolvedValueOnce({
+      ...sourceEvidenceResourceListResponse,
+      data: {
+        ...sourceEvidenceResourceListResponse.data,
+        items: [
+          {
+            ...sourceEvidenceResourceListResponse.data.items[0],
+            download_status: 'download_failed',
+          },
+        ],
+      },
+    })
+    const expiredError = new Error('证据已过期') as Error & {
+      payload: { data: typeof sourceEvidenceAuthorizationSentResponse.data }
+    }
+    expiredError.payload = {
+      data: {
+        ...sourceEvidenceAuthorizationSentResponse.data,
+        status: 'expired_or_cleaned',
+        message: '证据已过期或已清理，请重新读取来源。',
+      },
+    }
+    requestSourceEvidenceAuthorizationMock.mockRejectedValueOnce(expiredError)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper)
+    expect(wrapper.find('[data-test="snapshot-readiness-card"]').text()).toContain('先申请授权或重试读取')
+    expect(wrapper.find('[data-test="read-snapshot-button"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="preview-generate-button"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="preview-export-button"]').attributes('disabled')).toBeDefined()
+
+    await wrapper.find('[data-test="source-evidence-authorization-button"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('证据已过期或已清理，请重新读取来源。')
+    expect(wrapper.find('[data-test="source-evidence-authorization-status"]').text()).toContain('证据已过期或已清理')
+    expect(wrapper.find('[data-test="source-evidence-authorization-button"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="read-snapshot-button"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="preview-generate-button"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="preview-export-button"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('passes source_evidence_run_id to generation and export', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper)
+    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+
+    expect(generateTestCasesMock).toHaveBeenCalledWith({
+      planning_snapshot: sourceEvidenceSnapshotResponse.data,
+      reference_ids: [201],
+      primary_reference_id: 201,
+      primary_reference_sheet_name: '测试用例',
+      snapshot_brief_markdown: snapshotBriefMarkdown,
+      source_evidence_run_id: 42,
+      adopted_visual_evidence_ids: [],
+    })
+
+    await wrapper.find('[data-test="preview-export-button"]').trigger('click')
+    await flushPromises()
+
+    expect(exportTestCaseWorkbookMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source_summary: sourceEvidenceSnapshotResponse.data.source_summary,
+        source_evidence_run_id: 42,
+        adopted_visual_evidence_ids: [],
+      }),
+    )
+  })
+
+  it('shows Source Evidence visual candidates in a drawer and saves selection', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper)
+    await wrapper.find('[data-test="source-evidence-resources-button"]').trigger('click')
+    await flushPromises()
+
+    expect(fetchSourceEvidenceVisualCandidatesMock).toHaveBeenCalledWith(42)
+    expect(fetchSourceEvidenceObservationsMock).toHaveBeenCalledWith(42)
+    const drawer = wrapper.find('[data-test="source-evidence-resources-drawer"]')
+    expect(drawer.exists()).toBe(true)
+    expect(drawer.text()).toContain('img_001')
+    expect(drawer.text()).toContain('image')
+    expect(drawer.text()).toContain('docx:block:3')
+    expect(drawer.text()).toContain('系统推荐')
+    expect(drawer.text()).toContain('已选')
+    expect(drawer.text()).toContain('附近文本包含视觉关键词')
+    expect(drawer.text()).toContain('权限不足')
+    expect(drawer.text()).toContain('unobserved')
+
+    const imageCheckbox = wrapper.find('[data-test="visual-candidate-checkbox-img_001"]')
+    expect((imageCheckbox.element as HTMLInputElement).checked).toBe(true)
+    await imageCheckbox.setValue(false)
+    await wrapper.find('[data-test="source-evidence-visual-selection-save-button"]').trigger('click')
+    await flushPromises()
+
+    expect(saveSourceEvidenceVisualSelectionsMock).toHaveBeenCalledWith(42, { selected_refs: [] })
+  })
+
+  it('observes selected visual candidates and adopts evidence for generation/export', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper)
+    await wrapper.find('[data-test="source-evidence-resources-button"]').trigger('click')
+    await flushPromises()
+
+    await wrapper.find('[data-test="source-evidence-observe-button"]').trigger('click')
+    await flushPromises()
+
+    expect(saveSourceEvidenceVisualSelectionsMock).toHaveBeenCalledWith(42, { selected_refs: ['img_001'] })
+    expect(observeSourceEvidenceRunMock).toHaveBeenCalledWith(42)
+    expect(wrapper.text()).toContain('图中展示活动入口按钮')
+    expect(wrapper.text()).toContain('只能确认截图可见内容')
+
+    await wrapper.find('[data-test="source-evidence-adopt-observation-7"]').trigger('click')
+    await flushPromises()
+
+    expect(adoptSourceEvidenceVisualEvidenceMock).toHaveBeenCalledWith(42, { observation_ids: [7] })
+    expect(wrapper.text()).toContain('已采纳 1 个')
+
+    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+
+    expect(generateTestCasesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source_evidence_run_id: 42,
+        adopted_visual_evidence_ids: [7],
+      }),
+    )
+
+    await wrapper.find('[data-test="preview-export-button"]').trigger('click')
+    await flushPromises()
+
+    expect(exportTestCaseWorkbookMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source_evidence_run_id: 42,
+        adopted_visual_evidence_ids: [7],
+      }),
+    )
+  })
+
+  it('revokes adopted visual evidence and marks generated result stale', async () => {
+    fetchSourceEvidenceObservationsMock.mockResolvedValueOnce(sourceEvidenceAdoptedResponse)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper)
+    await wrapper.find('[data-test="source-evidence-resources-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-test="preview-export-button"]').attributes('disabled')).toBeUndefined()
+
+    await wrapper.find('[data-test="source-evidence-revoke-observation-7"]').trigger('click')
+    await flushPromises()
+
+    expect(revokeSourceEvidenceVisualEvidenceMock).toHaveBeenCalledWith(42, 7)
+    expect(wrapper.text()).toContain('已采纳视觉证据已变化，需要重新生成。')
+    expect(wrapper.find('[data-test="preview-export-button"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('marks generated result stale after saving visual selection', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper)
+    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-test="preview-export-button"]').attributes('disabled')).toBeUndefined()
+
+    await wrapper.find('[data-test="source-evidence-resources-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="visual-candidate-checkbox-img_001"]').setValue(false)
+    await wrapper.find('[data-test="source-evidence-visual-selection-save-button"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('视觉观察选择已变化，需要重新生成。')
+    expect(wrapper.find('[data-test="preview-export-button"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('disables generation for expired or cleaned Source Evidence runs', async () => {
+    createSourceEvidenceRunMock.mockResolvedValueOnce({
+      ...sourceEvidenceRunResponse,
+      data: {
+        ...sourceEvidenceRunResponse.data,
+        status: 'expired',
+      },
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper)
+
+    expect(wrapper.text()).toContain('证据已过期或已清理，请重新读取来源。')
+    expect(wrapper.find('[data-test="source-evidence-authorization-status"]').text()).toContain('证据已过期或已清理')
+    expect(wrapper.find('[data-test="read-snapshot-button"]').attributes('disabled')).toBeDefined()
+    expect(wrapper.find('[data-test="preview-generate-button"]').attributes('disabled')).toBeDefined()
+  })
+
+  it('keeps legacy Feishu spreadsheet snapshot compatibility without restoring the source dropdown', async () => {
+    const legacyFeishuSource: DataSource = {
+      id: 'legacy_feishu',
+      type: 'feishu',
+      pathOrUrl: 'https://example.feishu.cn/sheets/shtcnSecretToken',
+    }
+    fetchSourceMetadataMock.mockResolvedValueOnce({
+      code: 200,
+      msg: 'ok',
+      data: {
+        source_id: 'legacy_feishu',
+        source_type: 'feishu',
+        sheets: [{ name: '需求Sheet', columns: ['模块', '需求点'] }],
+      },
+    })
+    const wrapper = await mountViewWithPlanningSource([legacyFeishuSource], 'legacy_feishu', '需求Sheet')
+
+    expect(wrapper.find('[data-test="planning-source-select"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('飞书电子表格')
+    expect(wrapper.text()).not.toContain('shtcnSecretToken')
+
+    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await flushPromises()
+
+    expect(readPlanningSnapshotMock).toHaveBeenCalledWith({
+      source_type: 'feishu',
+      source: legacyFeishuSource,
+      sheet_name: '需求Sheet',
+    })
+  })
+
+  it('sanitizes Feishu document source summaries, warnings and authorization errors', async () => {
+    createSourceEvidenceRunMock.mockResolvedValueOnce({
+      ...sourceEvidencePendingPermissionRunResponse,
+      data: {
+        ...sourceEvidencePendingPermissionRunResponse.data,
+        source_title: 'https://example.feishu.cn/docx/doccnSecret123 活动文档',
+        source_summary: 'wiki token=wikiSecret file_token=fileSecret open_id=ou_secret_user',
+        warnings: [
+          {
+            source: 'source_evidence',
+            level: 'warning' as const,
+            message: 'Authorization Bearer abc.def token=docSecret open_id=ou_warning_user',
+          },
+        ],
+      },
+    })
+    requestSourceEvidenceAuthorizationMock.mockResolvedValueOnce({
+      ...sourceEvidenceAuthorizationSentResponse,
+      data: {
+        ...sourceEvidenceAuthorizationSentResponse.data,
+        status: 'send_failed',
+        message: 'send failed Bearer secret.jwt token=authSecret open_id=ou_auth_user',
+      },
+    })
+    const wrapper = mountView()
+    await flushPromises()
+
+    await createFeishuDocumentRun(wrapper, 'https://example.feishu.cn/docx/doccnSourceUrlSecret')
+    await wrapper.find('[data-test="source-evidence-authorization-button"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('[已隐藏URL]')
+    expect(wrapper.text()).toContain('[已隐藏敏感字段]')
+    expect(wrapper.text()).not.toContain('doccnSecret123')
+    expect(wrapper.text()).not.toContain('doccnSourceUrlSecret')
+    expect(wrapper.text()).not.toContain('wikiSecret')
+    expect(wrapper.text()).not.toContain('fileSecret')
+    expect(wrapper.text()).not.toContain('ou_secret_user')
+    expect(wrapper.text()).not.toContain('Bearer')
+    expect(wrapper.text()).not.toContain('Authorization')
+    expect(wrapper.text()).not.toContain('authSecret')
+    expect(wrapper.text()).not.toContain('ou_auth_user')
+  })
+
+  it('automatically requests a snapshot brief after reading the planning snapshot', async () => {
+    const wrapper = await mountViewWithPlanningSource()
+
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
 
@@ -837,10 +2227,8 @@ describe('TestCaseGeneratorView', () => {
 
   it('keeps the planning snapshot and allows generation when snapshot brief fails', async () => {
     readPlanningSnapshotBriefMock.mockRejectedValueOnce(new Error('brief failed'))
-    const wrapper = mountView()
-    await flushPromises()
+    const wrapper = await mountViewWithPlanningSource()
 
-    await addPlanningSource(wrapper)
     await selectCategory(wrapper, '礼包用例')
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
@@ -870,10 +2258,8 @@ describe('TestCaseGeneratorView', () => {
       resolveSnapshotBrief = resolve
     })
     readPlanningSnapshotBriefMock.mockReturnValueOnce(pendingSnapshotBrief)
-    const wrapper = mountView()
-    await flushPromises()
+    const wrapper = await mountViewWithPlanningSource()
 
-    await addPlanningSource(wrapper)
     await selectCategory(wrapper, '礼包用例')
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
@@ -897,10 +2283,8 @@ describe('TestCaseGeneratorView', () => {
   })
 
   it('generates cases without reference selection and renders result sections', async () => {
-    const wrapper = mountView()
-    await flushPromises()
+    const wrapper = await mountViewWithPlanningSource()
 
-    await addPlanningSource(wrapper)
     await selectCategory(wrapper, '礼包用例')
 
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
@@ -922,10 +2306,8 @@ describe('TestCaseGeneratorView', () => {
   })
 
   it('passes selected reference ids and primary reference sheet to generation', async () => {
-    const wrapper = mountView()
-    await flushPromises()
+    const wrapper = await mountViewWithPlanningSource()
 
-    await addPlanningSource(wrapper)
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
@@ -941,10 +2323,8 @@ describe('TestCaseGeneratorView', () => {
   })
 
   it('passes completed snapshot brief markdown as top-level generation context', async () => {
-    const wrapper = mountView()
-    await flushPromises()
+    const wrapper = await mountViewWithPlanningSource()
 
-    await addPlanningSource(wrapper)
     await selectCategory(wrapper, '礼包用例')
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
@@ -967,10 +2347,8 @@ describe('TestCaseGeneratorView', () => {
       value: { writeText },
       configurable: true,
     })
-    const wrapper = mountView()
-    await flushPromises()
+    const wrapper = await mountViewWithPlanningSource()
 
-    await addPlanningSource(wrapper)
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-test="copy-snapshot-brief-button"]').trigger('click')
@@ -981,10 +2359,8 @@ describe('TestCaseGeneratorView', () => {
 
   it('retries snapshot brief generation from the failure state', async () => {
     readPlanningSnapshotBriefMock.mockRejectedValueOnce(new Error('brief failed'))
-    const wrapper = mountView()
-    await flushPromises()
+    const wrapper = await mountViewWithPlanningSource()
 
-    await addPlanningSource(wrapper)
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
 
@@ -1000,10 +2376,8 @@ describe('TestCaseGeneratorView', () => {
 
   it('exports using the current in-memory generation result', async () => {
     generateTestCasesMock.mockResolvedValueOnce(generationWithReferenceResponse)
-    const wrapper = mountView()
-    await flushPromises()
+    const wrapper = await mountViewWithPlanningSource()
 
-    await addPlanningSource(wrapper)
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
@@ -1023,10 +2397,8 @@ describe('TestCaseGeneratorView', () => {
   })
 
   it('disables export after reference settings make the generated result stale', async () => {
-    const wrapper = mountView()
-    await flushPromises()
+    const wrapper = await mountViewWithPlanningSource()
 
-    await addPlanningSource(wrapper)
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
@@ -1034,7 +2406,8 @@ describe('TestCaseGeneratorView', () => {
 
     expect(wrapper.find('[data-test="preview-export-button"]').attributes('disabled')).toBeUndefined()
 
-    await findButton(findReferenceRow(wrapper, '202'), '设为主参考')?.trigger('click')
+    await selectCategory(wrapper, '礼包用例')
+    await findButton(findReferenceRow(wrapper, '303'), '设为主参考')?.trigger('click')
     await flushPromises()
 
     expect(wrapper.text()).toContain('主参考案例已切换，需要重新生成。')
@@ -1043,19 +2416,20 @@ describe('TestCaseGeneratorView', () => {
     expect(exportTestCaseWorkbookMock).not.toHaveBeenCalled()
   })
 
-  it('clears snapshot and generated result after switching planning source', async () => {
-    const wrapper = mountView()
+  it('clears snapshot and generated result after switching the active 01 source', async () => {
+    const wrapper = await mountViewWithPlanningSource()
 
-    await addPlanningSource(wrapper)
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
     await flushPromises()
     expect(wrapper.text()).toContain('活动入口按配置展示')
 
-    await addPlanningSource(wrapper)
+    await openSvnSourcePanel(wrapper)
+    await flushPromises()
 
     expect(wrapper.text()).not.toContain('活动入口按配置展示')
+    expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('SVN 文件')
     expect(wrapper.text()).toContain('生成前先读取策划案快照')
     expect(wrapper.find('[data-test="preview-generate-button"]').attributes('disabled')).toBeDefined()
   })
@@ -1068,17 +2442,46 @@ describe('TestCaseGeneratorView', () => {
     expect(source).toMatch(/\.tcg-content\s*\{[^}]*overflow-y:\s*auto/s)
   })
 
+  it('renders the generation workflow stepper before the metric cards', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    const content = wrapper.find('.tcg-content')
+    const progressCard = wrapper.find('[data-test="test-case-progress-stepper"]')
+    const metricSection = wrapper.find('.tcg-metrics')
+
+    expect(progressCard.exists()).toBe(true)
+    expect(metricSection.exists()).toBe(true)
+    expect(
+      Array.from(content.element.children).indexOf(progressCard.element),
+    ).toBeLessThan(Array.from(content.element.children).indexOf(metricSection.element))
+    expect(progressCard.findAll('[data-test="test-case-progress-step"]')).toHaveLength(4)
+    expect(progressCard.text()).toContain('数据源')
+    expect(progressCard.text()).toContain('参考')
+    expect(progressCard.text()).toContain('生成')
+    expect(progressCard.text()).toContain('导出')
+  })
+
   it('loads reference categories and files on page load', async () => {
     const wrapper = mountView()
     await flushPromises()
 
     const categoryPills = wrapper.findAll('[data-test="reference-category-pill"]').map((pill) => pill.text())
+    const referenceLibrary = wrapper.find('[data-test="reference-library"]')
 
     expect(fetchReferenceCategoriesMock).toHaveBeenCalled()
     expect(fetchReferenceFilesMock).toHaveBeenCalledWith()
     expect(wrapper.find('.tcg-content > [data-test="reference-library"]').exists()).toBe(true)
     expect(wrapper.find('.tcg-setup [data-test="reference-library"]').exists()).toBe(false)
-    expect(categoryPills).toEqual(expect.arrayContaining(['活动用例3', '礼包用例6', 'UI 通用1', '未分类1']))
+    expect(categoryPills).toEqual(expect.arrayContaining(['活动用例1', '礼包用例2', 'UI 通用1', '未分类0']))
+    expect(referenceLibrary.find('[data-test="reference-category-list"]').exists()).toBe(true)
+    expect(referenceLibrary.find('[data-test="reference-excel-table"]').exists()).toBe(true)
+    expect(referenceLibrary.find('[data-test="reference-selection-summary"]').exists()).toBe(true)
+    expect(referenceLibrary.text()).toContain('活动回归模板.xlsx')
+    expect(referenceLibrary.text()).not.toContain('礼包活动边界.md')
+    expect(referenceLibrary.text()).not.toContain('UI 通用检查.txt')
+    expect(referenceLibrary.text()).not.toContain('Markdown')
+    expect(referenceLibrary.text()).not.toContain('TXT')
   })
 
   it('creates a reference category through the API', async () => {
@@ -1111,15 +2514,33 @@ describe('TestCaseGeneratorView', () => {
     expect(uploadReferenceFileMock).toHaveBeenCalledWith(file, 101)
   })
 
+  it('rejects non-Excel reference uploads before calling the API', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const file = new File(['case'], 'legacy-reference.md')
+
+    await findButton(wrapper, '上传参考案例')?.trigger('click')
+    const input = wrapper.find('[data-test="reference-upload-input"]')
+    Object.defineProperty(input.element, 'files', {
+      value: [file],
+      configurable: true,
+    })
+    await input.trigger('change')
+    await wrapper.find('[data-test="reference-upload-submit"]').trigger('click')
+    await flushPromises()
+
+    expect(uploadReferenceFileMock).not.toHaveBeenCalled()
+    expect(wrapper.find('.tcg-dialog-error').text()).toContain('请选择一个 .xlsx 或 .xls Excel 参考案例文件。')
+  })
+
   it('clears selected references and primary reference when switching to a category without recommended primary', async () => {
     const wrapper = mountView()
     await flushPromises()
 
     await selectCategory(wrapper, '礼包用例')
 
-    const primarySelect = wrapper.find('[data-test="primary-reference-select"]')
-    expect(primarySelect.attributes('data-disabled')).toBe('true')
-    expect(primarySelect.text()).toContain('可选：先选择参考案例后指定主参考')
+    expect(wrapper.find('[data-test="primary-reference-select"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="reference-entry-card"]').text()).toContain('未选择参考案例')
     expect(wrapper.text()).toContain('当前分类未选择参考案例')
     expect(wrapper.text()).toContain('参考案例分类已切换，本次将按 qa-case 标准逻辑生成。')
   })
@@ -1132,42 +2553,42 @@ describe('TestCaseGeneratorView', () => {
     await selectCategory(wrapper, 'UI 通用')
 
     const uiPrimaryRow = findReferenceRow(wrapper, '204')
-    const primarySelect = wrapper.find('[data-test="primary-reference-select"]')
 
     expect((uiPrimaryRow.find('[data-test="reference-checkbox"]').element as HTMLInputElement).checked).toBe(true)
     expect(uiPrimaryRow.classes()).toContain('is-primary')
-    expect(primarySelect.attributes('data-disabled')).toBe('false')
-    expect(primarySelect.text()).toContain('UI 通用冒烟.xlsx')
+    expect(wrapper.find('[data-test="reference-entry-card"]').text()).toContain('UI 通用冒烟.xlsx')
   })
 
   it('allows selecting multiple references within the same category', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    const markdownRow = findReferenceRow(wrapper, '202')
-    const txtRow = findReferenceRow(wrapper, '203')
+    await selectCategory(wrapper, '礼包用例')
+    const firstExcelRow = findReferenceRow(wrapper, '303')
+    const secondExcelRow = findReferenceRow(wrapper, '306')
 
-    await markdownRow.find('[data-test="reference-checkbox"]').setValue(true)
-    await txtRow.find('[data-test="reference-checkbox"]').setValue(true)
+    await firstExcelRow.find('[data-test="reference-checkbox"]').setValue(true)
+    await secondExcelRow.find('[data-test="reference-checkbox"]').setValue(true)
 
-    expect((markdownRow.find('[data-test="reference-checkbox"]').element as HTMLInputElement).checked).toBe(true)
-    expect((txtRow.find('[data-test="reference-checkbox"]').element as HTMLInputElement).checked).toBe(true)
-    expect(wrapper.find('[data-test="primary-reference-select"]').text()).toContain('活动回归模板.xlsx')
-    expect(wrapper.find('[data-test="primary-reference-select"]').text()).toContain('礼包活动边界.md')
-    expect(wrapper.find('[data-test="primary-reference-select"]').text()).toContain('UI 通用检查.txt')
+    expect((firstExcelRow.find('[data-test="reference-checkbox"]').element as HTMLInputElement).checked).toBe(true)
+    expect((secondExcelRow.find('[data-test="reference-checkbox"]').element as HTMLInputElement).checked).toBe(true)
+    expect(wrapper.find('[data-test="reference-entry-card"]').text()).toContain('已选 2 个')
+    expect(wrapper.find('[data-test="reference-selection-summary"]').text()).toContain('已选 2 个')
+    expect(wrapper.find('[data-test="reference-selection-summary"]').text()).toContain('来源 Excel')
   })
 
   it('setting a file as primary reference automatically selects it', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    const txtRow = findReferenceRow(wrapper, '203')
+    await selectCategory(wrapper, '礼包用例')
+    const excelRow = findReferenceRow(wrapper, '303')
 
-    await findButton(txtRow, '设为主参考')?.trigger('click')
+    await findButton(excelRow, '设为主参考')?.trigger('click')
 
-    expect((txtRow.find('[data-test="reference-checkbox"]').element as HTMLInputElement).checked).toBe(true)
-    expect(txtRow.classes()).toContain('is-primary')
-    expect(wrapper.find('[data-test="primary-reference-select"]').text()).toContain('UI 通用检查.txt')
+    expect((excelRow.find('[data-test="reference-checkbox"]').element as HTMLInputElement).checked).toBe(true)
+    expect(excelRow.classes()).toContain('is-primary')
+    expect(wrapper.find('[data-test="reference-entry-card"]').text()).toContain('礼包领取回归 3.xlsx')
     expect(wrapper.text()).toContain('主参考案例已切换，需要重新生成。')
   })
 
@@ -1175,46 +2596,48 @@ describe('TestCaseGeneratorView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await findReferenceRow(wrapper, '203').findAll('button')[2]?.trigger('click')
+    await selectCategory(wrapper, '礼包用例')
+    await findReferenceRow(wrapper, '303').findAll('button')[2]?.trigger('click')
     await findButton(wrapper, '设为推荐主参考')?.trigger('click')
     await flushPromises()
 
-    expect(setRecommendedPrimaryReferenceMock).toHaveBeenCalledWith(203)
+    expect(setRecommendedPrimaryReferenceMock).toHaveBeenCalledWith(303)
 
-    await findReferenceRow(wrapper, '203').findAll('button')[2]?.trigger('click')
+    await findReferenceRow(wrapper, '303').findAll('button')[2]?.trigger('click')
     await findButton(wrapper, '删除文件')?.trigger('click')
     await flushPromises()
 
-    expect(deleteReferenceFileMock).toHaveBeenCalledWith(203)
+    expect(deleteReferenceFileMock).toHaveBeenCalledWith(303)
   })
 
-  it('only lists selected references in the primary reference select', async () => {
+  it('shows a lightweight reference entry in 02 and keeps primary selection in 03', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.find('[data-test="primary-reference-select"]').text()).toContain('活动回归模板.xlsx')
-    expect(wrapper.find('[data-test="primary-reference-select"]').text()).not.toContain('礼包活动边界.md')
+    const referenceEntry = wrapper.find('[data-test="reference-entry-card"]')
+    expect(referenceEntry.text()).toContain('参考来源（可选）')
+    expect(referenceEntry.text()).toContain('活动回归模板.xlsx')
+    expect(referenceEntry.text()).toContain('前往选择')
+    expect(wrapper.find('[data-test="primary-reference-select"]').exists()).toBe(false)
 
-    await findReferenceRow(wrapper, '202').find('[data-test="reference-checkbox"]').setValue(true)
+    await selectCategory(wrapper, '礼包用例')
+    await findReferenceRow(wrapper, '303').find('[data-test="reference-checkbox"]').setValue(true)
 
-    expect(wrapper.find('[data-test="primary-reference-select"]').text()).toContain('活动回归模板.xlsx')
-    expect(wrapper.find('[data-test="primary-reference-select"]').text()).toContain('礼包活动边界.md')
-    expect(wrapper.find('[data-test="primary-reference-select"]').text()).not.toContain('UI 通用检查.txt')
+    expect(wrapper.find('[data-test="reference-entry-card"]').text()).toContain('已选 1 个')
+    expect(wrapper.find('[data-test="reference-entry-card"]').text()).not.toContain('UI 通用检查.txt')
   })
 
-  it('shows sheet options for Excel primary reference and disables sheet selection for Markdown/TXT', async () => {
+  it('updates the lightweight reference entry when the primary reference changes in 03', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.find('[data-test="primary-reference-sheet-select"]').attributes('data-disabled')).toBe('false')
-    expect(wrapper.text()).toContain('测试用例')
-    expect(wrapper.text()).toContain('历史回归')
+    expect(wrapper.find('[data-test="reference-entry-card"]').text()).toContain('活动回归模板.xlsx')
 
-    await findButton(findReferenceRow(wrapper, '202'), '设为主参考')?.trigger('click')
+    await selectCategory(wrapper, '礼包用例')
+    await findButton(findReferenceRow(wrapper, '303'), '设为主参考')?.trigger('click')
 
-    const sheetSelect = wrapper.find('[data-test="primary-reference-sheet-select"]')
-    expect(sheetSelect.attributes('data-disabled')).toBe('true')
-    expect(sheetSelect.text()).toContain('当前参考案例无 Sheet')
+    expect(wrapper.find('[data-test="reference-entry-card"]').text()).toContain('礼包领取回归 3.xlsx')
+    expect(wrapper.find('[data-test="primary-reference-sheet-select"]').exists()).toBe(false)
   })
 
   it('shows empty state when search has no reference matches', async () => {
@@ -1227,22 +2650,17 @@ describe('TestCaseGeneratorView', () => {
     expect(wrapper.text()).toContain('清空筛选')
   })
 
-  it('paginates reference files in pages of five', async () => {
+  it('excludes hidden non-Excel records from the reference table count', async () => {
     const wrapper = mountView()
     await flushPromises()
 
     await selectCategory(wrapper, '礼包用例')
 
-    expect(wrapper.findAll('[data-test="reference-file-row"]')).toHaveLength(5)
-    expect(wrapper.text()).toContain('第 1-5 条 / 共 6 条')
-    expect(wrapper.findAll('[data-test="reference-page-number"]').map((button) => button.text())).toEqual([
-      '1',
-      '2',
-    ])
-
-    await wrapper.find('[data-test="reference-page-next"]').trigger('click')
-
-    expect(wrapper.findAll('[data-test="reference-file-row"]')).toHaveLength(1)
-    expect(wrapper.text()).toContain('第 6-6 条 / 共 6 条')
+    const libraryText = wrapper.find('[data-test="reference-library"]').text()
+    expect(wrapper.findAll('[data-test="reference-file-row"]')).toHaveLength(2)
+    expect(libraryText).toContain('第 1-2 条 / 共 2 条')
+    expect(libraryText).toContain('礼包领取回归 3.xlsx')
+    expect(libraryText).toContain('礼包领取回归 6.xlsx')
+    expect(libraryText).not.toContain('礼包活动边界补充')
   })
 })

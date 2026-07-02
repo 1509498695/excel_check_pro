@@ -1932,22 +1932,22 @@ async function handleSvnUpdate(): Promise<void> {
           :icon-tone="getMetricIconTone(index)"
         >
           <template #icon>
-            <svg v-if="item.label === '数据源'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg v-if="item.label === '数据源'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
               <ellipse cx="12" cy="5" rx="7" ry="3" />
               <path d="M5 5v6c0 1.66 3.13 3 7 3s7-1.34 7-3V5" />
               <path d="M5 11v6c0 1.66 3.13 3 7 3s7-1.34 7-3v-6" />
             </svg>
-            <svg v-else-if="item.label === '变量'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg v-else-if="item.label === '变量'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
               <path d="m8 8-4 4 4 4" />
               <path d="m16 8 4 4-4 4" />
             </svg>
-            <svg v-else-if="item.label === '规则'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg v-else-if="item.label === '规则'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
               <path d="M12 4v5" />
               <path d="M6 20v-4a3 3 0 0 1 3-3h6a3 3 0 0 1 3 3v4" />
               <rect x="9" y="9" width="6" height="5" rx="1" />
               <path d="M6 20h0M18 20h0" />
             </svg>
-            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg v-else viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
               <circle cx="12" cy="12" r="9" />
               <path d="M12 7v6" />
               <path d="M12 17h.01" />

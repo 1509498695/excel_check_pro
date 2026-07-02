@@ -65,6 +65,7 @@ const emit = defineEmits<{
                   fill="none"
                   stroke="currentColor"
                   stroke-width="2"
+                  aria-hidden="true"
                 >
                   <path v-if="collapsed" d="m6 9 6 6 6-6" />
                   <path v-else d="m18 15-6-6-6 6" />
