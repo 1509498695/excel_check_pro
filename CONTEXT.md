@@ -224,6 +224,10 @@ _Avoid_: Workbook bundle, multi-sheet source, arbitrary sheet merge, manual rang
 A bounded representation of a planning sheet prepared for test case generation, preserving the selected sheet's source identity and sheet-scoped resource references while making content limits visible to the user.
 _Avoid_: Raw workbook, full source evidence run, hidden truncation, user-selected range
 
+**Full Planning Sheet Context**:
+The complete selected planning sheet content prepared for a full-generation run, including all readable text and table facts from that sheet plus adopted visual evidence scoped to that sheet. It is distinct from a bounded preview snapshot and from a multi-sheet workbook merge.
+_Avoid_: Planning Sheet Snapshot, workbook-wide source, hidden truncated input, raw source evidence run
+
 **AI-Assisted Snapshot Brief**:
 A human-readable Markdown brief organized from a planning sheet snapshot for planner and QA alignment. It may support later test case generation as auxiliary context, but the planning sheet snapshot remains the source of truth for requirements and traceability.
 _Avoid_: Requirement source, raw snapshot replacement, Test Case Blueprint, generated test case, reference test case
@@ -255,6 +259,10 @@ _Avoid_: Automatic visual truth, unconfirmed observation, raw screenshot text, g
 **Test Case Generation Workspace**:
 A project-member-visible workspace where users turn one planning sheet into a test-case blueprint and generated test case rows using the project's AI capability.
 _Avoid_: Personal check workspace, rule configuration workspace, manual rule editor
+
+**Generation Run**:
+A short-lived project-scoped workflow that turns one full planning sheet context into requirement atoms, a test case blueprint, generated case rows, and coverage audit results. It is not a permanent generation history or project QA knowledge library.
+_Avoid_: Source Evidence Run, permanent generation history, project QA knowledge library, raw prompt log
 
 **QA Case Method**:
 A built-in testing method for test case generation that derives a blueprint before case rows, checks coverage dimensions, records assumptions and warnings, and treats statistics as code-computed facts rather than model claims.
@@ -288,9 +296,17 @@ _Avoid_: Requirement source, generated test case, raw reference file
 A user-visible caveat attached to a test case generation result when source content, assumptions, or coverage limits may affect the generated cases.
 _Avoid_: Silent omission, debug log, model disclaimer
 
+**Requirement Atom**:
+A traceable requirement unit extracted from a full planning sheet context before blueprint or case generation. Each atom represents one requirement fact, rule, state, configuration, visual fact, or open question and keeps its source location or evidence limitation.
+_Avoid_: Test case row, reference case, model guess, untraceable checklist item
+
 **Test Case Blueprint**:
 An intermediate testing outline derived from a planning sheet that names the feature areas, rules, scenarios, risks, and coverage dimensions before test case rows are produced.
 _Avoid_: Final test case table, coverage statistics, raw planning content
+
+**Coverage Audit**:
+A generated-result review that compares requirement atoms, blueprint nodes, and case rows to identify covered requirements, unmapped requirements, unfounded cases, failed chunks, and export limitations.
+_Avoid_: Model-provided statistics, manual QA sign-off, test execution result, bug report
 
 **Project AI Credential**:
 An administrator-managed AI provider credential owned by a project and used by text-oriented project automation such as Feishu bot configuration-table lookups, AI-assisted validation helpers, and structured test case generation. It is separate from visual understanding credentials; individual users do not maintain separate text AI provider keys.
