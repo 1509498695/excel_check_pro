@@ -5,13 +5,15 @@
 - 先读文件：`backend/app/test_cases/source_evidence.py`、`backend/app/test_cases/visual_evidence.py`、`backend/app/test_cases/planning_snapshot.py`、`backend/app/test_cases/schemas.py`、`backend/app/loaders/local_reader.py`、`backend/app/loaders/svn_cache.py`、`frontend/src/views/TestCaseGeneratorView.vue`、`frontend/src/types/testCases.ts`。
 - 需求文档：`docs/specs/test-case-generation-v2-requirements.md`。
 - 相关决策：`docs/adr/0002-generalize-source-evidence-for-test-case-generation-v2.md`。
-- 领域术语：`CONTEXT.md` 中的 `Source Evidence Run`、`Source Evidence SVN Root`、`Visual Observation Selection`、`Adopted Visual Evidence`。
+- 领域术语：`CONTEXT.md` 中的 `Source Evidence Run`、`Planning Sheet`、`Planning Sheet Snapshot`、`Full Planning Sheet Context`、`Generation Run`、`Source Evidence SVN Root`、`Visual Observation Selection`、`Adopted Visual Evidence`。
 - V2 目标：飞书文档、本地文件、SVN 文件都通过 `Source Evidence Run` 读取文本、表格、图片资源，并让图片只在采纳后进入用例生成。
 - 不要改错方向：不要把本地/SVN V2 继续塞进旧 `planning-snapshot`；不要把用例生成 source evidence 扩成个人校验数据源能力。
 
 ## 1. 目标
 
-V2 把用例生成来源读取从“单 Sheet 文本快照”升级为“短期来源证据会话”。用户可以从飞书文档、本地文件或 SVN 文件创建一个 `Source Evidence Run`，读取文本、表格和图片资源，经过视觉选择、观察和采纳后生成测试用例。
+V2 把用例生成来源读取从“单 Sheet 文本快照”升级为“短期来源证据会话”。用户可以从飞书文档、本地文件或 SVN 文件创建一个 `Source Evidence Run`，读取文本、表格和图片资源，经过视觉选择、观察和采纳后供 V3 `Generation Run` 消费。
+
+`Source Evidence Run` 是来源证据会话，不是生成历史，也不等同于 `Generation Run`。V3 生成由 `Generation Run` 从当前 selected `Planning Sheet` 构建 `Full Planning Sheet Context`；Source Evidence 负责提供可校验、可清理、可脱敏的来源事实和视觉证据。
 
 V2.0 必须支持：
 
@@ -26,7 +28,7 @@ V2.0 必须支持：
 
 - 不把 `Source Evidence Run` 做成生成历史或项目级知识库。
 - 不把个人 SVN 凭据读取出的内容缓存成项目共享证据。
-- 不默认观察全部图片，不让未采纳图片进入 prompt。
+- 不自动观察全部图片，不让未采纳图片进入 prompt。
 - 不重算 Excel 公式，不修改源文件，不写回 SVN 或飞书。
 - V2.0 不承诺 `.docx`、PDF、XMind 读取；这些进入后续版本。
 
@@ -46,12 +48,12 @@ Source Evidence 实际 API 入口：
 |---|---|
 | `POST /api/v1/test-cases/source-evidence-runs` | 创建 `feishu` 或 `svn_file` run。 |
 | `POST /api/v1/test-cases/source-evidence-runs/upload` | 上传文件并创建 `local_file` run。 |
-| `GET /api/v1/test-cases/source-evidence-runs/{run_id}` | 查询 run 摘要。 |
+| `GET /api/v1/test-cases/source-evidence-runs/{run_id}` | 查询 run 摘要；workbook/sheets run 会暴露可选 `sheet_options`。 |
 | `GET /api/v1/test-cases/source-evidence-runs/{run_id}/resources` | 查询资源清单安全摘要。 |
-| `POST /api/v1/test-cases/source-evidence-runs/{run_id}/snapshot` | 构建兼容生成链路的 Source Evidence Snapshot。 |
+| `POST /api/v1/test-cases/source-evidence-runs/{run_id}/snapshot` | 构建兼容预览/旧路径的 `Planning Sheet Snapshot`；workbook/sheets run 可传 `{ "sheet_name": "..." }`。 |
 | `POST /api/v1/test-cases/source-evidence-runs/{run_id}/retry` | 重新读取来源。 |
-| `GET /api/v1/test-cases/source-evidence-runs/{run_id}/visual-candidates` | 查询或懒生成视觉候选。 |
-| `POST /api/v1/test-cases/source-evidence-runs/{run_id}/visual-selections` | 保存视觉观察选择。 |
+| `GET /api/v1/test-cases/source-evidence-runs/{run_id}/visual-candidates` | 查询或懒生成视觉候选；可传 `sheet_name` 让当前 Sheet 图片默认进入候选选中集合。 |
+| `POST /api/v1/test-cases/source-evidence-runs/{run_id}/visual-selections` | 保存视觉观察选择；可带 `sheet_name` 记录手动选择所属 Sheet。 |
 | `POST /api/v1/test-cases/source-evidence-runs/{run_id}/observations` | 执行 Vision observation。 |
 | `GET /api/v1/test-cases/source-evidence-runs/{run_id}/observations` | 查询 observation 安全摘要。 |
 | `POST /api/v1/test-cases/source-evidence-runs/{run_id}/adopted-visual-evidence` | 采纳视觉证据。 |
@@ -67,10 +69,12 @@ Source Evidence 实际 API 入口：
 
 ## 4. 工作簿读取规则
 
-- 读取整个工作簿的可见 Sheet，隐藏 Sheet 默认排除并写入 warning。
-- 文本/表格主体是用例生成的基础输入；图片是补充证据。
-- 当前 Source Evidence Snapshot 读取已解析的可见 Sheet/章节全集；V1 Sheet selector 对 Source Evidence 不显示。后续如果新增范围选择，必须保持资源清单全量安全摘要，避免跨 Sheet 原型图丢失。
-- Source Evidence Snapshot 页面预览可以展示较完整的文本/表格摘要，但进入 AI 生成 prompt 前必须再次按生成预算截断，并把“生成输入超过预算”作为 warning 返回；不要把大工作簿的全集直接塞进两阶段生成 prompt。
+- `Source Evidence Run` 读取整个工作簿的可见 Sheet，隐藏 Sheet 默认排除并写入 warning；run 内仍保留完整 parsed source 和完整资源清单。
+- `SourceEvidenceRunResponse.sheet_options` 只暴露可见/可用 Sheet 摘要，默认 Sheet 是第一个可见 Sheet。
+- Source Evidence 为用户当前选择的单个 `Planning Sheet` 提供来源证据：snapshot rows 仅包含该 Sheet 的文本、表格和位于该 Sheet 的图片/附件资源行；V3 `Generation Run` 消费同一 selected sheet 的 `Full Planning Sheet Context`。
+- 多 Sheet workbook/sheets run 缺少 `sheet_name` 时必须返回错误；单 Sheet run 可默认唯一 Sheet；飞书 docx/wiki、独立图片等非 Sheet 来源继续使用 `sheet_name = Source Evidence` 的兼容行为。
+- 资源清单安全摘要仍按 run 保留完整清单，方便资源抽屉展示和手动跨 Sheet 选择；但未观察、未采纳或跨当前 Sheet 的资源不得作为本次需求事实进入生成或导出。
+- Source Evidence Snapshot 页面预览可以展示当前 Sheet 的文本/表格摘要，并按旧预览预算返回 warnings。V3 full generation 不使用旧 snapshot prompt 截断；它由 `Full Planning Sheet Context`、chunking 和 `Requirement Atom` 抽取控制 AI 输入规模。
 - 单元格公式读取文件里已有的显示值或缓存值，不主动重算公式。
 - `.xlsx` 使用 `openpyxl` 读取文本、表格和图片。
 - `.xls` 文本继续使用 `xlrd`；图片通过受控转换 `.xls -> .xlsx` 后复用 `.xlsx` 图片解析。
@@ -127,17 +131,20 @@ Source Evidence 实际 API 入口：
 
 未观察、观察失败、未采纳、提取失败或转换失败的图片只能进入 warnings，不得进入生成依据。
 
+对 workbook/sheets run，`GET /visual-candidates?sheet_name=...` 会把当前 Sheet 内 `ready/selectable` 的图片候选默认标记为选中，其他 Sheet 图片仍可在资源抽屉中手动选择。默认选中只是 `Visual Observation Selection` 的初始值，不代表已观察，不代表已采纳，也不会自动写入 `Adopted Visual Evidence`。
+
 Vision AI 未配置或不可用时，文本/表格读取和生成继续可用；页面和导出说明必须提示图片未参与语义理解。
 
 Project Vision AI Credential 独立于文本生成/配置表查询的 Project AI Credential，不静默复用文本 AI Key 或文本模型默认值。后台配置卡只推荐明确支持图片输入的 OpenAI-compatible 视觉模型入口；如果已保存 DeepSeek、`qwen-plus`、`qwen3.6-plus`、`glm-5.2` 等文本 provider/model，页面必须兼容展示但提示其不是明确的 Source Evidence 视觉模型。当前内置推荐包含 Qwen `qwen3.7-plus` 和智谱 `glm-5v-turbo`，真实可用性以项目账号权限和连接测试为准。
 
 ## 9. visual validate
 
-生成和导出前必须做确定性校验：
+V3 `Generation Run`、导出和旧兼容生成路径在使用视觉证据前必须做确定性校验：
 
 阻塞：
 
 - 请求传入的 adopted evidence id 不存在、不属于当前 run、已过期或未采纳。
+- 请求传入的 adopted evidence id 不属于当前 `Planning Sheet`。
 - 生成结果引用了未采纳图片 ref，或把未观察图片写成已确认需求依据。
 
 warning：
@@ -155,7 +162,11 @@ warning：
 - SVN 文件。
 - 飞书文档。
 
-三者创建 run 后展示同一套 Source Evidence 状态、TTL、warnings、资源清单、视觉选择、观察、采纳和重试流程。旧 Sheet selector 仅对 V1 `uploaded_excel` / legacy 来源显示；Source Evidence 路径展示纳入页签/章节范围摘要，不提供 Sheet 下拉筛选。
+三者创建 run 后展示同一套 Source Evidence 状态、TTL、warnings、资源清单、视觉选择、观察、采纳和重试流程。
+
+对本地 `.xlsx/.xls`、SVN `.xlsx/.xls` 和飞书 sheets 等 workbook/spreadsheet run，页面显示 Source Evidence Sheet selector，并默认选择后端 `is_default` Sheet 或第一张可用 Sheet。读取 snapshot 预览、拉取视觉候选、保存视觉选择和创建 V3 Generation Run 时都携带当前 Sheet。切换 Sheet 必须清空旧 snapshot、AI 整理稿、当前 Generation Run 结果和导出可用态，并重新拉取当前 Sheet 的视觉候选。
+
+飞书 docx/wiki 和独立图片等非 Sheet 来源不会显示 Source Evidence Sheet selector，继续按 run-wide 兼容行为处理。
 
 独立图片文件可以创建 run；由于没有文本主体，必须先观察并采纳图片证据后才能生成。
 
@@ -185,7 +196,7 @@ warning：
 3. 本地文件 reader：实现工作簿文本/表格/图片 resource 抽取，支持 `.xlsx` 图片和独立图片。
 4. `.xls` 转换器：新增受控 LibreOffice converter，提供 fake converter 单测成功/失败路径。
 5. SVN 接入：新增 `Source Evidence SVN Root` 校验和项目级 SVN 凭据读取，缓存后复用本地文件 reader。
-6. 生成/export 校验：加入 visual validate，确保只有 `Adopted Visual Evidence` 进入 prompt 和导出说明。
+6. Generation Run/export 校验：加入 visual validate，确保只有当前 `Planning Sheet` 范围内的 `Adopted Visual Evidence` 进入 full context、Requirement Atom、用例追踪和导出说明。
 7. 前端统一入口：把本地文件、SVN 文件、飞书文档统一到 Source Evidence 状态和视觉证据流程。
 8. 验收与回归：覆盖 V1 上传 Excel、旧飞书电子表格、参考案例库、生成、导出不回归。
 
@@ -199,21 +210,26 @@ warning：
 - SVN `.xls` 通过项目 root 和凭据校验后进入同一 reader。
 - 独立图片 run 在未采纳前不能生成。
 - 未采纳图片不进入 prompt。
-- adopted evidence id 无效时生成/export 阻塞。
+- adopted evidence id 无效时 Generation Run/export 阻塞。
+- 多 Sheet Source Evidence snapshot 只返回所选 Sheet 的文本、表格和图片资源行。
+- 跨 Sheet adopted evidence 在 Generation Run/export 前阻塞。
 - Source Evidence TTL 清理删除转换产物、原图、视觉包和 observation 详情。
 
 前端必须覆盖：
 
 - 三入口都能创建或展示 Source Evidence Run。
+- workbook/sheets Source Evidence run 显示 Sheet selector，默认第一张可用 Sheet。
+- 切换 Source Evidence Sheet 会清空旧 snapshot、AI 整理稿、生成结果和导出状态。
+- 当前 Sheet 图片候选默认选中，但用户手动选择在同 Sheet 内保持。
 - 资源清单、视觉选择、观察、采纳、撤销状态一致。
 - Vision 或转换器不可用时展示 warning，不误导用户图片已参与理解。
-- 如后续为 Source Evidence 增加范围选择，不能破坏资源清单全量展示和视觉证据引用校验。
 
 真实环境验收必须至少包含一份带内嵌图片的 `.xlsx` 样例、一份带内嵌图片的 `.xls` 样例和一份 SVN `.xls` 样例。
 
 ## 14. 维护检查清单
 
 - 修改 source evidence 来源类型时，同步本文件、`frontend/src/types/testCases.ts` 和 `backend/app/test_cases/schemas.py`。
+- 修改 Source Evidence Sheet 范围或 snapshot/Generation Run/export 契约时，同步本文件、`docs/specs/test-case-generation-v2-requirements.md`、前端类型/API 和后端 schemas。
 - 修改 SVN 权限时，同步 `CONTEXT.md` 的 `Source Evidence SVN Root` 定义。
 - 修改 `.xls` 转换策略时，同步 ADR 或新增 superseding ADR。
 - 修改视觉证据规则时，同步生成、导出和前端 resource drawer 测试。

@@ -10,7 +10,11 @@
 
 ### 交付能力
 
-- 新增项目级“用例生成”V1 主链路：支持策划案快照读取、无参考 AI 生成、参考案例库可选增强、Excel 导出和刷新不恢复生成结果；生成历史不落库。
+- “用例生成”页面主流程切换到 V3 Generation Run：前端按 Source Evidence Run 创建异步 run，展示阶段进度、取消、失败 chunk 重试、Coverage Audit、Requirement Atom 和 run id workbook 导出；旧版同步 generate/export 不再作为页面主路径。
+- 用例生成 V3 Generation Run 导出从占位 JSON 升级为真实 Excel workbook：后端只按 run id 读取 DB 中 blueprint/cases/warnings/stats/audit，导出 `测试用例`、`用例蓝图`、`生成说明`、`覆盖审计` 四个 Sheet；strict mode 覆盖缺口继续阻止导出，非严格 partial 结果可导出并显著提示限制。
+- 用例生成 V3 Generation Run 接入 orchestrator：创建 run 后以异步语义串联 full context、chunking、Requirement Atom、Blueprint、Cases 和 Coverage Audit；失败 chunk 可从 partial completed 重新重试并重建后续结果。
+- 用例生成 V3 Generation Run 新增 Coverage Audit 后端骨架：按 official Requirement Atom 计算覆盖、对未覆盖 atom 只自动补生成一轮、记录无依据候选和导出限制；严格模式存在覆盖缺口时阻止 V3 导出占位，非严格模式返回带覆盖缺口提示的导出摘要。
+- 新增项目级“用例生成”V1 能力：支持策划案快照读取、无参考 AI 生成、参考案例库可选增强、Excel 导出和刷新不恢复生成结果；生成历史不落库。
 - 新增干净源码交付包脚本和发布包检查脚本，源码 zip 会排除 `.git/`、依赖目录、前端构建产物、runtime 数据、E2E runtime、数据库、日志、SVN 缓存、密钥和本地凭据文件，并在生成后自动复核 zip 内容。
 
 ### 开发流程
@@ -24,6 +28,8 @@
 
 ### 文档治理
 
+- 同步用例生成稳定 Spec 到 V3 Generation Run 口径：明确 V3 主链路为 Full Planning Sheet Context -> Requirement Atom -> Blueprint/Cases -> Coverage Audit -> 按 run id 导出，旧版同步生成接口和旧 Planning Sheet Snapshot 不再作为全量生成主路径。
+- 同步 V2 Source Evidence Sheet 范围文档口径：明确 run 保留 workbook/sheets 读取会话和资源清单，snapshot、generation 和 export 按当前 Planning Sheet 收敛；当前 Sheet 图片默认进入 observation candidates 选中集合但不自动采纳。
 - 新增并持续同步 `docs/specs/test-case-generation.md` 和 `docs/assets/test-case-generation-ui-v1.png`，形成“用例生成”V1 需求文档与页面 UI 方向图，覆盖独立页面、项目级参考案例库、策划案快照、项目级 AI 生成、Excel 导出、权限、安全和验收标准。
 - 细化用例生成 V2 `Source Evidence Run` 证据留存策略：默认 7 天 TTL，到期删除原文、图片/附件、视觉包和 observation 详情；最小审计元数据不随 7 天 TTL 删除，按项目审计数据保留策略保留；V2 不做独立项目配置页，只有超级管理员可配置全局默认值，项目管理员只读查看本项目清理记录摘要，普通项目成员只能在当前页面看到证据过期状态提示；清理触发采用后台定时清理和访问时懒清理双保险，TTL 后不再提供证据复查。
 - 新增 `docs/specs/` 业务能力 Spec 体系，按 10 个粗模块覆盖前端、后端、数据、API、测试和限制；`docs/MODULES.md` 与 `docs/STANDARDS.md` 明确开发前先读对应 Spec，README 仅保留入口链接。
@@ -62,6 +68,7 @@
 - `/test-cases` 按最新设计图完成贴合验收：01 数据源三种来源态、02 当前来源跟随、03 Excel-only 参考案例库和 04 结果预览保持同一工作台结构，并继续避免展示完整 URL、token、open_id、Authorization、Bearer 或原始 prompt。
 - “用例生成”页面接入 Source Evidence Run：01 数据源新增飞书文档 URL 短期入口，支持读取富文档 snapshot、展示证据状态和资源清单抽屉，并在生成/导出时携带受控证据 run id；旧 Excel 与飞书电子表格单 Sheet 快照路径保持不变。
 - “用例生成”页面将本地文件、SVN 文件和飞书文档三入口统一到 Source Evidence Run：本地上传 `.xlsx/.xls/.png/.jpg/.jpeg/.webp` 直接创建 `local_file` run，SVN 文件 URL 创建 `svn_file` run，三者共用状态卡、TTL、warnings、资源清单、视觉观察/采纳、snapshot、生成和导出链路；本地/SVN V2 不再走旧 `uploaded_excel/planning-snapshot` 主链路。
+- “用例生成”页面接入 Source Evidence workbook Sheet 选择：本地/SVN/飞书 sheets run 按后端 `sheet_options` 默认选择首个可用 Sheet，读取快照、视觉候选、视觉选择和导出会携带当前 Sheet；切换 Sheet 会清空旧快照、AI 整理稿、生成结果和导出状态。
 - “用例生成”页面新增 Source Evidence 运行能力状态提示：展示项目级 SVN 凭据、Source Evidence SVN Root、Vision AI 和 LibreOffice/soffice 可用性；SVN 运行能力缺失时禁用 SVN 文件读取，Vision 未配置时提示图片不会参与语义理解但不阻断文本/表格生成。
 - 修复 Source Evidence 运行能力状态在 Windows 本地配置 LibreOffice/soffice 后仍显示未配置的问题，并避免 Vision AI 最近测试已成功时继续展示历史失败摘要。
 - 修复 Source Evidence 大型本地工作簿生成用例不稳定的问题：生成 prompt 现在按预算截断超大 snapshot 并返回 warning，同时兼容模型把蓝图列表字段返回为对象映射的常见形态。

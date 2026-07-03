@@ -23,10 +23,12 @@
 | 项目级 AI 能力 | [ai-project-credentials.md](ai-project-credentials.md) | 项目级凭据、provider、脱敏、不可用策略、调用方边界。 |
 | 执行任务与结果 | [execution-runs-results.md](execution-runs-results.md) | 同步执行、后台任务、结果存储、异常明细、导出。 |
 | 交付、部署与工程治理 | [delivery-devops.md](delivery-devops.md) | Alembic、检查脚本、CI、源码包、生产安全配置。 |
-| 用例生成（V1 主链路已完成） | [test-case-generation.md](test-case-generation.md) | 独立用例生成页、项目级参考案例库、策划案快照、AI 生成、Excel 导出的 V1 需求与当前边界。 |
+| 用例生成（V3 Generation Run 主链路） | [test-case-generation.md](test-case-generation.md) | Source Evidence、Full Planning Sheet Context、Generation Run、Requirement Atom、Coverage Audit 和按 run id 导出的当前主链路。 |
 | 用例生成飞书文档读取移植方案 | [test-case-generation-feishu-doc-migration.md](test-case-generation-feishu-doc-migration.md) | V1 完成后移植 `qa-case` 飞书文档富读取、Source Evidence Run、视觉证据、TTL 清理和 Vision AI 凭据的专项方案。 |
 | 用例生成 V2 需求文档 | [test-case-generation-v2-requirements.md](test-case-generation-v2-requirements.md) | V2 用户目标、范围、角色、流程、验收和测试覆盖要求。 |
 | 用例生成 V2 Source Evidence | [test-case-generation-v2-source-evidence.md](test-case-generation-v2-source-evidence.md) | 飞书/本地/SVN 来源统一 Source Evidence Run、`.xls` 图片转换、视觉证据采纳和校验。 |
+| 用例生成 V3 ADR | [../adr/0003-replace-synchronous-test-case-generation-with-full-generation-runs.md](../adr/0003-replace-synchronous-test-case-generation-with-full-generation-runs.md) | 为什么用 Generation Run 替代旧版同步生成，明确异步全量生成、TTL 和旧接口边界。 |
+| 用例生成 V3 全量设计 | [../superpowers/specs/2026-07-02-test-case-generation-v3-full-generation-design.md](../superpowers/specs/2026-07-02-test-case-generation-v3-full-generation-design.md) | Full Planning Sheet Context、chunking、Requirement Atom、Blueprint、Cases、Coverage Audit 和 V3 前端状态的实现设计。 |
 
 ## 文档边界
 

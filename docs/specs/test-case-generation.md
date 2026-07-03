@@ -1,42 +1,67 @@
-# 用例生成 V1 需求文档
+# 用例生成 Spec
 
 ## 0. Codex 快速入口
 
 - 先读哪些文件：`CONTEXT.md`、`docs/ARCHITECTURE.md`、`docs/specs/data-sources.md`、`docs/specs/feishu-integration.md`、`docs/specs/ai-project-credentials.md`、`docs/FRONTEND_STYLE_GUIDE.md`。
-- 配套实施计划：`docs/superpowers/plans/2026-06-22-test-case-generation.md`。
+- V3 方向文档：`docs/superpowers/specs/2026-07-02-test-case-generation-v3-full-generation-design.md`。
+- 架构决策：`docs/adr/0003-replace-synchronous-test-case-generation-with-full-generation-runs.md`。
+- 历史 V1 实施计划：`docs/superpowers/plans/2026-06-22-test-case-generation.md`。
 - 配套 UI 设计图：`docs/assets/test-case-generation-ui-v1.png`。
 - 参考来源：旧 Codex 线程 `019eca67-83e2-7532-babe-54883f9497cc`、`D:\project\TestCaseStudio\TestCaseStudio`、`qa-case` skill。
-- 当前状态：V1 后端骨架、策划案快照、无参考 AI 生成、Excel 导出、参考案例库和前端主链路已接入；仍不保存生成历史。
+- 当前状态：V3 `Generation Run` 已成为前端主生成/导出链路；旧版同步生成和旧快照导出只保留为兼容/历史路径，不再作为当前主流程。
 - 不要改哪些契约：不改变 `TaskTree`、个人校验工作台、项目校验执行入口、统一执行结果结构；不要恢复个人 AI Key。
-- 新增功能从哪里接入：前端新增独立页面 `/test-cases`；后端新增独立用例生成业务模块，并由 `/api/v1` 聚合路由挂载。
-- 必跑测试：实现后至少覆盖参考案例库权限、参考案例画像、策划案快照截断、AI 生成编排、Excel 导出和前端页面状态。
-- 常见误区：把参考案例当需求来源、把 `qa-case` CLI 当应用内依赖、复用 TestCaseStudio 的个人 API Key 输入框、让模型口算统计结果、把生成历史落库。
+- 新增功能从哪里接入：前端独立页面 `/test-cases`；后端独立用例生成业务模块，并由 `/api/v1/test-cases/*` 聚合路由挂载。
+- 必跑测试：实现后至少覆盖 Generation Run 创建/轮询/取消/重试、Requirement Atom、Coverage Audit、run id 导出、参考案例库权限、Source Evidence 视觉证据和前端页面状态。
+- 常见误区：把参考案例当需求来源、把 `Planning Sheet Snapshot` 当 V3 全量生成输入、把 Source Evidence Run 混同为 Generation Run、让前端提交用例作为导出事实、把 `qa-case` CLI 当应用内依赖、复用 TestCaseStudio 的个人 API Key 输入框、让模型口算统计结果、永久保存 raw prompt/provider response。
 
 ## 1. 文档状态
 
 | 项 | 内容 |
 |---|---|
-| 版本 | V1 |
-| 状态 | V1 主链路已实现并进入验收收口 |
-| 需求范围 | 新增项目级“用例生成”页面、参考案例库、策划案快照、AI 生成、Excel 导出 |
-| 明确不做 | 生成历史、蓝图编辑、图片理解、Word 上传、XMind 导出、Feishu 写回、跨项目案例库引用、可维护 QA 知识库 |
+| 版本 | V3 当前主方向，保留 V1/V2 历史边界 |
+| 状态 | V3 Generation Run 主链路已接入；稳定文档以 V3 为当前事实 |
+| 需求范围 | 项目级“用例生成”页面、Source Evidence 来源证据、Generation Run 异步全量生成、Requirement Atom、Coverage Audit、按 run id 导出 |
+| 明确不做 | 永久生成历史、raw prompt/raw response 留存、蓝图编辑、Feishu 写回、跨项目案例库引用、可维护 QA 知识库 |
 | 主要使用者 | 项目成员、项目管理员、超级管理员 |
 
 ## 2. 背景与目标
 
-当前项目已经具备多用户项目权限、飞书/Excel 数据源读取、项目级 AI 凭据和 Excel 导出基础能力。V1 需要在这些能力之上新增一个项目级“用例生成”页面，把策划案中的产品或游戏设计内容转换为可导出的测试用例。
+当前项目已经具备多用户项目权限、Source Evidence 来源证据、项目级 AI 凭据、参考案例库和 Excel 导出基础能力。当前 V3 主方向是在这些能力之上，用短期 `Generation Run` 把当前选中的完整 `Planning Sheet` 转换为可追踪、可审计、可导出的测试用例。
 
-V1 目标不是复刻 TestCaseStudio，也不是直接运行 `qa-case` skill，而是吸收两者的方法论：
+V3 目标不是复刻 TestCaseStudio，也不是直接运行 `qa-case` skill，而是吸收两者的方法论，同时补齐 V1/V2 的覆盖证明缺口：
 
 - 从 `qa-case` 吸收测试设计蓝图、完整性矩阵、可执行步骤、可观察预期和风险备注。
 - 从 TestCaseStudio 吸收参考案例库、主参考案例、结构画像、固定 JSON 生成和 Excel 导出体验。
-- 服从 Excel Check Pro 当前的项目权限、项目级 AI、飞书/Excel 数据源和后台式工作台风格。
+- 以 `Full Planning Sheet Context` 替代旧版同步生成的截断输入，以 `Requirement Atom` 和 `Coverage Audit` 证明需求覆盖。
+- 服从 Excel Check Pro 当前的项目权限、项目级 AI、Source Evidence 和后台式工作台风格。
 
-V1 将 `qa-case` 方法固化为内置 `QA Case Method`：它随代码发布，不提供页面维护、上传知识、知识审核、知识版本或项目级知识检索。后端实现时需要保留未来接入项目级 QA 知识库的扩展点，但 V1 生成不得依赖该扩展点。
+`QA Case Method` 仍作为内置方法随代码发布，不提供页面维护、上传知识、知识审核、知识版本或项目级知识检索。后端实现时需要保留未来接入项目级 QA 知识库的扩展点，但当前 V3 生成不得依赖该扩展点。
+
+## 2.1 当前 V3 主方向
+
+V3 主链路：
+
+```text
+Source Evidence Run
+-> 选择 Planning Sheet
+-> 创建 Generation Run
+-> 构建 Full Planning Sheet Context
+-> 结构优先 chunking
+-> 按 chunk 抽取 Requirement Atom
+-> 合并去重 official atoms
+-> 基于 atoms 生成 Test Case Blueprint
+-> 按 module / atom group 分批生成用例
+-> Coverage Audit
+-> 对 uncovered atoms 自动补生成一次
+-> completed / partial_completed / failed
+-> 后端按 run id 导出 workbook
+```
+
+V3 的需求事实只来自当前 selected `Planning Sheet` 的完整文本/表格事实和同 sheet 的 `Adopted Visual Evidence`。参考案例库只影响字段顺序、命名、粒度和导出风格，不产生新需求。旧 `Planning Sheet Snapshot` 可以继续作为来源预览、AI 整理稿输入或兼容接口使用，但不承担 V3 全量生成输入语义。
 
 ## 3. 角色与权限
 
-| 角色 | V1 能力 |
+| 角色 | 当前能力 |
 |---|---|
 | 项目成员 | 查看/选择/使用参考案例、创建分类、上传参考案例、读取策划案、生成用例、导出 Excel |
 | 项目管理员 | 拥有项目成员能力；可删除参考案例、重命名分类、删除分类、设置推荐主参考 |
@@ -47,31 +72,30 @@ V1 将 `qa-case` 方法固化为内置 `QA Case Method`：它随代码发布，�
 
 - 分类只是组织方式，不是权限边界。
 - 参考案例库按 `project_id` 隔离。
-- V1 不做跨项目引用。
+- 不做跨项目引用。
 - 会影响全项目共享资产的动作只允许项目管理员和超级管理员执行。
 
-## 4. V1 范围
+## 4. 当前范围
 
-### 4.1 必须支持
+### 4.1 V3 必须支持
 
 - 独立页面 `/test-cases`，导航名称为“用例生成”。
-- 策划案来源支持飞书电子表格 URL 和浏览器上传 Excel。
-- 前端复用个人校验 01 数据源模块作为策划案来源添加入口，来源配置按当前用户 + 当前项目持久化。
-- 单次生成只选择一个 `Planning Sheet`。
-- 默认读取整张 Sheet，由后端生成受控的 `Planning Sheet Snapshot`。
+- 策划案来源通过 `Source Evidence Run` 支持飞书文档、本地文件、SVN 文件和 workbook/sheets 来源。
+- 单次 `Generation Run` 只选择一个 `Planning Sheet`，并以完整 selected sheet 构建 `Full Planning Sheet Context`。
+- 旧 `Planning Sheet Snapshot` 只作为受控预览/兼容接口，不驱动 V3 全量生成。
 - 支持项目级参考案例库，参考文件格式为 `.xlsx`、`.xls`、`.md`、`.txt`。
 - 参考案例上传时生成确定性的 `Reference Test Case Profile`。
-- 生成流程内部采用“蓝图 → 用例”的两阶段编排。
-- 页面一次返回并展示 AI 整理稿、用例、warnings 和统计摘要；蓝图作为后端中间结果保留，不作为 V1 常驻前端页签。
-- Excel 导出包含测试用例、用例蓝图、生成说明。
+- 生成流程采用“Full Context -> chunks -> Requirement Atoms -> Blueprint -> Cases -> Coverage Audit”的异步多阶段编排。
+- 页面展示 run 状态、阶段进度、测试用例、覆盖审计、需求原子和限制提示。
+- Excel 导出必须按 `generation_run_id` 从后端读取短期结果，至少包含 `测试用例`、`用例蓝图`、`生成说明`、`覆盖审计`。
 - 所有 AI 调用只使用项目级 AI 凭据。
 
 ### 4.2 明确不支持
 
-- 不保存生成历史。
-- 不保存生成结果、蓝图、策划案快照或重复生成比对记录。
+- 不保存永久生成历史；Generation Run 详细结果只在 TTL 内短期保存。
+- 不保存 raw prompt、raw response、完整 provider response、API Key、token 或本地敏感路径。
 - 不允许编辑蓝图，也不提供“编辑蓝图后重新生成”。
-- 不做图片、原型图或附件语义理解。
+- 不让未观察、未采纳、跨 Sheet 或已过期视觉资源进入需求事实。
 - 不支持 Word 上传。
 - 不支持 XMind 导出。
 - 不写回 Feishu 表格。
@@ -80,40 +104,51 @@ V1 将 `qa-case` 方法固化为内置 `QA Case Method`：它随代码发布，�
 - 不严格复刻主参考案例 Excel 的所有未知列。
 - 不提供可维护 QA 知识库，不做知识上传、知识审核、知识版本、知识检索或知识命中解释。
 
+### 4.3 V1/V2 兼容边界
+
+- V1 同步生成和旧导出属于历史/兼容路径，不再是前端主链路。
+- V2 Source Evidence 继续负责短期来源证据、视觉观察、采纳和 TTL 清理；它不是 Generation Run，也不是生成历史。
+- `Planning Sheet Snapshot` 继续可用于来源预览、AI 整理稿和旧路径兼容；V3 不用它作为全量生成输入，也不受旧 snapshot row/char prompt budget 限制。
+
 ## 5. 核心概念
 
 | 概念 | 定义 |
 |---|---|
 | Planning Sheet | 本次生成选择的单个策划案 Sheet |
-| Planning Sheet Snapshot | 从 Planning Sheet 读取后经过预算限制、截断和 warnings 标记的受控输入 |
-| AI-Assisted Snapshot Brief | 从 Planning Sheet Snapshot 自动整理出的 Markdown 阅读稿，用于策划/QA 对齐和生成辅助上下文 |
+| Planning Sheet Snapshot | 从 Planning Sheet 读取后经过预算限制、截断和 warnings 标记的受控预览；当前 V3 不把它作为全量生成输入 |
+| Full Planning Sheet Context | V3 从当前 selected Planning Sheet 构造的完整输入，包含所有可读文本/表格事实和同 sheet 已采纳视觉证据 |
+| Generation Run | V3 短期异步工作流，承载读取、切片、原子抽取、蓝图、用例、覆盖审计、导出和 TTL 清理 |
+| Requirement Atom | 从 Full Planning Sheet Context 抽取出的可追踪需求事实，是 V3 蓝图和用例的正式需求来源 |
+| Coverage Audit | 比对 official atoms、cases、failed chunks 和限制项的覆盖审计结果 |
+| AI-Assisted Snapshot Brief | 从 Planning Sheet Snapshot 自动整理出的 Markdown 阅读稿，用于策划/QA 对齐和来源预览，不替代 V3 full context |
 | Reference Test Case Library | 当前项目共享的参考案例库 |
 | Primary Reference Test Case | 本次生成主要贴近的参考案例 |
 | Reference Test Case Profile | 上传参考案例后确定性解析出的字段、层级、优先级和粒度画像 |
-| Test Case Blueprint | AI 生成用例前的只读测试设计蓝图 |
+| Test Case Blueprint | V3 基于 official Requirement Atoms 生成的只读测试设计蓝图 |
 | Test Case Generation Warning | 读取、截断、权限、AI 或导出过程中需要用户知晓的警告 |
-| QA Case Method | V1 内置的用例生成方法规则，包含蓝图、完整性矩阵、自检和统计约束 |
-| Project QA Knowledge Library | V2 候选的项目级可维护 QA 知识库，V1 不实现 |
+| QA Case Method | 内置的用例生成方法规则，包含蓝图、完整性矩阵、自检和统计约束 |
+| Project QA Knowledge Library | 候选的项目级可维护 QA 知识库，当前不实现 |
 
 ## 6. 用户流程
 
 ```text
 进入“用例生成”页
--> 选择策划案来源：飞书电子表格或上传 Excel
--> 读取 Sheet 列表
+-> 创建或选择 Source Evidence Run
 -> 选择一个 Planning Sheet
--> 后端生成 Planning Sheet Snapshot 和 warnings
--> 快照读取成功后非阻塞触发 AI-Assisted Snapshot Brief
+-> 可选读取 Planning Sheet Snapshot / AI-Assisted Snapshot Brief 作为来源预览
 -> 可选选择参考案例分类、参考案例和一个 Primary Reference Test Case
--> 如果选择了参考案例，后端读取已保存的 Reference Test Case Profile
--> AI 生成 Test Case Blueprint
--> AI 基于蓝图生成测试用例行
--> 后端结构校验、去重、补默认值、计算统计
--> 前端展示 AI 整理稿、warnings、统计摘要和用例表格预览；蓝图保留为后端中间结果
--> 导出 Excel
+-> 创建 Generation Run
+-> 后端构建 Full Planning Sheet Context
+-> 结构优先 chunking
+-> 抽取并合并 Requirement Atom
+-> 基于 official atoms 生成 Test Case Blueprint
+-> 按 module / atom group 分批生成测试用例
+-> Coverage Audit，并对 uncovered atoms 自动补生成一次
+-> 前端轮询 run 进度，展示用例、覆盖审计、需求原子和限制提示
+-> 按 generation run id 导出 Excel
 ```
 
-页面刷新后，本次生成结果丢失；用户需要重新读取快照并生成。
+页面刷新后，前端可用本地保存的最近 run id 恢复短期 Generation Run。TTL 到期或详情被清理后，用户需要重新读取来源并重新生成。
 
 ## 7. 策划案来源需求
 
@@ -153,11 +188,11 @@ V1 复用当前浏览器上传能力：
 - 不支持 Word、PDF、XMind 或压缩包作为策划案输入。
 - 不读取 Excel 内图片、附件或批注语义。
 
-## 8. 策划案快照需求
+## 8. 来源预览与兼容快照需求
 
-`Planning Sheet Snapshot` 是给页面和模型使用的受控输入，不等同于原始文件。
+`Planning Sheet Snapshot` 是给页面使用的受控来源预览，也是 V1/V2 旧版同步路径的兼容输入；它不等同于原始文件，也不承担 V3 全量生成输入语义。V3 生成必须从 `Source Evidence Run + planning_sheet_name` 构建 `Full Planning Sheet Context`，不得受旧 snapshot 行数、字符数或 prompt budget 影响。
 
-V1 默认预算：
+旧快照预览默认预算：
 
 | 维度 | 默认上限 |
 |---|---:|
@@ -167,11 +202,11 @@ V1 默认预算：
 | 单元格文本 | 300 字符 |
 | 非空单元格 | 12,000 |
 
-超限时必须返回 warnings。示例：
+预览超限时必须返回 warnings。示例：
 
 - `读取 1800 行，纳入前 800 行。`
 - `5 个超长单元格已截断到 300 字符。`
-- `末尾内容未纳入 AI 输入，生成结果可能漏掉后续模块。`
+- `末尾内容未纳入预览；V3 全量生成仍会读取完整 selected Planning Sheet。`
 - `来源材料可能包含图片、原型图或附件，V1 未读取其中语义。`
 
 需求约束：
@@ -179,11 +214,12 @@ V1 默认预算：
 - 截断必须显式可见。
 - 不允许静默丢弃超限内容。
 - 快照不落库。
-- 生成请求只能使用本次页面持有的快照结果。
+- V3 `Generation Run` 不从前端提交的快照读取需求事实。
+- 旧版同步兼容路径若仍保留，必须明确标注不支持 V3 全量生成。
 
 ### 8.1 AI 快照整理稿
 
-`AI-Assisted Snapshot Brief` 是给策划和 QA 阅读、复制、对齐用的 Markdown 整理稿，不替代 `Planning Sheet Snapshot`。
+`AI-Assisted Snapshot Brief` 是给策划和 QA 阅读、复制、对齐用的 Markdown 整理稿，不替代 `Planning Sheet Snapshot`，也不替代 V3 `Full Planning Sheet Context`。
 
 行为要求：
 
@@ -192,12 +228,12 @@ V1 默认预算：
 - AI 整理失败只影响整理稿，不影响已读取快照、重新整理或后续生成。
 - AI 整理失败时页面只展示脱敏摘要和重新整理入口，不展示完整 provider 响应、prompt、API Key 或 Base URL。
 - 页面需要提供重新整理入口。
-- 整理稿可以作为后续生成的辅助上下文，但需求事实来源、行号追踪和截断依据仍必须来自 `Planning Sheet Snapshot`。
+- 整理稿可作为人工阅读和来源预览辅助；V3 生成的需求事实来源、行号追踪和覆盖审计必须来自 `Full Planning Sheet Context` 与 `Requirement Atom`。
 - 整理稿应按原策划案顺序组织重点，减少当前原始快照表格过大、过散导致的阅读成本。
 - 快照读取成功后，页面默认展示整理稿；原始快照表格不作为常驻前端页签展示，仅保留在当前页面态、生成请求和排查链路中。
 - 整理稿使用固定 Markdown 模板：`核心目标`、`功能范围`、`规则与流程`、`配置/数值/条件`、`时间、刷新与生命周期`、`UI、提示与表现`、`风险点与易漏点`、`待确认问题`、`来源索引`。
 - `来源索引` 必须保留快照行号或原始片段引用，方便策划和 QA 回到原始表格核对。
-- 整理稿不保存到后端，只保留在当前页面态；可用于复制和本次生成，刷新页面后丢失。
+- 整理稿不保存到后端，只保留在当前页面态；可用于复制和人工核对，刷新页面后丢失。
 - 页面提供 `复制 Markdown` 和 `重新整理` 两个整理稿操作；V1 不提供下载 `.md` 文件。
 
 ## 9. 参考案例库需求
@@ -339,26 +375,20 @@ V1 至少提炼：
 
 ### 11.2 蓝图
 
-AI 生成用例前必须先形成 `Test Case Blueprint`。
+AI 生成正式用例前必须先形成 `Test Case Blueprint`。V3 蓝图只从合并后的 official `Requirement Atom`、`QA Case Method` 矩阵、来源摘要和已知 warnings 生成，不直接读取 raw sheet、旧 `Planning Sheet Snapshot` 或参考案例事实。
 
-V1 生成主线以 `qa-case` 方法论为主体：先从策划案快照形成测试设计蓝图，再按完整性矩阵生成可执行用例。参考案例库不是必需输入；选择参考案例时只作为字段、粒度、命名和历史风格的增强信号。
+参考案例库不是必需输入；选择参考案例时只作为字段顺序、粒度、命名和历史风格的增强信号，不能补充新需求。`AI-Assisted Snapshot Brief` 只用于人工阅读和来源预览，不作为 V3 需求事实输入。
 
-如果本次页面存在 `AI-Assisted Snapshot Brief`，生成编排可以把它作为辅助上下文传给 AI，但不得把它作为新增需求来源。模型生成的蓝图、用例和追踪关系仍必须能回到 `Planning Sheet Snapshot` 的原始行或片段。
+V3 的 `QA Case Method` 包含：
 
-生成用例不等待整理稿完成；只有整理稿已成功生成时才随生成请求作为辅助上下文传入。整理稿仍在生成、生成失败或被清空时，后端仅基于原始 `Planning Sheet Snapshot` 和参考案例上下文生成。
-
-生成请求使用顶层可选字段 `snapshot_brief_markdown` 传递整理稿，不放入 `generation_options`。该字段是一等辅助输入，但不是需求事实来源。
-
-V1 的 `QA Case Method` 包含：
-
-- 需求来源追踪：从策划案快照行或片段追踪到蓝图节点，再追踪到用例行。
+- 需求来源追踪：从 `Requirement Atom` 追踪到 source sheet、row/column、source excerpt 和 adopted visual evidence，再追踪到蓝图节点和用例行。
 - 蓝图先行：不得从策划案直接堆用例行。
 - 完整性矩阵：生命周期、时间刷新、权限关系、地图/服务器、配置数值、UI 通用、输入、历史记录、外部耦合。
 - 具体场景库：弹窗/面板、红点、分享/拜访、售卖/兑换、每日任务、产出/收取/偷取、账单/邮件、移民/活动下线、性能/稳定性。
 - 自检规则：检查是否有未映射需求、无依据测试点、待确认问题、未读图片/附件限制和环境限制。
 - 统计规则：用例总数、模块分布、优先级分布等必须由代码计算。
 
-V1 不做可维护 QA 知识库。后端内部可以预留 `knowledge_context` 或等价扩展结构，但 V1 公共请求不得接收用户传入的知识内容；如果客户端提交 `knowledge_context` 或等价字段，后端应以 400 拒绝。V1 响应只记录“未接入项目级 QA 知识库”或等价说明；不得提供用户维护入口，也不得把参考案例库当成知识库。
+当前不做可维护 QA 知识库。后端内部可以预留 `knowledge_context` 或等价扩展结构，但公共请求不得接收用户传入的知识内容；如果客户端提交 `knowledge_context` 或等价字段，后端应以 400 拒绝。响应只记录“未接入项目级 QA 知识库”或等价说明；不得提供用户维护入口，也不得把参考案例库当成知识库。
 
 蓝图至少包含：
 
@@ -370,27 +400,29 @@ V1 不做可维护 QA 知识库。后端内部可以预留 `knowledge_context` �
 - 时间刷新点。
 - 外部耦合。
 - 变更影响范围。
-- 需求追踪关系。
+- 需求追踪关系，必须包含 atom id 或可回溯 source fragment。
 - 覆盖维度。
 - 风险点。
 - 未映射需求。
-- 无需求依据的测试点。
+- 无需求依据的测试点，必须进入 unsupported/unfounded warnings，不得作为正式需求。
 - 待确认问题。
 - 已使用的内置方法规则。
 - 未接入项目级 QA 知识库说明。
 - warnings。
 
-蓝图在 V1 中只读生成，不可编辑；前端不提供常驻蓝图页签，Excel 导出仍保留 `用例蓝图` Sheet 供审计和排查。
+蓝图只读生成，不可编辑；前端可以在结果区展示摘要，Excel 导出必须保留 `用例蓝图` Sheet 供审计和排查。
 
 ### 11.3 用例
 
 用例生成要求：
 
 - 一行一个明确验证目标。
+- 每条正式用例必须引用至少一个有效 official `Requirement Atom`。
 - 步骤可执行。
 - 预期可观察。
 - 备注记录假设、待确认、配置来源、策划答疑、Bug 链接和未读图限制。
 - 生成后由后端结构校验、补默认值、去重和计算统计。
+- 无 atom 支撑的候选用例默认剔除，并进入 `Coverage Audit` 的 unfounded candidates。
 - 统计不得由模型直接提供最终数值。
 
 ## 12. 输出字段需求
@@ -422,6 +454,8 @@ V1 不做可维护 QA 知识库。后端内部可以预留 `knowledge_context` �
 
 导出策略：
 
+- V3 导出入口是 `POST /api/v1/test-cases/generation-runs/{run_id}/export`。
+- 后端按 `generation_run_id` 从短期 DB 结果读取 blueprint、cases、warnings、stats 和 audit，前端不得提交生成用例、blueprint 或 stats 作为导出事实。
 - 不严格复刻主参考案例。
 - 采用“标准字段兜底 + 尽量贴近主参考”。
 - 能映射到标准字段的主参考列，按主参考顺序输出。
@@ -434,14 +468,17 @@ V1 不做可维护 QA 知识库。后端内部可以预留 `knowledge_context` �
 | Sheet | 内容 |
 |---|---|
 | 测试用例 | 正式用例行 |
-| 用例蓝图 | 模块树、流程、风险、覆盖维度、待确认问题 |
-| 生成说明 | 策划案来源、Sheet 名、主参考案例、附加参考、warnings、AI 供应商脱敏状态、生成时间、V1 限制 |
+| 用例蓝图 | 模块树、流程、风险、覆盖维度、待确认问题、atom traces |
+| 生成说明 | Source Evidence 摘要、Sheet 名、Generation Run 状态、主参考案例、附加参考、warnings、AI 供应商脱敏状态、生成时间、coverage limitation |
+| 覆盖审计 | atom id、source sheet、source rows、source columns、atom type、atom text、coverage status、linked case ids、failed chunk、limitation notes |
+
+strict mode 下存在 uncovered atoms 时，导出必须返回 409 中文错误。`partial_completed` 且非 strict mode 可以导出，但 `生成说明` 和 `覆盖审计` 必须显著标记未覆盖范围、失败 chunk 和导出限制。
 
 导出安全要求：
 
 - 不写入完整 API Key。
 - 不写入完整原始 prompt。
-- 不写入隐藏敏感元数据。
+- 不写入完整 provider response、local path、Feishu/SVN token、未采纳视觉 observation detail 或隐藏敏感元数据。
 
 ## 14. 前端需求
 
@@ -449,24 +486,28 @@ V1 不做可维护 QA 知识库。后端内部可以预留 `knowledge_context` �
 
 - 后台式工作台页面。
 - 不做营销页或说明页。
-- 首屏直接展示可操作流程。
-- 当前已有静态数据版页面，用于确认视觉、布局和交互骨架；后续再接入真实 API。
+- 首屏直接展示可操作流程，主按钮为“全量生成用例”或等价中文。
+- 当前主生成/导出链路是 V3 `Generation Run`；旧版 `/api/v1/test-cases/generate` / export 不得作为页面主路径。
 
 页面区域：
 
 - 策划案来源区：01 数据源模块、策划案来源选择、Sheet 选择。
 - 参考案例区：分类、文件列表、上传、主参考选择、主参考 Sheet 选择、推荐标识、参考用例数量。
-- 操作区：读取快照位于生成输入区；生成用例与导出 Excel 统一放在预览区顶部、预览页签上方。
-- 预览区：提供 AI 快照整理稿、用例表格、warnings 三个常驻页签；不展示原始表格/追踪视图和只读蓝图页签。
+- 操作区：来源预览位于生成输入区；创建 Generation Run、取消、失败 chunk 重试与导出 Excel 统一放在结果区顶部。
+- 预览区：提供 `测试用例`、`覆盖审计`、`需求原子`、`限制提示` 页签；可保留 `AI 整理稿` 作为来源预览辅助页签。
 - 状态区：AI 可用状态、读取/生成/导出进度、错误提示。
 
 状态规则：
 
-- 未读取快照时不能生成。
-- 快照读取成功后立即可生成；AI 整理稿仍在生成中时，生成入口不应被整理进度阻塞。
+- 未创建可用 `Source Evidence Run` 或未选择 `Planning Sheet` 时不能创建 Generation Run。
+- V3 生成读取完整 selected Planning Sheet，不只读取 snapshot preview rows。
+- 快照预览读取成功后可帮助用户核对来源；AI 整理稿仍在生成中时，Generation Run 入口不应被整理进度阻塞。
 - 快照读取成功后默认打开整理稿视图；整理稿尚未完成时展示整理中状态，不提供原始表格/追踪视图常驻页签。
-- 整理稿未完成或失败时允许生成，页面提示“整理稿未参与本次生成”或等价文案。
-- 页面刷新后不恢复整理稿、原始快照、蓝图或生成结果；用户需要重新读取快照并重新生成整理稿。
+- 整理稿未完成或失败时允许创建 Generation Run，页面提示“整理稿仅用于来源预览，未作为 V3 需求事实”或等价文案。
+- 页面刷新后不恢复整理稿或原始快照；可通过 localStorage 中的最近 run id 调用 `GET /generation-runs/{run_id}` 恢复短期 active/latest run。
+- active 状态每 2 秒轮询；`completed`、`partial_completed`、`failed`、`cancelled`、`expired` 后停止轮询。
+- `completed` 或 `partial_completed` 后拉取 atoms/cases，并展示 Coverage Audit 摘要。
+- `partial_completed` 必须显著提示 uncovered atoms、failed chunks 和 export limitations；strict mode 且 uncovered atoms 大于 0 时禁用导出。
 - 未选择参考案例时仍可生成，后端按 `qa-case` 标准蓝图、完整性矩阵和基础字段顺序输出。
 - 当前参考案例分类没有推荐主参考时，不自动选择任何参考案例，生成仍可用，并提示本次未使用参考案例增强。
 - 切换参考案例分类时清空已选参考案例、主参考案例和主参考 Sheet；如果新分类有推荐主参考，则默认勾选该推荐主参考并设为主参考。
@@ -477,7 +518,7 @@ V1 不做可维护 QA 知识库。后端内部可以预留 `knowledge_context` �
 - 切换参考案例选择后生成结果标记失效，需要重新生成；失效状态下不允许导出旧结果。
 - 切换主参考后生成结果标记失效，需要重新生成；失效状态下不允许导出旧结果。
 - 切换主参考 Sheet 后生成结果标记失效，需要重新生成；失效状态下不允许导出旧结果。
-- 页面不使用 localStorage 保存生成结果。
+- 页面不使用 localStorage 保存生成结果内容，只保存最近 run id 以恢复短期 run。
 
 ## 15. 后端需求
 
@@ -487,17 +528,22 @@ V1 不做可维护 QA 知识库。后端内部可以预留 `knowledge_context` �
 - 参考案例画像：上传时确定性解析并保存。
 - 策划案快照：读取单个 Sheet，预算限制，warnings。
 - AI 快照整理稿：接收当前页面持有的 `Planning Sheet Snapshot`，调用项目级 AI 生成 Markdown 整理稿，不保存整理结果。
-- AI 生成编排：项目级 AI、蓝图、用例、结构校验、去重、统计。
-- Excel 导出：基于当前页面结果生成文件，不依赖历史记录。
+- Generation Run：创建、读取、取消、失败 chunk 重试、TTL/expired 懒清理、阶段进度和项目隔离。
+- Full Context / chunking / Requirement Atom / Blueprint / Cases / Coverage Audit：按阶段推进 run，不保存 raw prompt/raw response。
+- Excel 导出：基于 `generation_run_id` 读取短期 DB 结果生成文件，不依赖前端页面内存结果。
 
 接口边界：
 
 - 所有接口必须校验当前项目成员身份。
 - 管理动作必须校验项目管理员或超级管理员身份。
-- 生成和导出不创建历史记录。
+- Generation Run 是短期异步工作流记录，不是永久生成历史；详情按 TTL 清理，只保留最小审计。
 - `POST /api/v1/test-cases/planning-snapshot/brief` 接收 `planning_snapshot`，返回 `brief_markdown` 和 `warnings`；该接口不读取原文件、不创建历史记录、不保存整理稿。
-- 生成接口只在请求显式提交整理稿时使用它作为辅助上下文；未提交整理稿时不得重新生成、读取或查找整理稿。
-- `TestCaseGenerationRequest` 新增顶层可选字段 `snapshot_brief_markdown`，用于接收当前页面态的 AI 快照整理稿。
+- V3 `POST /api/v1/test-cases/generation-runs` 接收 `source_evidence_run_id`、`planning_sheet_name`、reference selection 和 `strict_mode`，返回 `queued` run 并以异步语义推进。
+- V3 `GET /generation-runs/{run_id}` 返回 run summary 和 sanitized stage payload。
+- V3 `POST /generation-runs/{run_id}/cancel` 取消 active run；`POST /generation-runs/{run_id}/retry-failed-chunks` 只允许对存在 failed chunks 的 partial run 重新打开后续阶段。
+- V3 `GET /generation-runs/{run_id}/atoms`、`GET /generation-runs/{run_id}/cases` 返回短期结果。
+- V3 `POST /generation-runs/{run_id}/export` 只按 run id 导出，不接收前端提交的 cases/blueprint/stats。
+- 旧 `POST /api/v1/test-cases/generate` 若保留，必须明确不支持 V3 全量生成，不能被前端主流程依赖。
 - 响应结构沿用当前项目 API 风格。
 
 ## 16. 权限、安全与错误规则
@@ -505,10 +551,10 @@ V1 不做可维护 QA 知识库。后端内部可以预留 `knowledge_context` �
 - 页面入口对当前项目成员可见。
 - 后端优先使用严格项目成员校验，避免 Token 指向非成员项目时静默回退。
 - 案例库和画像按项目隔离。
-- 本次生成结果只存在于页面响应和导出的 Excel 文件中。
+- Generation Run 详情按项目隔离并在 TTL 内短期保存；TTL 清理后不再提供 atoms/cases/audit detail，只保留最小审计。
 - 飞书权限不足时沿用授权卡片和 OAuth 只读授权流程。
 - 所有截断、未读取图片/附件、AI 不可用、参考画像异常都必须可见。
-- 不保存生成历史是 V1 的安全边界，避免引入策划案留存、结果清理、跨成员可见性和重复生成比对规则。
+- 不保存永久生成历史；不得保存 raw prompt、raw response、完整 provider response、API Key、token 或本地敏感路径。
 
 ## 17. 验收标准
 
@@ -521,12 +567,13 @@ V1 不做可维护 QA 知识库。后端内部可以预留 `knowledge_context` �
 - 项目成员可以上传 Excel、选择一个 Sheet 并读取快照。
 - 快照超限时页面展示 warnings。
 - 项目成员可以选择多个参考案例、一个主参考案例，并在主参考为 Excel 时选择一个主参考 Sheet。
-- 未选择任何参考案例时，项目成员也可以点击生成并得到基于 `qa-case` 标准逻辑的蓝图、用例和 warnings。
+- 未选择任何参考案例时，项目成员也可以创建 Generation Run，并得到基于 `qa-case` 标准逻辑、official atoms 和 Coverage Audit 的蓝图、用例和 warnings。
 - 切换到无推荐主参考的参考案例分类时，页面不自动选择文件，并提示本次未使用参考案例增强。
 - 参考案例文件过多时，页面通过搜索、筛选、排序和每页 5 条分页保持布局稳定。
-- 点击生成后页面展示用例表格、warnings 和统计摘要；蓝图仅保留在后端生成结果和 Excel 导出中。
-- 导出 Excel 后包含 `测试用例`、`用例蓝图`、`生成说明` 三个 Sheet。
-- 刷新页面后不再展示上次生成结果。
+- 点击“全量生成用例”后页面展示 Generation Run stage progress、用例表格、Coverage Audit、Requirement Atom、warnings 和统计摘要。
+- `completed` run 可导出 Excel，至少包含 `测试用例`、`用例蓝图`、`生成说明`、`覆盖审计` 四个 Sheet。
+- `partial_completed` 非 strict run 可导出并显著提示限制；strict mode 下存在 uncovered atoms 时导出被阻塞。
+- 刷新页面后可通过最近 run id 恢复 TTL 内的 active/latest Generation Run。
 
 ### 17.2 权限验收
 
@@ -542,7 +589,7 @@ V1 不做可维护 QA 知识库。后端内部可以预留 `knowledge_context` �
 - AI 快照整理稿失败时，页面保留原始快照并提示可重新整理；错误详情只能使用脱敏摘要。
 - 任何错误、页面、日志和导出文件都不展示完整 API Key。
 - 图片、原型图或附件未读取时，warnings 或备注中能看到限制说明。
-- 后端没有新增生成历史表或结果持久化记录。
+- 后端只保存短期 Generation Run 详情和最小审计，不保存永久生成历史或 raw prompt/provider response。
 
 ## 18. 测试覆盖要求
 
@@ -554,17 +601,21 @@ V1 不做可维护 QA 知识库。后端内部可以预留 `knowledge_context` �
 - Excel 来源：格式限制、大小限制、Sheet 不存在、公式/空值读取。
 - 参考案例画像：Excel 多 Sheet 列表、主参考 Sheet 选择、表头定位、标题层级、优先级风格、Markdown/TXT 摘要。
 - 参考案例权限：非项目成员拒绝、跨项目不可读、普通成员和项目管理员维护权限差异。
-- 生成编排：AI 不可用、AI 返回非法 JSON、去重、默认值补齐、统计由代码计算、warnings 合并。
-- Excel 导出：列顺序、标准字段兜底、三 Sheet、脱敏、无历史依赖。
-- 前端页面：01 数据源模块、策划案来源选择、策划案 Sheet 选择、主参考 Sheet 选择、生成按钮状态、warnings 展示、表格预览、导出按钮状态。
+- Full Planning Sheet Context：超过旧 snapshot 行数/字符限制仍保留完整 selected sheet facts，已采纳视觉证据只允许同 sheet 进入。
+- Generation Run：创建 queued、轮询阶段、取消、TTL expired、failed chunk retry、跨项目隔离和非成员拒绝。
+- Requirement Atom：chunk 抽取、非法 JSON 容错、去重合并、unfounded candidate 不计入 official atom set。
+- Blueprint/Cases：只从 official atoms 生成，正式用例必须引用 atom id，无依据 case 进入 audit candidates。
+- Coverage Audit：covered/uncovered atom 计算、单轮 supplement、strict/non-strict export 行为、failed chunks 导致 partial。
+- Excel 导出：列顺序、标准字段兜底、四 Sheet、run id DB truth、前端篡改 cases 不影响导出、脱敏。
+- 前端页面：01 数据源模块、策划案来源选择、策划案 Sheet 选择、主参考 Sheet 选择、Generation Run 创建/轮询/取消/重试、warnings 展示、cases/coverage/atoms tabs、run id 导出按钮状态。
 - 参考案例库前端页面：分类 pill 和数量、切换分类清空选择、推荐主参考默认选中、无推荐分类不自动选择、多选参考案例、设为主参考自动勾选、主参考下拉仅展示已选参考、搜索空态、文件过多时每页 5 条分页展示。
 
-## 19. V2 候选
+## 19. 历史边界与后续候选
 
-用例生成 V2 的 Source Evidence 泛化、SVN/本地文件读取、`.xls` 图片转换、视觉证据采纳和校验规则已拆到 `docs/specs/test-case-generation-v2-source-evidence.md`。本文件继续作为 V1 基线和后续候选索引维护。
+用例生成 V2 的 Source Evidence 泛化、SVN/本地文件读取、`.xls` 图片转换、视觉证据采纳和校验规则已拆到 `docs/specs/test-case-generation-v2-source-evidence.md`。本文件当前以 V3 Generation Run 为主方向，以下保留为历史边界和后续候选索引。
 
 - 飞书文档、图片、原型图和文档附件理解。
-- 本地文件和 SVN 文件通过 `Source Evidence Run` 读取策划案文本、表格和图片资源；旧 `Planning Sheet Snapshot` 只保留 V1 兼容。
+- 本地文件和 SVN 文件通过 `Source Evidence Run` 读取策划案文本、表格和图片资源；workbook run 保留可见 Sheet 与资源清单，V3 `Generation Run` 按当前 `Planning Sheet` 构建 full context；旧 `Planning Sheet Snapshot` 只保留预览和兼容用途。
 - `.xls` 内嵌图片进入 V2.0 首批范围，通过受控 `.xls -> .xlsx` 转换后复用图片解析能力。
 - `Source Evidence Run`：允许为飞书文档读取、图片/附件下载、视觉证据包和 observation 短期保存来源证据；按项目隔离，默认 7 天 TTL 自动清理，不进入生成历史。
 - `Source Evidence Run` TTL 到期清理时必须删除原文快照、图片/附件文件、视觉证据包和 observation 详情；只保留最小审计元数据，例如 run id、项目、来源标识、资源文件名、状态、操作人、创建时间和清理时间。最小审计元数据不随 7 天 TTL 删除，按项目审计数据保留策略保留。

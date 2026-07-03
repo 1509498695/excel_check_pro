@@ -167,7 +167,7 @@
 
 - 对照后端 `test_cases_api.py` / `admin/router.py` 实际路由，补齐 V2 Source Evidence 主规格中的飞书授权申请、OAuth callback、授权审计和失效接口。
 - 将 V2 需求文档中的“建议接口形态”改为“当前接口形态”，避免把已实现路由误读为设计建议。
-- 修正 Source Evidence Sheet 范围描述：当前 V2 Source Evidence 不显示 V1 Sheet 下拉，snapshot 读取已解析的可见 Sheet/章节全集，只展示纳入范围摘要。
+- 修正 Source Evidence Sheet 范围描述：当时旧口径曾写成 Source Evidence 不显示 Sheet 选择器、snapshot 读取已解析的可见 Sheet/章节整体摘要；该口径已被后续 sheet-scoped snapshot 取代。
 - 更新 `docs/ARCHITECTURE.md` 和 `docs/specs/data-sources.md`：全局 SVN cache 已由 `runtime_cleanup` 按 `SVN_CACHE_RETENTION_DAYS` 清理；Source Evidence run 内 SVN 副本仍按 Source Evidence TTL 清理。
 - 更新 `docs/specs/ai-project-credentials.md`：Project Vision AI Credential 已有后端管理 API 和生成页运行能力状态展示，但后台前端管理表单仍未接入；Source Evidence 视觉观察属于当前 AI 使用场景。
 
@@ -178,7 +178,7 @@
 
 ### 测试验证
 
-- 文档复扫：未再命中 `暂无定时清理策略`、旧 Vision AI 前端状态、Source Evidence snapshot `GET` 或 V2 Sheet 下拉旧描述。
+- 文档复扫：未再命中 `暂无定时清理策略`、旧 Vision AI 前端状态、Source Evidence snapshot `GET` 或 V2 Sheet 选择器旧描述。
 - `git diff --check -- docs/ARCHITECTURE.md docs/specs/data-sources.md docs/specs/ai-project-credentials.md docs/specs/test-case-generation-v2-requirements.md docs/specs/test-case-generation-v2-source-evidence.md PROJECT_RECORD.md CHANGELOG.md CONTEXT.md`
   - 结果：通过；仅输出既有 LF/CRLF 换行提示。
 
@@ -541,7 +541,7 @@
 - 在用例生成 schema 中新增 Parsed Source 内部契约，包含 markdown、source units、resources、raw manifest、warnings 和 unsupported resource candidates。
 - 扩展 `feishu_client.py` 的项目级通用 JSON OpenAPI helper，并新增 Wiki 节点解析，保留现有电子表格 Wiki resolver 行为。
 - 新增 `feishu_rich_reader.py`，实现 docx raw content + blocks 双读取、blocks 分页、图片/附件/inline/table-cell resource 提取、unsupported candidate 记录和 marker 渲染。
-- 实现 sheets 富读取：读取所有可见 Sheet、排除隐藏 Sheet 并记录 warning，保留稀疏坐标单元格和 cell/floating resource 位置。
+- 实现 sheets 富读取：读取可见 Sheet 集合、排除隐藏 Sheet 并记录 warning，保留稀疏坐标单元格和 cell/floating resource 位置。
 - 实现 bitable 只读基础解析预留：tables、views、records/search 和文件/图片字段资源识别。
 - 新增 parser、docx rich reader、sheets rich reader 测试，并补充 Feishu client helper/wiki/error 脱敏测试；旧飞书电子表格读取测试继续通过。
 
@@ -3317,14 +3317,14 @@
 
 - 定位前端报错“模型返回的 JSON 无法解析。”来自后端 AI provider 的 JSON 解析边界。
 - 用当前 run 复现发现：Source Evidence Snapshot 有 1945 行、9725 个非空单元格，蓝图 prompt 达到约 19 万字符 / 10.5 万 prompt tokens。
-- 确认根因是 V2 Source Evidence snapshot 页面预览走全集，而生成 prompt 没有再次套生成预算，导致 DeepSeek 在超大上下文下返回不稳定 JSON 或不符合契约的蓝图结构。
+- 确认根因是当时 V2 Source Evidence snapshot 页面预览走整份工作簿内容，而生成 prompt 没有再次套生成预算，导致 DeepSeek 在超大上下文下返回不稳定 JSON 或不符合契约的蓝图结构。
 - 在生成侧为 `PlanningSnapshotResponse` 渲染增加 prompt 预算：只把预算内文本/表格事实注入两阶段 prompt，截断时返回“生成输入超过预算” warning。
 - 增加蓝图阶段归一化：兼容模型把 `modules`、`flows`、`coverage_dimensions` 等列表字段返回为对象映射的常见形态。
 - 重启本地后端并用当前 Source Evidence run 2 真实调用 `/api/v1/test-cases/generate`，生成成功。
 
 ### 当前项目进度
 
-- 大型 Source Evidence 工作簿不会再把全集直接塞进生成 prompt；页面会看到生成预算 warning。
+- 大型 Source Evidence 工作簿不会再把整份工作簿内容直接塞进生成 prompt；页面会看到生成预算 warning。
 - 本次没有更新 `CONTEXT.md`，因为没有新增稳定领域术语。
 
 ### 文档同步
@@ -3377,3 +3377,765 @@
 ### 未完成项与风险
 
 - DeepSeek 仍可能产生其它不符合 JSON Schema 的非标准字段形态；当前只对已经复现的常见偏差做归一化，不放宽最终响应契约。
+
+## 进度记录 2026-07-02 17:22
+
+### 本次目标
+
+实现 Source Evidence Sheet 契约骨架：Run 响应暴露可选 Sheet 摘要，Source Evidence snapshot API 接收并校验 `sheet_name`。
+
+### 本次完成
+
+- 新增 `SourceEvidenceSheetOption` 和 `SourceEvidenceSnapshotRequest` 后端契约。
+- `SourceEvidenceRunResponse` 从 `raw/parsed_source.json` 的 `ParsedSourceUnit(kind="sheet")` 构造 `sheet_options`，只返回 Sheet 名称、类型、单元格数量、资源数量和默认标记。
+- Source Evidence snapshot 支持可选 `sheet_name`：单 Sheet 可默认，多 Sheet 缺参返回 400，未知 Sheet 返回 400，非 Sheet 来源保留旧 `Source Evidence` 行为。
+- `PlanningSnapshotResponse.sheet_name` 现在回显已解析的 Sheet 名称，但本次不按 Sheet 过滤 rows/resources。
+- 补充后端 API 和 snapshot 契约测试，覆盖多 Sheet run response、单 Sheet 默认、多 Sheet 缺参、指定 Sheet、未知 Sheet 和非 Sheet 兼容行为。
+
+### 当前项目进度
+
+- Source Evidence 后端已具备 Sheet selector 所需的基础契约。
+- 旧 `/api/v1/test-cases/planning-snapshot` 未变更。
+- 前端尚未接入 `sheet_options`，页面仍不会展示 Sheet selector。
+
+### 同步文件
+
+- `backend/app/test_cases/schemas.py`
+- `backend/app/test_cases/source_evidence.py`
+- `backend/app/api/test_cases_api.py`
+- `backend/tests/test_source_evidence_api.py`
+- `backend/tests/test_source_evidence_snapshot.py`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 红测：`python -m pytest backend/tests/test_source_evidence_api.py backend/tests/test_source_evidence_snapshot.py -q`，6 failed / 16 passed，失败点为缺少 `sheet_options`、snapshot 未解析 `sheet_name` 和多 Sheet 未校验。
+- 绿测：`python -m pytest backend/tests/test_source_evidence_api.py backend/tests/test_source_evidence_snapshot.py -q`，22 passed，保留既有 lark_oapi deprecation warnings 和 `TestCaseGenerationRequest` pytest collection warning。
+
+### 未完成项与风险
+
+- 本次是契约骨架，不会按所选 Sheet 过滤 snapshot rows/resources；后续需要在 service 中继续实现 Sheet-scoped snapshot。
+- 前端接入前，用户无法在页面选择 Sheet；多 Sheet run 若直接调用 snapshot 且不传 `sheet_name` 会按新契约返回 400。
+
+## 进度记录 2026-07-02 17:36
+
+### 本次目标
+
+- 实现 Source Evidence sheet-scoped snapshot renderer：Run 继续保留完整 parsed source，snapshot 只返回所选 Sheet 的文本单元格和图片/附件资源行。
+
+### 本次完成
+
+- 将 Source Evidence snapshot 从“校验并回显 `sheet_name`”推进到“按所选 Sheet 渲染 rows/resources”。
+- Sheet source 渲染时只遍历 selected `ParsedSourceUnit(kind="sheet")` 的文本 cell，且不再把 workbook-wide `parsed.markdown` 展开进 snapshot。
+- 图片/附件资源按 `metadata.sheet`、`metadata.sheet_title`、`metadata.sheet_id`、`metadata.sheet_index` 优先过滤，缺少 Sheet metadata 时用 `position` 解析兜底。
+- 空 Sheet 不再依赖整 run textless 判断，返回“所选 Sheet 无文本单元格” warning，并保留该 Sheet 的 `pending_visual` 图片行。
+- 补充 `.xlsx` 多 Sheet renderer 测试，覆盖选择 `需求A`、选择 `需求B`、其他 Sheet 图片排除、空 Sheet warning、安全脱敏和固定 columns。
+
+### 当前项目进度
+
+#### 已完成功能
+
+- Source Evidence Run 后端已支持 Sheet options 契约、snapshot `sheet_name` 校验、单 Sheet 默认、多 Sheet 缺参 400、未知 Sheet 400。
+- Source Evidence snapshot 已能按所选 Planning Sheet 输出文本单元格行和 sheet-scoped 图片/附件资源行。
+- `.xlsx` reader 已为图片资源保留 `sheet`、`sheet_index`、`anchor` metadata，可供 renderer 做优先过滤。
+
+#### 已实现但未打通/占位功能
+
+- 前端尚未接入 `sheet_options` 和 Sheet selector，因此用户页面还不会主动传递不同 `sheet_name`。
+- 生成/导出仍依赖前端传入当前 snapshot；后端已具备 Sheet-scoped snapshot，但前端状态失效和默认选择逻辑尚未打通。
+
+#### 未开始功能
+
+- Source Evidence 视觉候选/选择的前端 Sheet 维度筛选尚未实现。
+- 切换 Sheet 后清空 AI brief、生成结果和导出状态的前端行为尚未实现。
+
+### 规范化调整
+
+- 本次只处理 Source Evidence 后端 snapshot renderer 单切片，没有改旧 `/api/v1/test-cases/planning-snapshot`。
+- 新增 renderer helper 后，资源过滤逻辑集中在 `source_evidence.py`，避免把 Sheet 过滤分散到 reader 或 API 层。
+
+### 文档同步
+
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 红测：`python -m pytest backend/tests/test_source_evidence_snapshot.py backend/tests/test_source_evidence_excel_reader.py -q`，3 failed / 12 passed，失败点为 snapshot 仍输出其它 Sheet 的文本行。
+- 绿测：`python -m pytest backend/tests/test_source_evidence_snapshot.py backend/tests/test_source_evidence_excel_reader.py -q`，15 passed，保留既有 lark_oapi deprecation warnings 和 `TestCaseGenerationRequest` pytest collection warning。
+- 扩展回归：`python -m pytest backend/tests/test_source_evidence_api.py backend/tests/test_source_evidence_snapshot.py backend/tests/test_source_evidence_excel_reader.py -q`，26 passed，保留同类既有 warnings。
+- 格式检查：`python -m ruff check backend/app/test_cases/source_evidence.py backend/tests/test_source_evidence_snapshot.py backend/tests/test_source_evidence_excel_reader.py`，All checks passed。
+
+### 未完成项与风险
+
+- 前端尚未暴露 Sheet selector，多 Sheet Source Evidence Run 还需要下一刀接入页面选择和切换后的状态清理。
+- 当前资源过滤会排除无法从 metadata 或 position 判定所属 Sheet 的资源；这比跨 Sheet 泄漏更保守，但可能让旧脏数据中的未标注图片不出现在 Sheet snapshot。
+
+### 下一步建议
+
+1. 前端读取 `sheet_options`，默认选择第一个可用 Sheet，并把 `sheet_name` 传给 Source Evidence snapshot API。
+2. 在切换 Sheet 时清空 snapshot、AI brief、生成结果和导出状态，避免旧 Sheet 结果被误导出。
+
+## 进度记录 2026-07-02 17:56
+
+### 本次目标
+
+- 为 Source Evidence 视觉候选增加 selected Sheet 语义：当前 Sheet 的可观察图片默认选中，但不自动采纳。
+
+### 本次完成
+
+- `GET /source-evidence-runs/{run_id}/visual-candidates` 支持可选 `sheet_name` query。
+- `POST /source-evidence-runs/{run_id}/visual-selections` 支持保存选择所属 `sheet_name`，并将 selection 文件扩展为 `selected_refs`、`selection_source`、`sheet_name` 的兼容格式。
+- 多 Sheet run 传入当前 Sheet 后，会默认选中该 Sheet 内 `ready/selectable` 的图片候选；其它 Sheet 图片仍留在 `items` 中但默认不选。
+- 同 Sheet 手动选择会保留；切换到其它 Sheet 时不沿用旧 Sheet 的手动选择，而是回到新 Sheet 默认选择并写回 `auto`。
+- Observation 继续只读取已保存的 `selected_refs`；观察后资源保持 `observed`，不会写入 adopted 事实边界。
+- 视觉候选 warnings 增加“未采纳资源不作为需求事实，需观察并显式采纳后才可进入生成”提示。
+
+### 当前项目进度
+
+- 后端已具备 Source Evidence Sheet options、Sheet-scoped snapshot，以及视觉候选的 selected Sheet 默认选择语义。
+- 前端尚未传递当前 `sheet_name` 到 visual candidates / visual selections，因此页面层 Sheet selector 与候选默认选择还未打通。
+
+### 同步文件
+
+- `backend/app/test_cases/schemas.py`
+- `backend/app/api/test_cases_api.py`
+- `backend/app/test_cases/visual_evidence.py`
+- `backend/tests/test_source_evidence_visual_candidates.py`
+- `backend/tests/test_source_evidence_observations.py`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 红测：`python -m pytest backend/tests/test_source_evidence_visual_candidates.py backend/tests/test_source_evidence_observations.py -q`，4 failed / 8 passed，失败点为旧逻辑仍按 run-wide 推荐选择、selection body 拒绝 `sheet_name`、未知 Sheet 未返回 400。
+- 绿测：`python -m pytest backend/tests/test_source_evidence_visual_candidates.py backend/tests/test_source_evidence_observations.py -q`，12 passed，保留既有 lark_oapi deprecation warnings。
+- 扩展回归：`python -m pytest backend/tests/test_source_evidence_api.py backend/tests/test_source_evidence_snapshot.py backend/tests/test_source_evidence_visual_candidates.py backend/tests/test_source_evidence_observations.py -q`，37 passed，保留既有 lark_oapi deprecation warnings 和 `TestCaseGenerationRequest` pytest collection warning。
+- 格式检查：`python -m ruff check backend/app/test_cases/visual_evidence.py backend/app/test_cases/schemas.py backend/app/api/test_cases_api.py backend/tests/test_source_evidence_visual_candidates.py backend/tests/test_source_evidence_observations.py`，All checks passed。
+
+### 未完成项与风险
+
+- 前端还需要在切换 Sheet 时把当前 Sheet 传给候选读取和选择保存接口，并清理旧 Sheet 的页面派生状态。
+- 非 Sheet 来源即使误传 `sheet_name` 仍按旧 run-wide 选择逻辑处理；这是本次约定的兼容行为。
+
+## 进度记录 2026-07-02 18:26
+
+### 本次目标
+
+- 硬化 Source Evidence generation/export 的 Sheet 范围校验，只允许当前 Planning Sheet 范围内的 adopted visual evidence 进入生成和导出。
+
+### 本次完成
+
+- `build_source_evidence_safe_context` 支持从 `planning_snapshot.sheet_name` 或导出请求 `planning_sheet_name` 解析当前 Planning Sheet。
+- `validate_source_evidence_for_generation` 增加 Sheet-scope 校验：跨 Sheet adopted evidence 会返回 400，并提示“已采纳视觉证据不属于当前 Sheet”。
+- prompt context 和 export summary 显式写入当前 Planning Sheet，并把读取范围、资源统计和 adopted evidence 摘要限制在当前 Sheet。
+- `TestCaseExportRequest` 新增 `planning_sheet_name`，导出 API 会把该字段传给 Source Evidence safe context。
+- 补充 generation/export 测试，覆盖当前 Sheet adopted evidence 可用、跨 Sheet adopted evidence 阻塞、未观察图片只 warning 不阻塞纯文本生成、导出摘要不泄露路径/token/provider response。
+
+### 当前项目进度
+
+#### 已完成功能
+
+- Source Evidence 后端已支持 Sheet options、Sheet-scoped snapshot、视觉候选 selected Sheet 默认选择，以及 generation/export 的 Sheet-scope adopted visual evidence 校验。
+- 生成和导出的安全上下文已能按当前 Planning Sheet 收敛资源统计、已采纳视觉证据摘要和 forbidden visual refs。
+- 非 Sheet 来源继续兼容旧 `Source Evidence` 范围；单 Sheet Source Evidence 在导出缺省 `planning_sheet_name` 时可默认唯一 Sheet。
+
+#### 已实现但未打通/占位功能
+
+- 前端尚未传递当前 Sheet 到 export 的 `planning_sheet_name`，页面导出仍需下一刀接入。
+- 前端尚未在 Sheet 切换时统一清理 snapshot、AI brief、生成结果、导出状态和视觉候选选择状态。
+
+#### 未开始功能
+
+- 前端 Sheet selector 与 visual candidates / visual selections / snapshot / generation / export 的全链路联动尚未完成。
+
+### 规范化调整
+
+- 本次仍限定在 Source Evidence generation/export 安全边界单切片，没有改旧 `/api/v1/test-cases/planning-snapshot`。
+- 继续复用 `source_evidence.py` 中既有 Sheet resource matching 逻辑，避免 generation/export 与 snapshot/visual candidates 的 Sheet 归属判断分叉。
+
+### 文档同步
+
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 红测：`python -m pytest backend/tests/test_source_evidence_generation.py backend/tests/test_test_case_exporter.py -q`，4 failed / 26 passed，失败点为 prompt 未声明当前 Sheet、跨 Sheet adopted evidence 未阻塞、export request 拒绝 `planning_sheet_name`。
+- 绿测：`python -m pytest backend/tests/test_source_evidence_generation.py backend/tests/test_test_case_exporter.py -q`，30 passed，保留既有 lark_oapi deprecation warnings。
+- 扩展回归：`python -m pytest backend/tests/test_source_evidence_generation.py backend/tests/test_test_case_exporter.py backend/tests/test_source_evidence_snapshot.py backend/tests/test_source_evidence_observations.py -q`，50 passed，保留既有 lark_oapi deprecation warnings 和 `TestCaseGenerationRequest` pytest collection warning。
+- 格式检查：`python -m ruff check backend/app/test_cases/source_evidence.py backend/app/test_cases/schemas.py backend/app/api/test_cases_api.py backend/tests/test_source_evidence_generation.py backend/tests/test_test_case_exporter.py`，All checks passed。
+
+### 未完成项与风险
+
+- 前端未接入 `planning_sheet_name` 前，多 Sheet Source Evidence 的页面导出仍缺少当前 Sheet 信息；后端已对多 Sheet 缺省导出返回 400。
+- 当前导出请求只新增轻量 Sheet 名，不携带完整 snapshot；如果前端状态没有在 Sheet 切换时同步更新，后端会按传入 Sheet 名阻塞跨 Sheet evidence，但无法替前端恢复已失效的页面结果。
+
+### 下一步建议
+
+1. 前端 export payload 增加 `planning_sheet_name=currentPlanningSnapshot.sheet_name`。
+2. 前端切换 Source Evidence Sheet 时统一失效生成结果、AI brief、导出按钮和视觉候选选择。
+
+## 进度记录 2026-07-02 18:42
+
+### 本次目标
+
+- 接通 Source Evidence workbook run 的前端 Sheet 选择链路：默认第一张可用 Sheet，读取快照、视觉候选/选择和导出都携带当前 Sheet；切换 Sheet 时清理旧页面派生结果。
+
+### 本次完成
+
+- `testCases` 前端类型新增 `SourceEvidenceSheetOption`、`SourceEvidenceSnapshotRequest`、visual selection `sheet_name` 和 export `planning_sheet_name`。
+- `readSourceEvidenceSnapshot` 支持可选 `{ sheet_name }` body，`fetchSourceEvidenceVisualCandidates` 支持 `sheet_name` query。
+- `/test-cases` 页面按 `sourceEvidenceRun.sheet_options` 显示 Sheet selector，并默认选择 `is_default` Sheet 或第一张 Sheet；docx/wiki/独立图片等无 Sheet run 不显示 selector。
+- Source Evidence snapshot 读取、visual candidates、visual selections 和 export payload 已带当前 Planning Sheet；generation 继续只依赖 `planning_snapshot.sheet_name`。
+- 切换 Source Evidence Sheet 会清空旧 snapshot、AI 整理稿、生成结果、`sourceEvidenceSnapshotRunId` 和导出可用态，并重新拉取当前 Sheet 的 visual candidates。
+- 资源抽屉保留手动选择能力，同一 Sheet 内保存后不立即重新默认选中，切换 Sheet 后由后端返回当前 Sheet 默认选择。
+
+### 当前项目进度
+
+#### 已完成功能
+
+- Source Evidence 前后端已完成 Sheet options、Sheet-scoped snapshot、Sheet-aware visual candidates/selection，以及 generation/export Sheet 范围校验的主链路接线。
+- 本地 `.xlsx/.xls`、SVN `.xlsx/.xls` 和飞书 sheets 只要后端返回 `sheet_options`，前端就会进入 Planning Sheet selector 语义。
+- 非 Sheet Source Evidence 来源继续兼容旧 run-wide 行为。
+
+#### 已实现但需继续观察
+
+- 前端仍复用 `selectedPlanningSheetName` 承载旧 Feishu spreadsheet 和 Source Evidence workbook 的当前 Sheet；已避免 Source Evidence Sheet 切换写入旧 workbench config，但后续若恢复多来源并存，需要考虑拆成独立状态。
+
+### 同步文件
+
+- `frontend/src/types/testCases.ts`
+- `frontend/src/api/testCases.ts`
+- `frontend/src/views/TestCaseGeneratorView.vue`
+- `frontend/tests/unit/testCasesApi.test.ts`
+- `frontend/tests/unit/TestCaseGeneratorView.test.ts`
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 单测：`npm run test:unit -- testCasesApi`，11 passed。
+- 单测：`npm run test:unit -- TestCaseGeneratorView`，68 passed。
+- 合并单测：`npm run test:unit -- testCasesApi TestCaseGeneratorView`，79 passed。
+- 构建：`npm run build`，`vue-tsc -b && vite build` 成功。
+
+### 未完成项与风险
+
+- 如果后端返回 `sheet_options=[]` 但实际 snapshot 需要 Sheet，前端会按非 Sheet 旧行为发送无 body 请求，依赖后端返回明确错误。
+
+## 进度记录 2026-07-02 18:58
+
+### 本次目标
+
+- 同步 V2 Source Evidence Sheet 文档口径，只改 Markdown 文档，不改业务代码。
+
+### 本次完成
+
+- 保持 `CONTEXT.md` 现有 `Planning Sheet` / `Planning Sheet Snapshot` 定义不变，继续以单个 worksheet 作为一次生成的需求范围。
+- 更新 Source Evidence sheet-scoped snapshot 设计文档，将早期 full-run snapshot 口径改为历史背景，并明确当前 contract 是 run 保留全量读取会话，snapshot/generation/export 按当前 Sheet。
+- 更新 V2 Source Evidence 主规格：run 保留 workbook/sheets 全量 parsed source 和资源清单，`sheet_options` 驱动前端选择；snapshot、visual candidates、visual selections、generation 和 export 都按当前 Planning Sheet 收敛。
+- 更新 V2 requirements：补齐创建 run 后选择 Sheet、切换 Sheet 清理页面派生状态、当前 Sheet 图片默认进入 observation candidates 选中集合但不自动观察/采纳、跨 Sheet adopted evidence 阻塞等需求和验收标准。
+- 更新 V1 基线文档的 V2 候选段落，只补充当前 V2 已采用 sheet-scoped Source Evidence snapshot，不改变 V1 主体口径。
+- 修正少量历史记录和 superpowers 计划中的旧措辞，保留历史事实但避免继续传播“snapshot 使用整份工作簿内容”的当前语义。
+- 同步 `CHANGELOG.md` 文档治理摘要。
+
+### 同步文件
+
+- `docs/superpowers/specs/2026-07-02-source-evidence-sheet-scoped-snapshot-design.md`
+- `docs/specs/test-case-generation-v2-source-evidence.md`
+- `docs/specs/test-case-generation-v2-requirements.md`
+- `docs/specs/test-case-generation.md`
+- `docs/specs/test-case-generation-feishu-doc-migration.md`
+- `docs/superpowers/plans/2026-06-29-test-case-generation-feishu-doc-migration-codex-prompts.md`
+- `docs/superpowers/plans/2026-07-02-source-evidence-sheet-scoped-snapshot-codex-prompts.md`
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 文档口径扫描：对 Source Evidence Sheet 范围旧词组执行 `rg`，无输出；`rg` exit code 1 表示未命中。为避免扫描记录自命中，本记录不内嵌完整正则。
+- 格式检查：对本轮触碰的 Markdown 文档执行 `git diff --check -- ...`，通过；仅输出既有 LF/CRLF 换行提示。
+
+### 未完成项与风险
+
+- 本轮只改 Markdown 文档，没有运行后端、前端单元测试或 build。
+- 本轮额外修正两个历史 superpowers plan 和一个飞书迁移规格中的旧措辞，只改变文档表述，不改变实现计划或代码行为。
+
+## 进度记录 2026-07-02 21:28
+
+### 本次目标
+
+- 实现 V3 Generation Run 的数据模型、Pydantic 契约和 API 骨架；先写失败测试，再实现最小代码，不调用 AI，不生成真实用例。
+
+### 本次完成
+
+- 新增 Alembic `0016_test_case_generation_runs`，创建并可 downgrade 删除 `test_case_generation_runs`、`test_case_generation_chunks`、`test_case_requirement_atoms`、`test_case_generation_cases`、`test_case_coverage_audits`。
+- 新增 5 个 ORM record，统一带 `project_id` 隔离字段、必要 FK、索引和固定 Generation Run 状态集合；未新增 raw prompt/raw response 字段。
+- 新增 V3 Pydantic 请求/响应模型，覆盖 create run、run summary、cancel、retry failed chunks、atoms list 和 cases list。
+- 新增 `backend/app/test_cases/generation_runs.py` service skeleton，只做 run 登记、读取、TTL 过期标记、取消、失败 chunk 重试骨架和空结果中文错误。
+- 新增 7 个 `/api/v1/test-cases/generation-runs` API endpoint，并接入严格项目成员校验、跨项目隔离和基础 TTL/expired 判断。
+- 旧同步 `POST /api/v1/test-cases/generate` 改为 `410 Gone`，提示使用 V3 Generation Run。
+- 更新 API contract 和 Alembic migration 测试，覆盖 queued 创建、项目/用户字段、非成员拒绝、跨项目隔离、cancel 状态转换、终态禁止 cancel、空结果错误、旧 generate 410、upgrade/downgrade 和索引/禁用字段。
+
+### 同步文件
+
+- `backend/app/models.py`
+- `backend/app/test_cases/schemas.py`
+- `backend/app/test_cases/generation_runs.py`
+- `backend/app/api/test_cases_api.py`
+- `backend/tests/test_test_case_api_contracts.py`
+- `backend/tests/test_alembic_migrations.py`
+- `migrations/versions/0016_test_case_generation_runs.py`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 单测：`python -m pytest backend/tests/test_test_case_api_contracts.py backend/tests/test_alembic_migrations.py -q`，27 passed，12 warnings。
+
+### 未完成项与风险
+
+- 本刀未实现后台 worker、AI 调用、真实 atoms/cases 生成或 V3 Excel 导出。
+- 旧 `/generate` 已按本次决策返回 410；仓库中仍存在多处旧同步生成测试和前端调用引用，后续需要在 V3 前端切换或测试退役时处理。
+
+## 进度记录 2026-07-03 10:43
+
+### 本次目标
+
+- 实现 Generation Run 服务层和 TTL 清理骨架；让 run 能创建、读取、推进状态、取消、过期和清理详细内容，不接 AI。
+
+### 本次完成
+
+- 新增 Alembic `0017_test_case_generation_run_cleanup`，为 Generation Run 主表补充 `completed_at`、`cleaned_at`、`stage_payload_json`、`minimal_audit_json`，并覆盖 downgrade。
+- 扩展 ORM 与 Pydantic response，返回 `completed_at`、`cleaned_at` 和 sanitized `stage_payload`。
+- 强化 `backend/app/test_cases/generation_runs.py`：公开 `get_project_generation_run`，新增 `mark_generation_run_expired_if_needed`、`cleanup_expired_generation_runs`、`collect_expired_generation_runs`、`update_generation_run_stage`。
+- TTL 到期后懒标记 `expired` 并清理 chunks、atoms、cases、coverage audits 和 stage payload；主表保留最小审计、计数、创建/完成/过期/清理时间和脱敏错误摘要。
+- `cancelled` 在 TTL 前保留已完成 detail，但禁止继续推进到 completed，且不能导出；`failed` 只保留脱敏错误摘要，不保存 raw prompt/raw response/provider response。
+- runtime cleanup 报告新增 `generation_runs`，dry-run 只汇总清理候选，execute 与 Source Evidence 清理并列执行且互不删除对方资源。
+- 新增 `backend/tests/test_test_case_generation_runs.py`，更新 runtime cleanup 和 Alembic migration 契约测试。
+
+### 同步文件
+
+- `backend/app/models.py`
+- `backend/app/test_cases/schemas.py`
+- `backend/app/test_cases/generation_runs.py`
+- `backend/app/services/runtime_cleanup.py`
+- `backend/tests/test_test_case_generation_runs.py`
+- `backend/tests/test_runtime_cleanup.py`
+- `backend/tests/test_alembic_migrations.py`
+- `migrations/versions/0017_test_case_generation_run_cleanup.py`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 红灯：新增测试首次运行因缺少 `cleanup_expired_generation_runs` 导入失败。
+- 指定单测：`python -m pytest backend/tests/test_test_case_generation_runs.py backend/tests/test_runtime_cleanup.py backend/tests/test_source_evidence_cleanup.py backend/tests/test_alembic_migrations.py -q`，26 passed，1 skipped，2 warnings。
+- 回归契约：`python -m pytest backend/tests/test_test_case_api_contracts.py -q`，22 passed，12 warnings。
+
+### 未完成项与风险
+
+- 本刀仍未实现 AI worker、真实 atoms/cases 生成或真实 V3 export。
+- Generation Run cleanup 目前是服务层骨架和 DB detail 清理，后续 worker 接入时还需要补充状态推进调用点、失败 chunk retry 的真实调度和 completed 结果导出路径。
+
+## 进度记录 2026-07-03 12:34
+
+### 本次目标
+
+- 实现 Full Planning Sheet Context builder，从 Source Evidence Run 的当前 selected Planning Sheet 读取全量文本/表格事实和已采纳视觉证据，不使用旧 snapshot 或 prompt 截断限制。
+
+### 本次完成
+
+- 新增 `backend/app/test_cases/full_generation_context.py`，提供 `build_full_planning_sheet_context` 和内部 dataclass 模型。
+- `all_fact_rows` 改按物理源行聚合，保留 row、col、coord、column_name、value、source_unit_title、evidence_status。
+- workbook/sheets/xlsx/xls 只读取 selected sheet；docx/wiki/无 sheet 来源使用 `Source Evidence` 兼容 sheet。
+- builder 不调用 `PlanningSnapshotLimits`，也不使用旧同步 `generation.py` 的 `GENERATION_SNAPSHOT_MAX_CHARS` / `GENERATION_SNAPSHOT_MAX_FACT_ROWS`。
+- 自动收集当前 sheet 的 adopted visual observations；其他 sheet adopted、未观察/未采纳/撤销/失败视觉资源只进入 warnings，不进入 facts 或 adopted evidence。
+- 迁移 `backend/tests/test_source_evidence_generation.py`，不再测试停用的旧同步 `/generate` prompt 路径，只保留 410 契约；有价值的 Source Evidence/视觉证据行为迁到 Full Context service 测试。
+
+### 同步文件
+
+- `backend/app/test_cases/full_generation_context.py`
+- `backend/tests/test_test_case_full_generation_context.py`
+- `backend/tests/test_source_evidence_generation.py`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 红灯：`python -m pytest backend/tests/test_test_case_full_generation_context.py backend/tests/test_source_evidence_generation.py -q` 首次因缺少 `backend.app.test_cases.full_generation_context` 失败。
+- 指定单测：`python -m pytest backend/tests/test_test_case_full_generation_context.py backend/tests/test_source_evidence_generation.py -q`，6 passed，2 warnings。
+- 回归：`python -m pytest backend/tests/test_source_evidence_snapshot.py backend/tests/test_test_case_api_contracts.py -q`，36 passed，13 warnings。
+
+### 未完成项与风险
+
+- 本刀只实现 V3 full context builder，不接 AI worker、不生成 atoms/cases、不写入 Generation Run stage payload。
+- 后续需要在 V3 worker 的 extracting atoms / chunking 阶段接入该 context，并决定是否需要把 context 摘要写入 sanitized stage payload。
+
+## 进度记录 2026-07-03 15:12
+
+### 本次目标
+
+- 实现结构优先 Generation Chunking，把 Full Planning Sheet Context 切成可控 AI 输入边界，同时保证所有输入 facts 被完整覆盖且不重复计入 coverage。
+
+### 本次完成
+
+- 新增 `backend/app/test_cases/generation_chunking.py`，提供 `GenerationChunk`、`build_generation_chunks`、`persist_generation_chunks`、`chunk_full_planning_sheet_context_for_run`。
+- chunking 采用结构优先切片：空行 gap、标题行、source unit/evidence status boundary、表头变化优先；结构段过大时再按默认 120 fact rows / 30000 chars fallback。
+- overlap 只写入 `previous_overlap_hint` / `next_overlap_hint`，不重复写入 `covered_row_indexes`，确保 coverage facts 不丢不重。
+- chunk detail 写入现有 `test_case_generation_chunks.structure_hints_json`，包含 `chunk_key`、`fact_count`、`char_count`、`resource_refs`、`split_reasons`、`covered_row_indexes` 和 overlap hints；本刀不新增 migration。
+- adopted visual evidence 按 position anchor row 分配到 chunk；无法解析锚点的 adopted visual evidence 放入首个 chunk 并记录 warning。
+- 持久化 helper 会替换当前 run 既有 chunk，并将 run 推进到 `chunking`，更新 `total_chunks/completed_chunks/failed_chunks` 和 sanitized stage payload。
+
+### 同步文件
+
+- `backend/app/test_cases/generation_chunking.py`
+- `backend/tests/test_test_case_generation_chunking.py`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 红灯：`python -m pytest backend/tests/test_test_case_generation_chunking.py -q` 首次因缺少 `backend.app.test_cases.generation_chunking` 失败。
+- 指定单测：`python -m pytest backend/tests/test_test_case_generation_chunking.py backend/tests/test_test_case_full_generation_context.py -q`，12 passed，2 warnings。
+- 回归：`python -m pytest backend/tests/test_test_case_generation_runs.py backend/tests/test_test_case_api_contracts.py -q`，31 passed，12 warnings。
+
+### 未完成项与风险
+
+- 本刀不接 AI worker，不抽取 Requirement Atom，不生成 cases，也不新增 chunk API response schema。
+- 当前 `fact_count/char_count/resource_refs` 仍作为 `structure_hints_json` 内的安全 metadata；如果后续需要按这些字段查询或排序，再单独迁移为独立列。
+
+## 进度记录 2026-07-03 15:30
+
+### 本次目标
+
+- 实现 Requirement Atom 抽取和合并，让每个 persisted chunk 可通过项目级文本 AI 抽取结构化 atoms，并由后端合并去重；本刀不生成 blueprint/cases。
+
+### 本次完成
+
+- 新增 `backend/app/test_cases/requirement_atoms.py`，提供 `extract_and_merge_requirement_atoms_for_run` 和内部 atom extraction schema。
+- 复用项目级 AI credential、provider JSON 调用、extra headers 和错误脱敏；每个 chunk prompt 只包含当前 chunk facts、overlap hints 和当前 chunk 的 adopted visual evidence。
+- 默认并发限制为 2 个 chunk provider 调用；provider 调用完成后再顺序写 DB，避免并发 DB 写入。
+- provider invalid JSON、缺少 `atoms` 或 provider error 只标记对应 chunk failed，写入脱敏 `error_summary`，其他 chunk 继续抽取。
+- 空 atoms 写入 chunk warning；缺关键字段或越界来源的 atom 被跳过；unfounded candidate 落库为 `coverage_status=unfounded_candidate`，不计入 run `atom_count`。
+- official atoms 按 `merge_key`、source range overlap 和文本相似度去重；冲突解释写入 survivor atom warnings。
+- 持久化复用现有表结构：`merge_key` 写 `merge_group_id`，provider meta 写 chunk `structure_hints_json` 的安全字段，不保存 raw prompt/raw response/provider response。
+
+### 同步文件
+
+- `backend/app/test_cases/requirement_atoms.py`
+- `backend/tests/test_test_case_requirement_atoms.py`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 红灯：`python -m pytest backend/tests/test_test_case_requirement_atoms.py -q` 首次因缺少 `backend.app.test_cases.requirement_atoms` 失败。
+- 新增单测：`python -m pytest backend/tests/test_test_case_requirement_atoms.py -q`，7 passed，2 warnings。
+- 指定单测：`python -m pytest backend/tests/test_test_case_requirement_atoms.py backend/tests/test_test_case_generation_runs.py -q`，16 passed，2 warnings。
+- 回归：`python -m pytest backend/tests/test_test_case_generation_chunking.py backend/tests/test_test_case_api_contracts.py -q`，29 passed，12 warnings。
+
+### 未完成项与风险
+
+- 本刀不生成 blueprint/cases，不新增 API 路由，不实现 retry failed chunk 的真实重新调度。
+- `is_unfounded_candidate` 目前通过 `coverage_status=unfounded_candidate` 表达；如果后续需要独立查询维度，再新增迁移拆列。
+
+## 进度记录 2026-07-03 15:46
+
+### 本次目标
+
+- 实现基于 merged official Requirement Atoms 的 Test Case Blueprint 生成；蓝图不再直接从 Planning Sheet Snapshot/raw sheet 或 Reference Test Case Library facts 生成。
+
+### 本次完成
+
+- 新增 `backend/app/test_cases/full_generation_blueprint.py`，提供 `generate_test_case_blueprint_for_run`。
+- blueprint stage 会推进 run 到 `blueprinting`，只读取 `coverage_status != unfounded_candidate` 且 `ATOM-*` 的 official atoms。
+- prompt 只包含 official atoms、QA Case Method、source summary 和 warnings，并明确禁止从参考案例、常识、旧知识或 raw sheet 补需求。
+- 复用 `TestCaseBlueprint` 契约，并在 `generation.py` 暴露 `validate_test_case_blueprint_payload`，避免 V1/V3 蓝图校验分叉。
+- 后处理 provider 输出：规范 `requirement_traces` 的 `atom_id/atom_ids/source_fragment`，无有效 atom trace 的模块/流程/风险移入 `unsupported_or_unfounded_test_points`，候选/未采纳视觉 ref 会被清洗。
+- official atom 为空时不调用 provider，run 进入 `failed`，错误说明没有可生成需求。
+- 蓝图和 provider meta 只写入 sanitized `stage_payload_json`，不保存 raw prompt/raw response/provider response/API key/local path/token。
+
+### 同步文件
+
+- `backend/app/test_cases/full_generation_blueprint.py`
+- `backend/app/test_cases/generation.py`
+- `backend/tests/test_test_case_full_generation_blueprint.py`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 红灯：`python -m pytest backend/tests/test_test_case_full_generation_blueprint.py -q` 首次因缺少 `backend.app.test_cases.full_generation_blueprint` 失败。
+- 新增单测：`python -m pytest backend/tests/test_test_case_full_generation_blueprint.py -q`，4 passed，2 warnings。
+- 指定回归：`python -m pytest backend/tests/test_test_case_full_generation_blueprint.py backend/tests/test_test_case_requirement_atoms.py -q`，11 passed，2 warnings。
+
+### 未完成项与风险
+
+- 本刀不生成 cases、不实现 worker 调度、不新增 HTTP API。
+- `stage_payload_json` 目前承载 sanitized blueprint；TTL 清理会按既有 Generation Run cleanup 路径清空详细 payload。
+
+## 进度记录 2026-07-03 16:01
+
+### 本次目标
+
+- 实现按 Requirement Atom group / blueprint module 分批生成测试用例；每条 official case 必须引用至少一个 official Requirement Atom，无依据 case 默认剔除并进入 Coverage Audit 候选。
+
+### 本次完成
+
+- 新增 `backend/app/test_cases/full_generation_cases.py`，提供 `generate_test_cases_for_run`。
+- cases stage 会推进 run 到 `generating_cases`，从 `stage_payload.blueprint` 和 official atoms 构造 module/atom group 批次，不读取 Snapshot/raw sheet。
+- provider prompt 只包含当前 batch atoms、相关 blueprint 节点、标准字段和 Reference Test Case Profile 的字段/风格摘要；参考案例只影响字段顺序、命名、层级、粒度，不能补需求。
+- provider case 输出会归一化为 `GeneratedTestCase` 标准字段，兼容数组 steps/expected_results 等旧形态，并补默认 `case_id`、`priority=P2`、`initial_status=未执行`。
+- official case 强制校验 `atom_ids`；缺失时仅用 `source_requirement/title/steps/expected_results` 与 official atom 文本/摘录做保守匹配，失败则写入 `test_case_coverage_audits.unfounded_candidates_json`。
+- 持久化写入 `test_case_generation_cases.fields_json` 和 `atom_refs_json`，并 upsert 初步 Coverage Audit，记录 covered/uncovered atom ids、unfounded candidates 和 warnings。
+- 对未采纳/候选 visual ref 做清洗，不保存 raw prompt/raw response/provider response/API key/local path/token。
+
+### 同步文件
+
+- `backend/app/test_cases/full_generation_cases.py`
+- `backend/tests/test_test_case_full_generation_cases.py`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 红灯：`python -m pytest backend/tests/test_test_case_full_generation_cases.py -q` 首次因缺少 `backend.app.test_cases.full_generation_cases` 失败。
+- 新增单测：`python -m pytest backend/tests/test_test_case_full_generation_cases.py -q`，6 passed，2 warnings。
+- 指定回归：`python -m pytest backend/tests/test_test_case_full_generation_cases.py backend/tests/test_test_case_reference_library_api.py -q`，17 passed，2 warnings。
+- 可选回归：`python -m pytest backend/tests/test_test_case_full_generation_blueprint.py backend/tests/test_test_case_generation_runs.py -q`，13 passed，2 warnings。
+- Ruff：`python -m ruff check backend/app/test_cases/full_generation_cases.py backend/tests/test_test_case_full_generation_cases.py`，All checks passed。
+
+### 未完成项与风险
+
+- 本刀不实现完整 Coverage Audit、supplement pass、V3 export 文件、worker 调度或 API 接线。
+- 当前 Coverage Audit 为 cases 阶段的初步记录；后续正式 audit 阶段仍需重新评估 failed chunks、coverage limitations、strict mode 和 partial/completed 终态。
+
+## 进度记录 2026-07-03 16:21
+
+### 本次目标
+
+- 实现 V3 Coverage Audit 和一次自动补生成：证明 official Requirement Atoms 是否被 official cases 覆盖，有缺口时只补一轮，不进入无限循环。
+
+### 本次完成
+
+- 新增 `backend/app/test_cases/coverage_audit.py`，提供 `run_coverage_audit_for_run`。
+- audit 只统计 `coverage_status != unfounded_candidate` 且 `ATOM-*` 的 official atoms；unfounded candidates 只作为审计候选记录，不计入 covered/uncovered。
+- audit upsert 唯一 `test_case_coverage_audits` row，写入 total/covered/uncovered atoms、failed chunk 数、uncovered atom ids、unfounded candidates、supplement summary、export limitations 和 warnings。
+- 扩展 `backend/app/test_cases/full_generation_cases.py`，新增 append-only supplement helper；补生成只接收 uncovered atom ids，不删除已有 official cases，并继续强制 atom trace、去重、视觉 ref 清洗和敏感信息脱敏。
+- supplement 防循环通过 `supplement_summary_json.attempted=true` 控制；二次 audit 只重新计算覆盖，不再次调用 provider。
+- 状态流接入 `auditing_coverage -> supplementing -> completed/partial_completed/failed`；全覆盖且无 failed chunk 时 completed，否则有可用 cases 时 partial_completed。
+- 更新 V3 export placeholder：strict mode 存在 uncovered atoms 时返回 409；non-strict partial run 可返回 placeholder，并带 `audit_summary/export_limitations/warnings`。
+- 更新 `CHANGELOG.md`，记录 Coverage Audit 与 strict/non-strict 导出行为变化。
+
+### 同步文件
+
+- `backend/app/test_cases/coverage_audit.py`
+- `backend/app/test_cases/full_generation_cases.py`
+- `backend/app/test_cases/generation_runs.py`
+- `backend/tests/test_test_case_coverage_audit.py`
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 红灯：`python -m pytest backend/tests/test_test_case_coverage_audit.py -q` 首次因缺少 `backend.app.test_cases.coverage_audit` 失败。
+- 新增单测：`python -m pytest backend/tests/test_test_case_coverage_audit.py -q`，6 passed，2 warnings。
+- 指定回归：`python -m pytest backend/tests/test_test_case_coverage_audit.py backend/tests/test_test_case_full_generation_cases.py -q`，12 passed，2 warnings。
+- 可选回归：`python -m pytest backend/tests/test_test_case_generation_runs.py backend/tests/test_test_case_api_contracts.py -q`，31 passed，12 warnings。
+- Ruff：`python -m ruff check backend/app/test_cases/coverage_audit.py backend/app/test_cases/full_generation_cases.py backend/app/test_cases/generation_runs.py backend/tests/test_test_case_coverage_audit.py`，All checks passed。
+
+### 未完成项与风险
+
+- 本刀仍不实现真实 workbook export、frontend 页面接线或 worker 调度。
+- Skipped visual resources 目前只通过 warnings/export limitations 承载；后续如果要区分 blocking visual error，需要扩展 audit limitation 类型。
+
+## 进度记录 2026-07-03 17:43
+
+### 本次目标
+
+- 把 V3 Full Generation 各阶段串成 Generation Run orchestrator，并接入 API；API 语义保持异步 run，第一版使用进程内 BackgroundTasks。
+
+### 本次完成
+
+- 新增 `backend/app/test_cases/full_generation_orchestrator.py`，提供 direct helper `run_generation_run_orchestrator` 和后台入口 `run_generation_run_background_task`。
+- orchestrator 串联 `reading -> chunking -> extracting_atoms -> merging_atoms -> blueprinting -> generating_cases -> auditing_coverage/supplementing -> terminal`，并在阶段间检查 `cancelled/expired/failed`，取消后不继续生成 cases。
+- `POST /api/v1/test-cases/generation-runs` 仍立即返回 queued run，commit 后通过 `BackgroundTasks` 启动后台 orchestrator。
+- `POST /generation-runs/{run_id}/retry-failed-chunks` 现在允许 `partial_completed` 且有 failed chunks 的 run 重新打开，并启动 retry orchestrator。
+- 新增 `retry_failed_requirement_atoms_for_run`：只重跑 retry queued chunks，保留非失败 chunk 的既有 atoms，再统一 merge、重建 blueprint/cases/audit。
+- orchestrator 捕获 Source Evidence、AI credential/provider、payload 和未知错误，写入 sanitized `error_summary/stage_payload`，不保存 raw prompt/raw response/provider response/token/local path。
+- 前端新增 Generation Run API wrappers 和类型；前端 API 单测不再把旧 `/generate` 作为 V3 主路径。
+- 更新 `CHANGELOG.md`，记录 V3 orchestrator 与 retry 行为变化。
+
+### 同步文件
+
+- `backend/app/test_cases/full_generation_orchestrator.py`
+- `backend/app/test_cases/requirement_atoms.py`
+- `backend/app/test_cases/generation_runs.py`
+- `backend/app/api/test_cases_api.py`
+- `backend/tests/test_test_case_full_generation_orchestrator.py`
+- `frontend/src/types/testCases.ts`
+- `frontend/src/api/testCases.ts`
+- `frontend/tests/unit/testCasesApi.test.ts`
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 红灯：`python -m pytest backend/tests/test_test_case_full_generation_orchestrator.py -q` 首次因缺少 `backend.app.test_cases.full_generation_orchestrator` 和 API background task 入口失败。
+- 新增单测：`python -m pytest backend/tests/test_test_case_full_generation_orchestrator.py -q`，6 passed，2 warnings。
+- 指定回归：`python -m pytest backend/tests/test_test_case_full_generation_orchestrator.py backend/tests/test_test_case_generation_runs.py backend/tests/test_source_evidence_generation.py -q`，16 passed，2 warnings。
+- API 契约：`python -m pytest backend/tests/test_test_case_api_contracts.py -q`，22 passed，12 warnings。
+- 前端 API：`cd frontend && npm run test:unit -- testCasesApi.test.ts`，11 passed。
+- Ruff：`python -m ruff check backend/app/test_cases/full_generation_orchestrator.py backend/app/test_cases/requirement_atoms.py backend/app/test_cases/generation_runs.py backend/app/api/test_cases_api.py backend/tests/test_test_case_full_generation_orchestrator.py`，All checks passed。
+
+### 未完成项与风险
+
+- 本刀不实现真实 workbook export，也不迁移 Vue 页面到 polling UI。
+- BackgroundTasks 是进程内第一版 runtime；服务重启时没有外部队列恢复能力，后续如需生产级调度要另接任务队列或 run recovery。
+
+## 进度记录 2026-07-03 17:59
+
+### 本次目标
+
+- 改造 V3 Generation Run 导出：前端不再回传 blueprint/cases/stats 作为导出事实，后端按 generation run id 读取短期结果并导出 Excel，新增“覆盖审计”Sheet。
+
+### 本次完成
+
+- 新增 V3 DB-backed workbook builder `build_generation_run_export_workbook`，按 run id 读取 `stage_payload.blueprint`、official cases、official atoms、chunks 和 Coverage Audit。
+- `POST /api/v1/test-cases/generation-runs/{run_id}/export` 从 JSON placeholder 改为 Excel 文件流，导出 `测试用例`、`用例蓝图`、`生成说明`、`覆盖审计` 四个 Sheet。
+- 覆盖审计 Sheet 写入 atom id、source sheet、source rows、source columns、atom type、atom text、coverage status、linked case ids、failed chunk 和 limitation notes。
+- strict mode 存在 uncovered atoms 时继续返回 409 中文错误；`partial_completed` 非 strict run 可以导出，并在生成说明与覆盖审计中显著展示 coverage gaps / failed chunk 限制。
+- V3 export 不接受前端提交的 generated cases 作为事实来源；前端 `exportGenerationRunWorkbook` 只按 run id 调用文件下载，不提交 blueprint/cases/stats。
+- 导出内容继续过滤 raw prompt、provider response、local path、API key、token 和未采纳视觉 observation detail。
+- 更新 `CHANGELOG.md`，记录 V3 导出从占位 JSON 升级为真实 Excel workbook。
+
+### 当前项目进度
+
+#### 已完成功能
+
+- V3 Generation Run 已具备 API 骨架、TTL 清理、Full Planning Sheet Context、结构优先 chunking、Requirement Atom 抽取合并、Blueprint 生成、Cases 生成、Coverage Audit、orchestrator 接入和真实 workbook export。
+- V3 export 现在以 Generation Run DB 短期结果为唯一事实来源，并包含覆盖审计 Sheet。
+
+#### 已实现但未打通/占位功能
+
+- Vue 页面主工作流仍未迁移到 V3 polling UI；现阶段只补了前端 API wrapper。
+- BackgroundTasks 仍是进程内第一版 runtime，没有外部队列、服务重启恢复或跨进程调度。
+
+#### 未开始功能
+
+- V3 真实前端 run 创建/轮询/取消/重试/导出完整交互尚未迁移。
+- 生产级 worker 队列、run recovery 和长任务监控尚未实现。
+
+### 规范化调整
+
+- 保持旧 V1 `/api/v1/test-cases/export` stateless 导出行为不变，只改 V3 `/generation-runs/{run_id}/export`。
+- 新增测试按 TDD 先红后绿：红灯时 V3 endpoint 仍返回 JSON，无法作为 xlsx workbook 解析。
+
+### 文档同步
+
+- 已追加 `PROJECT_RECORD.md`。
+- 已更新 `CHANGELOG.md [Unreleased]` 交付能力条目。
+- `CONTEXT.md` 已有 `Generation Run`、`Requirement Atom`、`Coverage Audit` 术语，本刀未新增术语。
+
+### 未完成项与风险
+
+- 当前导出使用 run 内短期 DB 结果；Generation Run TTL 清理后仍不可导出详情。
+- 非 strict partial 导出会暴露 coverage gaps，但不代表人工验收通过。
+
+### 下一步建议
+
+- 迁移 `TestCaseGeneratorView.vue` 到 V3 run 创建、轮询、取消、重试和 workbook 下载流程。
+- 增加一个前端页面级测试，确认导出按钮使用 `exportGenerationRunWorkbook(runId)` 而不是旧 V1 payload export。
+
+## 进度记录 2026-07-03 18:30
+
+### 本次目标
+
+- 将 `/test-cases` 页面主生成/导出链路从旧同步 `generate/export` 切换到 V3 `Generation Run`。
+
+### 本次完成
+
+- `TestCaseGeneratorView.vue` 主按钮改为“全量生成用例”，创建 `Generation Run` 时提交 `source_evidence_run_id`、`planning_sheet_name`、reference selection、primary reference sheet 和 `strict_mode`。
+- 页面新增 V3 run 状态、2 秒轮询、localStorage 最近 run id 恢复、active run cancel、partial failed chunk retry、terminal run 后加载 atoms/cases。
+- 结果区新增 V3 stage progress、`测试用例`、`覆盖审计`、`需求原子`、`限制提示` tabs；`partial_completed` 显著提示 uncovered atom、failed chunk 和 export limitation。
+- 导出按钮改为 `exportGenerationRunWorkbook(run.id)`，不再向后端提交前端内存中的 blueprint/cases/stats。
+- 旧 snapshot preview 和 AI 整理稿保留为来源预览，并更新文案明确 V3 生成读取完整 selected Planning Sheet，不只读取预览 rows。
+- `testCases.ts` 增加/对齐 V3 API wrapper 名称：`createGenerationRun`、`getGenerationRun`、`cancelGenerationRun`、`retryFailedGenerationChunks`、`listGenerationRunAtoms`、`listGenerationRunCases`、`exportGenerationRunWorkbook`。
+- `types/testCases.ts` 补充前端 V3 stage progress、chunk progress、coverage audit summary 和 export limitation 类型。
+- 更新前端单测，迁移旧同步 generate/export 主路径断言到 V3 run 语义。
+- 更新 `CHANGELOG.md [Unreleased]`，记录页面主流程切换到 V3 Generation Run。
+
+### 同步文件
+
+- `frontend/src/views/TestCaseGeneratorView.vue`
+- `frontend/src/api/testCases.ts`
+- `frontend/src/types/testCases.ts`
+- `frontend/tests/unit/TestCaseGeneratorView.test.ts`
+- `frontend/tests/unit/testCasesApi.test.ts`
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- 红灯：`cd frontend && npm run test:unit -- TestCaseGeneratorView -t "creates a V3 generation run"` 首次因页面仍未调用 `createGenerationRun` 失败。
+- API wrapper：`cd frontend && npm run test:unit -- testCasesApi`，11 passed。
+- 页面单测：`cd frontend && npm run test:unit -- TestCaseGeneratorView`，75 passed。
+- 指定合并验证：`cd frontend && npm run test:unit -- testCasesApi TestCaseGeneratorView`，86 passed。
+- 构建：`cd frontend && npm run build`，通过；Vite 仍提示既有大 chunk warning。
+
+### 未完成项与风险
+
+- 本刀不新增 backend latest/active run API；刷新恢复只依赖当前浏览器 localStorage 的最近 run id。
+- 页面尚未展示真实 chunk 明细列表；chunk 进度来自 run summary 与安全 stage payload。
+- BackgroundTasks 仍是进程内第一版 runtime；服务重启恢复和生产级 worker queue 仍待后续实现。
+
+## 进度记录 2026-07-03 18:43
+
+### 本次目标
+
+- 只同步 V3 用例生成文档，不新增功能、不修改业务代码，并提交一次文档-only commit。
+
+### 本次完成
+
+- 将稳定 Spec `docs/specs/test-case-generation.md` 从 V1 同步主叙事改为 V3 Generation Run 当前主方向。
+- 明确 V3 主链路为 `Source Evidence Run -> Full Planning Sheet Context -> chunking -> Requirement Atom -> Blueprint -> Cases -> Coverage Audit -> export by run id`。
+- 将旧 `Planning Sheet Snapshot` 降级为来源预览/旧路径兼容概念，不再描述为 V3 全量生成输入。
+- 同步 V2 Source Evidence 文档，明确 `Source Evidence Run` 是来源证据会话，不等同于 `Generation Run` 或生成历史。
+- 同步 Spec 索引，补充 ADR 0003 和 V3 full-generation design 文档入口。
+- 更新 `CHANGELOG.md [Unreleased]` 文档治理条目。
+
+### 当前项目进度
+
+#### 已完成功能
+
+- V3 Generation Run 的设计、后端阶段、导出和前端主流程已在代码与变更记录中体现；本次把稳定文档同步到同一口径。
+
+#### 已实现但未打通/占位功能
+
+- 文档仍保留 V1/V2 历史背景和兼容边界，历史 plans 与旧进度记录不做改写。
+
+#### 未开始功能
+
+- 本次没有新增功能；不涉及 backend/frontend 代码、migration 或测试代码改动。
+
+### 规范化调整
+
+- 统一“当前主链路”表述为 V3 Generation Run。
+- 统一“Source Evidence Run”和“Generation Run”边界：前者提供短期来源证据，后者承载短期生成流程与结果。
+- 统一导出口径：V3 导出按 run id 从后端短期结果读取，不接收前端回传 cases/blueprint/stats 作为事实。
+
+### 文档同步
+
+- `docs/specs/test-case-generation.md`
+- `docs/specs/test-case-generation-v2-source-evidence.md`
+- `docs/specs/test-case-generation-v2-requirements.md`
+- `docs/specs/README.md`
+- `CHANGELOG.md`
+- `PROJECT_RECORD.md`
+
+### 验证
+
+- `rg -n "同步 generate|回传.*cases|PlanningSnapshotLimits|GENERATION_SNAPSHOT_MAX|旧同步" docs CONTEXT.md`：稳定 Spec 和 `CONTEXT.md` 无旧主链路残留；剩余命中来自 ADR 0003 的正确决策表述和历史 superpowers plans，按历史/决策材料保留。
+- `rg -n "回传.*cases|PlanningSnapshotLimits|GENERATION_SNAPSHOT_MAX|旧同步|前端回传|当前页面结果|基于当前页面结果|V1 主链路|构建兼容生成链路|生成接口已有|generation 从|export 通过" CONTEXT.md docs/specs/test-case-generation.md docs/specs/test-case-generation-v2-source-evidence.md docs/specs/test-case-generation-v2-requirements.md docs/specs/README.md CHANGELOG.md`：无命中。
+- `git diff --check -- CONTEXT.md docs/specs/test-case-generation.md docs/specs/test-case-generation-v2-source-evidence.md docs/specs/test-case-generation-v2-requirements.md docs/specs/README.md CHANGELOG.md PROJECT_RECORD.md`：通过；仅输出既有 LF/CRLF 换行提示。
+- 提交范围要求：只 stage 本次文档同步目标文件，不包含 `backend/`、`frontend/`、migration 或测试代码。
+
+### 未完成项与风险
+
+- 历史计划、归档文档和旧进度记录仍可能保留 V1/V2 叙述；本次只清理当前稳定 Spec、索引和变更记录。
+
+### 下一步建议
+
+- 后续每次改 V3 生成阶段或导出契约时，同步 `test-case-generation.md` 和相关 Source Evidence 边界文档，避免稳定 Spec 再次回到旧同步 generate 叙事。
