@@ -76,6 +76,9 @@ def test_read_xlsx_source_evidence_reads_visible_text_and_extracts_images(
     assert resource.filename == "excel_img_s001_001.png"
     assert resource.mime_type == "image/png"
     assert resource.metadata["local_path"] == "images/excel_img_s001_001.png"
+    assert resource.metadata["sheet"] == "活动配置"
+    assert resource.metadata["sheet_index"] == 1
+    assert resource.metadata["anchor"] == "B12"
     assert source_evidence_storage.resolve_source_evidence_path(
         1,
         2,

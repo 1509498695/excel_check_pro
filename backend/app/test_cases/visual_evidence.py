@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from dataclasses import dataclass
 import datetime
 import json
 import math
@@ -30,6 +31,7 @@ from backend.app.models import (
 from backend.app.test_cases import source_evidence_storage
 from backend.app.test_cases.schemas import (
     GenerationWarning,
+    ParsedSourceUnit,
     SourceEvidenceObservationListResponse,
     SourceEvidenceObservationResponse,
     SourceEvidenceVisualCandidateResponse,
@@ -37,6 +39,11 @@ from backend.app.test_cases.schemas import (
 )
 from backend.app.test_cases.source_evidence import (
     SourceEvidenceError,
+    _build_source_evidence_sheet_options,
+    _filter_resources_for_sheet,
+    _find_sheet_unit,
+    _load_parsed_source_for_context,
+    _resolve_snapshot_sheet_name,
     is_source_evidence_expired,
     source_evidence_now,
 )
@@ -63,6 +70,16 @@ VISUAL_KEYWORDS = (
     "奖励",
 )
 IMAGE_FILENAME_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff")
+
+
+@dataclass(frozen=True)
+class VisualSelectionState:
+    """视觉候选选择文件的兼容读取结果。"""
+
+    selected_refs: list[str]
+    selection_source: str
+    sheet_name: str | None
+    exists: bool
 
 
 async def prepare_visual_evidence_for_run(
@@ -108,13 +125,8 @@ async def prepare_visual_evidence_for_run(
             key=lambda item: (-int(item.get("rank_score") or 0), str(item.get("ref") or "")),
         )[:recommendation_budget]
     ]
-    selected_refs = _load_selected_refs(
-        project_id=run.project_id,
-        run_id=run.id,
-        fallback=recommended_refs,
-    )
     selectable_refs = {candidate["ref"] for candidate in ready_candidates}
-    selected_refs = [ref for ref in selected_refs if ref in selectable_refs]
+    selected_refs = [ref for ref in recommended_refs if ref in selectable_refs]
 
     for candidate in candidates:
         candidate["recommended"] = candidate["ref"] in recommended_refs
@@ -130,7 +142,11 @@ async def prepare_visual_evidence_for_run(
         run.project_id,
         run.id,
         VISUAL_SELECTIONS_PATH,
-        {"selected_refs": selected_refs},
+        {
+            "selected_refs": selected_refs,
+            "selection_source": "auto",
+            "sheet_name": None,
+        },
     )
     _update_resource_visual_packets(resources, candidates)
     await db.flush()
@@ -142,6 +158,7 @@ async def build_visual_candidates_response(
     *,
     project_id: int,
     run_id: int,
+    sheet_name: str | None = None,
 ) -> SourceEvidenceVisualCandidatesResponse:
     """读取视觉候选；候选文件缺失时对未过期 run 懒生成。"""
     run = await _get_project_run(db, project_id=project_id, run_id=run_id)
@@ -163,17 +180,55 @@ async def build_visual_candidates_response(
     try:
         candidates = _read_candidates(project_id=project_id, run_id=run_id)
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
-        return await prepare_visual_evidence_for_run(db, run=run)
+        await prepare_visual_evidence_for_run(db, run=run)
+        candidates = _read_candidates(project_id=project_id, run_id=run_id)
 
-    selected_refs = _load_selected_refs(
+    resources: list[SourceEvidenceResourceRecord] | None = None
+    resolved_sheet_name, selected_unit = _resolve_visual_sheet_scope(run, sheet_name)
+    if selected_unit is not None and resolved_sheet_name is not None:
+        resources = await _list_run_resources(db, project_id=project_id, run_id=run_id)
+        fallback_refs = _sheet_default_selected_refs(
+            candidates,
+            resources,
+            selected_unit=selected_unit,
+            sheet_name=resolved_sheet_name,
+        )
+    else:
+        fallback_refs = [candidate["ref"] for candidate in candidates if candidate.get("recommended")]
+
+    selection_state = _load_visual_selection_state(
         project_id=project_id,
         run_id=run_id,
-        fallback=[candidate["ref"] for candidate in candidates if candidate.get("recommended")],
+        fallback=fallback_refs,
+        fallback_sheet_name=resolved_sheet_name,
+    )
+    selected_refs, should_persist_selection = _resolve_selected_refs_for_scope(
+        selection_state,
+        fallback_refs=fallback_refs,
+        sheet_name=resolved_sheet_name,
     )
     selectable_refs = {candidate["ref"] for candidate in candidates if candidate.get("selectable")}
     selected_refs = [ref for ref in selected_refs if ref in selectable_refs]
     for candidate in candidates:
         candidate["selected"] = candidate["ref"] in selected_refs
+    if should_persist_selection:
+        _write_visual_selection_state(
+            project_id=project_id,
+            run_id=run_id,
+            selected_refs=selected_refs,
+            selection_source="auto",
+            sheet_name=resolved_sheet_name,
+        )
+        source_evidence_storage.write_source_evidence_json(
+            project_id,
+            run_id,
+            VISUAL_CANDIDATES_PATH,
+            candidates,
+        )
+        if resources is None:
+            resources = await _list_run_resources(db, project_id=project_id, run_id=run_id)
+        _update_resource_visual_packets(resources, candidates)
+        await db.flush()
     return _response_from_candidates(candidates, selected_refs=selected_refs)
 
 
@@ -183,15 +238,17 @@ async def save_visual_selections(
     project_id: int,
     run_id: int,
     selected_refs: list[str],
+    sheet_name: str | None = None,
 ) -> SourceEvidenceVisualCandidatesResponse:
     """替换式保存用户选择。"""
     run = await _get_project_run(db, project_id=project_id, run_id=run_id)
     _ensure_run_can_prepare_visual(run)
+    resolved_sheet_name, _selected_unit = _resolve_visual_sheet_scope(run, sheet_name)
     try:
         candidates = _read_candidates(project_id=project_id, run_id=run_id)
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
-        response = await prepare_visual_evidence_for_run(db, run=run)
-        candidates = [item.model_dump(mode="json") for item in response.items]
+        await prepare_visual_evidence_for_run(db, run=run)
+        candidates = _read_candidates(project_id=project_id, run_id=run_id)
 
     selectable_refs = {candidate["ref"] for candidate in candidates if candidate.get("selectable")}
     clean_selected_refs = [
@@ -203,7 +260,11 @@ async def save_visual_selections(
         project_id,
         run_id,
         VISUAL_SELECTIONS_PATH,
-        {"selected_refs": clean_selected_refs},
+        {
+            "selected_refs": clean_selected_refs,
+            "selection_source": "manual",
+            "sheet_name": resolved_sheet_name,
+        },
     )
     source_evidence_storage.write_source_evidence_json(
         project_id,
@@ -567,14 +628,131 @@ def _load_selected_refs(
     run_id: int,
     fallback: list[str],
 ) -> list[str]:
+    return _load_visual_selection_state(
+        project_id=project_id,
+        run_id=run_id,
+        fallback=fallback,
+        fallback_sheet_name=None,
+    ).selected_refs
+
+
+def _load_visual_selection_state(
+    *,
+    project_id: int,
+    run_id: int,
+    fallback: list[str],
+    fallback_sheet_name: str | None,
+) -> VisualSelectionState:
     try:
         payload = source_evidence_storage.read_source_evidence_json(project_id, run_id, VISUAL_SELECTIONS_PATH)
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
-        return fallback
+        return VisualSelectionState(
+            selected_refs=list(fallback),
+            selection_source="auto",
+            sheet_name=fallback_sheet_name,
+            exists=False,
+        )
     selected_refs = payload.get("selected_refs") if isinstance(payload, dict) else None
     if not isinstance(selected_refs, list):
-        return fallback
-    return [str(ref) for ref in selected_refs if isinstance(ref, str) and ref]
+        return VisualSelectionState(
+            selected_refs=list(fallback),
+            selection_source="auto",
+            sheet_name=fallback_sheet_name,
+            exists=True,
+        )
+    selection_source = str(payload.get("selection_source") or "auto")
+    if selection_source not in {"auto", "manual"}:
+        selection_source = "auto"
+    return VisualSelectionState(
+        selected_refs=[str(ref) for ref in selected_refs if isinstance(ref, str) and ref],
+        selection_source=selection_source,
+        sheet_name=_clean_sheet_name(payload.get("sheet_name")),
+        exists=True,
+    )
+
+
+def _write_visual_selection_state(
+    *,
+    project_id: int,
+    run_id: int,
+    selected_refs: list[str],
+    selection_source: str,
+    sheet_name: str | None,
+) -> None:
+    source_evidence_storage.write_source_evidence_json(
+        project_id,
+        run_id,
+        VISUAL_SELECTIONS_PATH,
+        {
+            "selected_refs": selected_refs,
+            "selection_source": selection_source if selection_source in {"auto", "manual"} else "auto",
+            "sheet_name": _clean_sheet_name(sheet_name),
+        },
+    )
+
+
+def _resolve_visual_sheet_scope(
+    run: SourceEvidenceRunRecord,
+    sheet_name: str | None,
+) -> tuple[str | None, ParsedSourceUnit | None]:
+    requested_sheet_name = _clean_sheet_name(sheet_name)
+    if requested_sheet_name is None:
+        return None, None
+    parsed = _load_parsed_source_for_context(
+        project_id=run.project_id,
+        run_id=run.id,
+        source_type=run.source_type,
+    )
+    if parsed is None or not _build_source_evidence_sheet_options(parsed):
+        return None, None
+    resolved_sheet_name = _resolve_snapshot_sheet_name(parsed, requested_sheet_name)
+    return resolved_sheet_name, _find_sheet_unit(parsed, resolved_sheet_name)
+
+
+def _sheet_default_selected_refs(
+    candidates: list[dict[str, Any]],
+    resources: list[SourceEvidenceResourceRecord],
+    *,
+    selected_unit: ParsedSourceUnit,
+    sheet_name: str,
+) -> list[str]:
+    sheet_resources = _filter_resources_for_sheet(
+        resources,
+        selected_unit=selected_unit,
+        sheet_name=sheet_name,
+    )
+    sheet_refs = {resource.ref for resource in sheet_resources}
+    return [
+        str(candidate.get("ref") or "")
+        for candidate in candidates
+        if str(candidate.get("ref") or "") in sheet_refs
+        and candidate.get("selectable")
+        and candidate.get("status") == "ready"
+    ]
+
+
+def _resolve_selected_refs_for_scope(
+    selection_state: VisualSelectionState,
+    *,
+    fallback_refs: list[str],
+    sheet_name: str | None,
+) -> tuple[list[str], bool]:
+    if sheet_name is None:
+        return selection_state.selected_refs, not selection_state.exists
+    if (
+        selection_state.selection_source == "manual"
+        and selection_state.exists
+        and selection_state.sheet_name in {None, sheet_name}
+    ):
+        return selection_state.selected_refs, False
+    return list(fallback_refs), True
+
+
+def _clean_sheet_name(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def _build_candidate(
@@ -1182,6 +1360,14 @@ def _candidate_warnings(
                 source="source_evidence",
                 level="info",
                 message=f"{unsupported_count} 个非图片附件已保留在资源清单中，暂不进入视觉观察。",
+            )
+        )
+    if any(item.selectable for item in items):
+        warnings.append(
+            GenerationWarning(
+                source="visual_evidence",
+                level="info",
+                message="未采纳资源不作为需求事实，需观察并显式采纳后才可进入生成。",
             )
         )
     return warnings

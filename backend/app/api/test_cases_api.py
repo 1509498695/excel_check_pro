@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.ai.credentials import AiProviderInvalid, AiProviderNotConfigured
@@ -27,13 +27,27 @@ from backend.app.test_cases.constants import (
     STANDARD_CASE_FIELDS,
     TEST_CASES_NOT_IMPLEMENTED_MESSAGE,
 )
-from backend.app.test_cases.generation import (
-    TestCaseGenerationPayloadError,
-    generate_test_case_response,
-)
 from backend.app.test_cases.exporter import (
     TEST_CASE_EXPORT_MIME_TYPE,
     build_test_case_export_workbook,
+)
+from backend.app.test_cases.generation_runs import (
+    GenerationRunError,
+    build_generation_run_export_placeholder,
+    cancel_generation_run,
+    create_generation_run,
+    get_generation_run_response,
+    list_generation_run_atoms,
+    list_generation_run_cases,
+    retry_failed_generation_chunks,
+)
+from backend.app.test_cases.generation_artifacts import (
+    get_generation_run_artifact_path,
+    list_generation_run_artifacts,
+    render_generation_run_artifacts,
+)
+from backend.app.test_cases.full_generation_orchestrator import (
+    run_generation_run_background_task,
 )
 from backend.app.test_cases.planning_snapshot import build_planning_snapshot
 from backend.app.test_cases.reference_library import (
@@ -60,9 +74,11 @@ from backend.app.test_cases.schemas import (
     SourceEvidenceCleanupAuditListResponse,
     SourceEvidenceCapabilityStatusResponse,
     SourceEvidenceRunCreateRequest,
+    SourceEvidenceSnapshotRequest,
     SourceEvidenceVisualSelectionRequest,
     TestCaseExportRequest,
     TestCaseGenerationRequest,
+    TestCaseGenerationRunCreateRequest,
 )
 from backend.app.test_cases.source_evidence_cleanup import (
     list_source_evidence_cleanup_audits,
@@ -203,6 +219,10 @@ def _raise_reference_library_error(error: ReferenceLibraryError) -> None:
 
 
 def _raise_source_evidence_error(error: SourceEvidenceError) -> None:
+    raise HTTPException(status_code=error.status_code, detail=error.message)
+
+
+def _raise_generation_run_error(error: GenerationRunError) -> None:
     raise HTTPException(status_code=error.status_code, detail=error.message)
 
 
@@ -415,6 +435,273 @@ async def create_planning_snapshot_brief(
     }
 
 
+@router.post("/generation-runs")
+async def create_generation_run_api(
+    payload: TestCaseGenerationRunCreateRequest,
+    background_tasks: BackgroundTasks,
+    _knowledge_guard: None = Depends(reject_public_knowledge_context),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """创建 V3 Generation Run，并按异步 run 语义启动后台 orchestrator。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await create_generation_run(
+            db,
+            project_id=project_id,
+            created_by=ctx.user_id,
+            payload=payload,
+        )
+        await db.commit()
+    except GenerationRunError as error:
+        await db.rollback()
+        _raise_generation_run_error(error)
+    background_tasks.add_task(
+        run_generation_run_background_task,
+        project_id=project_id,
+        run_id=result.id,
+        retry_failed_chunks_only=False,
+    )
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.get("/generation-runs/{run_id}")
+async def get_generation_run_api(
+    run_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """读取 V3 Generation Run 摘要，跨项目不可见。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await get_generation_run_response(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+        )
+        await db.commit()
+    except GenerationRunError as error:
+        await db.rollback()
+        _raise_generation_run_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.post("/generation-runs/{run_id}/cancel")
+async def cancel_generation_run_api(
+    run_id: int,
+    _knowledge_guard: None = Depends(reject_public_knowledge_context),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """取消仍处于 active 状态的 V3 Generation Run。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await cancel_generation_run(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+            cancelled_by=ctx.user_id,
+        )
+        await db.commit()
+    except GenerationRunError as error:
+        await db.rollback()
+        _raise_generation_run_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.post("/generation-runs/{run_id}/retry-failed-chunks")
+async def retry_failed_generation_chunks_api(
+    run_id: int,
+    background_tasks: BackgroundTasks,
+    _knowledge_guard: None = Depends(reject_public_knowledge_context),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """重试 failed chunk，并启动后台 orchestrator 重建后续结果。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await retry_failed_generation_chunks(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+        )
+        await db.commit()
+    except GenerationRunError as error:
+        await db.rollback()
+        _raise_generation_run_error(error)
+    background_tasks.add_task(
+        run_generation_run_background_task,
+        project_id=project_id,
+        run_id=run_id,
+        retry_failed_chunks_only=True,
+    )
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.get("/generation-runs/{run_id}/atoms")
+async def list_generation_run_atoms_api(
+    run_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """读取 V3 Generation Run 的需求原子结果。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await list_generation_run_atoms(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+        )
+        await db.commit()
+    except GenerationRunError as error:
+        await db.rollback()
+        _raise_generation_run_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.get("/generation-runs/{run_id}/cases")
+async def list_generation_run_cases_api(
+    run_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """读取 V3 Generation Run 的用例结果。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await list_generation_run_cases(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+        )
+        await db.commit()
+    except GenerationRunError as error:
+        await db.rollback()
+        _raise_generation_run_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.get("/generation-runs/{run_id}/artifacts")
+async def list_generation_run_artifacts_api(
+    run_id: int,
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """列出 Generation Run 自动生成且可选择预览的文件产物。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await list_generation_run_artifacts(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+        )
+        await db.commit()
+    except GenerationRunError as error:
+        await db.rollback()
+        _raise_generation_run_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.get("/generation-runs/{run_id}/artifacts/{artifact_key}")
+async def download_generation_run_artifact_api(
+    run_id: int,
+    artifact_key: str,
+    inline: bool = Query(default=False),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """读取已生成文件；该接口不重新生成内容。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        path, item = await get_generation_run_artifact_path(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+            artifact_key=artifact_key,
+        )
+        await db.commit()
+    except GenerationRunError as error:
+        await db.rollback()
+        _raise_generation_run_error(error)
+    return FileResponse(
+        path,
+        media_type=item.media_type,
+        filename=item.file_name,
+        content_disposition_type="inline" if inline else "attachment",
+    )
+
+
+@router.post("/generation-runs/{run_id}/artifacts/retry")
+async def retry_generation_run_artifacts_api(
+    run_id: int,
+    _knowledge_guard: None = Depends(reject_public_knowledge_context),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict[str, Any]:
+    """只重跑确定性文件渲染，不重跑 AI、来源读取或用例生成。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        result = await render_generation_run_artifacts(
+            db,
+            project_id=project_id,
+            run_id=run_id,
+            allow_terminal=True,
+        )
+        await db.commit()
+    except GenerationRunError as error:
+        await db.rollback()
+        _raise_generation_run_error(error)
+    return {"code": 200, "msg": "ok", "data": result.model_dump(mode="json")}
+
+
+@router.post("/generation-runs/{run_id}/export")
+async def export_generation_run_api(
+    run_id: int,
+    _knowledge_guard: None = Depends(reject_public_knowledge_context),
+    ctx: CurrentUserContext = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """兼容旧按钮：下载 Generation Run 已生成的 Excel 文件。"""
+    project_id = _require_test_case_project(ctx)
+    try:
+        try:
+            path, item = await get_generation_run_artifact_path(
+                db,
+                project_id=project_id,
+                run_id=run_id,
+                artifact_key="workbook",
+            )
+        except GenerationRunError:
+            # 兼容升级前已完成但尚无产物元数据的 run；进行确定性渲染前，
+            # 仍沿用旧导出契约校验状态、过期时间、严格模式与非空用例。
+            await build_generation_run_export_placeholder(
+                db,
+                project_id=project_id,
+                run_id=run_id,
+            )
+            await render_generation_run_artifacts(
+                db,
+                project_id=project_id,
+                run_id=run_id,
+                allow_terminal=True,
+            )
+            path, item = await get_generation_run_artifact_path(
+                db,
+                project_id=project_id,
+                run_id=run_id,
+                artifact_key="workbook",
+            )
+        await db.commit()
+    except GenerationRunError as error:
+        await db.rollback()
+        _raise_generation_run_error(error)
+    return FileResponse(
+        path,
+        media_type=item.media_type,
+        filename=item.file_name,
+        content_disposition_type="attachment",
+    )
+
+
 @router.post("/generate")
 async def generate_test_cases(
     payload: TestCaseGenerationRequest,
@@ -422,30 +709,13 @@ async def generate_test_cases(
     ctx: CurrentUserContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
-    """按 QA Case Method 生成蓝图和测试用例。"""
-    project_id = _require_test_case_project(ctx)
-    try:
-        result = await generate_test_case_response(
-            payload,
-            db=db,
-            project_id=project_id,
-        )
-    except (AiProviderInvalid, AiProviderNotConfigured) as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    except ProviderConnectionError as error:
-        raise HTTPException(status_code=error.status_code, detail=error.message) from error
-    except ReferenceLibraryError as error:
-        _raise_reference_library_error(error)
-    except SourceEvidenceError as error:
-        _raise_source_evidence_error(error)
-    except TestCaseGenerationPayloadError as error:
-        raise HTTPException(status_code=502, detail=str(error)) from error
-
-    return {
-        "code": 200,
-        "msg": "ok",
-        "data": result.model_dump(mode="json"),
-    }
+    """旧同步生成入口已停用，V3 使用 Generation Run。"""
+    _ = payload, db
+    _require_test_case_project(ctx)
+    raise HTTPException(
+        status_code=410,
+        detail="同步用例生成入口已停用，请使用 V3 Generation Run。",
+    )
 
 
 @router.post("/export")
@@ -463,6 +733,7 @@ async def export_test_cases(
                 db,
                 project_id=project_id,
                 run_id=payload.source_evidence_run_id,
+                planning_sheet_name=payload.planning_sheet_name,
                 adopted_visual_evidence_ids=payload.adopted_visual_evidence_ids,
             )
         except SourceEvidenceError as error:
@@ -578,6 +849,7 @@ async def get_source_evidence_resources_api(
 @router.get("/source-evidence-runs/{run_id}/visual-candidates")
 async def get_source_evidence_visual_candidates_api(
     run_id: int,
+    sheet_name: str | None = Query(default=None),
     ctx: CurrentUserContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict[str, Any]:
@@ -588,6 +860,7 @@ async def get_source_evidence_visual_candidates_api(
             db,
             project_id=project_id,
             run_id=run_id,
+            sheet_name=sheet_name,
         )
         await db.commit()
     except SourceEvidenceError as error:
@@ -611,6 +884,7 @@ async def save_source_evidence_visual_selections_api(
             project_id=project_id,
             run_id=run_id,
             selected_refs=payload.selected_refs,
+            sheet_name=payload.sheet_name,
         )
         await db.commit()
     except SourceEvidenceError as error:
@@ -709,6 +983,7 @@ async def revoke_source_evidence_visual_evidence_api(
 @router.post("/source-evidence-runs/{run_id}/snapshot")
 async def create_source_evidence_snapshot_api(
     run_id: int,
+    payload: SourceEvidenceSnapshotRequest | None = Body(default=None),
     _knowledge_guard: None = Depends(reject_public_knowledge_context),
     ctx: CurrentUserContext = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -720,6 +995,7 @@ async def create_source_evidence_snapshot_api(
             db,
             project_id=project_id,
             run_id=run_id,
+            sheet_name=payload.sheet_name if payload else None,
         )
     except SourceEvidenceError as error:
         _raise_source_evidence_error(error)

@@ -13,6 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from backend.app.database import async_session_factory
 from backend.app.models import ExecutionResultItemRecord, ExecutionRunRecord
+from backend.app.test_cases.generation_runs import (
+    GenerationRunCleanupRuns,
+    cleanup_expired_generation_runs,
+    collect_expired_generation_runs,
+)
 from backend.app.test_cases.source_evidence_cleanup import (
     SourceEvidenceCleanupRuns,
     cleanup_expired_source_evidence_runs,
@@ -65,6 +70,9 @@ class RuntimeCleanupReport:
     execution_runs: CleanupExecutionRuns = field(default_factory=CleanupExecutionRuns)
     source_evidence_runs: SourceEvidenceCleanupRuns = field(
         default_factory=SourceEvidenceCleanupRuns
+    )
+    generation_runs: GenerationRunCleanupRuns = field(
+        default_factory=GenerationRunCleanupRuns
     )
 
     def to_dict(self) -> dict:
@@ -365,6 +373,10 @@ async def collect_runtime_cleanup_candidates(
                 session,
                 now=current_time,
             )
+            generation_runs = await collect_expired_generation_runs(
+                session,
+                now=current_time,
+            )
     else:
         execution_runs = await _collect_execution_runs(
             db,
@@ -375,6 +387,10 @@ async def collect_runtime_cleanup_candidates(
             db,
             now=current_time,
         )
+        generation_runs = await collect_expired_generation_runs(
+            db,
+            now=current_time,
+        )
 
     return RuntimeCleanupReport(
         dry_run=True,
@@ -382,6 +398,7 @@ async def collect_runtime_cleanup_candidates(
         skipped=skipped,
         execution_runs=execution_runs,
         source_evidence_runs=source_evidence_runs,
+        generation_runs=generation_runs,
     )
 
 
@@ -410,6 +427,16 @@ async def _cleanup_source_evidence_runs(
     now: dt.datetime,
 ) -> SourceEvidenceCleanupRuns:
     cleaned = await cleanup_expired_source_evidence_runs(db, now=now, cleaned_by=None)
+    await db.commit()
+    return cleaned
+
+
+async def _cleanup_generation_runs(
+    db: AsyncSession,
+    *,
+    now: dt.datetime,
+) -> GenerationRunCleanupRuns:
+    cleaned = await cleanup_expired_generation_runs(db, now=now)
     await db.commit()
     return cleaned
 
@@ -468,9 +495,17 @@ async def cleanup_runtime(
                 session,
                 now=now or _utc_now(),
             )
+            generation_runs = await _cleanup_generation_runs(
+                session,
+                now=now or _utc_now(),
+            )
     else:
         await _delete_execution_runs(db, report.execution_runs)
         source_evidence_runs = await _cleanup_source_evidence_runs(
+            db,
+            now=now or _utc_now(),
+        )
+        generation_runs = await _cleanup_generation_runs(
             db,
             now=now or _utc_now(),
         )
@@ -482,4 +517,5 @@ async def cleanup_runtime(
         skipped=skipped,
         execution_runs=report.execution_runs,
         source_evidence_runs=source_evidence_runs,
+        generation_runs=generation_runs,
     )

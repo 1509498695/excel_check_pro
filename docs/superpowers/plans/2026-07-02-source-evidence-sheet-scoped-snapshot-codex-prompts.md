@@ -219,7 +219,7 @@ python -m pytest backend/tests/test_source_evidence_generation.py backend/tests/
 ```text
 [$grill-me](C:\Users\chenzhen\.agents\skills\grill-me\SKILL.md) [$grill-with-docs](C:\Users\chenzhen\.agents\skills\grill-with-docs\SKILL.md)
 
-接前端：Source Evidence workbook run 显示 Sheet 下拉，默认第一张 Sheet；读取快照时传 sheet_name；切换 Sheet 后清空旧快照、AI 整理稿、生成结果和导出状态。
+接前端：Source Evidence workbook run 显示 Sheet 选择器，默认第一张 Sheet；读取快照时传 sheet_name；切换 Sheet 后清空旧快照、AI 整理稿、生成结果和导出状态。
 
 必须读取：
 - frontend/src/types/testCases.ts
@@ -260,7 +260,7 @@ npm run build
 ```text
 [$grill-me](C:\Users\chenzhen\.agents\skills\grill-me\SKILL.md) [$grill-with-docs](C:\Users\chenzhen\.agents\skills\grill-with-docs\SKILL.md)
 
-同步文档，确保 V2 Source Evidence 不再写成“Source Evidence snapshot 读取全部可见 Sheet”。这一刀只改文档，不改代码。
+同步文档，确保 V2 Source Evidence 不再写成“Source Evidence snapshot 读取整份可见工作簿内容”。这一刀只改文档，不改代码。
 
 必须读取：
 - CONTEXT.md
@@ -274,7 +274,7 @@ npm run build
 目标：
 - `CONTEXT.md` 保持 `Planning Sheet` 是单个 worksheet，包含该 Sheet 文本/表格/视觉资源。
 - `docs/specs/test-case-generation-v2-source-evidence.md` 更新工作簿读取规则：run 全量读取，snapshot/generation 按选中 Sheet。
-- 删除或改写“Source Evidence 不提供 Sheet 下拉筛选 / snapshot 读取全集”的旧描述。
+- 删除或改写“Source Evidence 缺少 Sheet 选择器 / snapshot 读取整份工作簿内容”的旧描述。
 - 明确当前 Sheet 图片默认读取并默认选中为 observation candidates，但不是自动采纳。
 - `docs/specs/test-case-generation-v2-requirements.md` 同步前端需求、API 需求和验收标准。
 - `CHANGELOG.md` 增加用户可见变更摘要。
@@ -282,7 +282,7 @@ npm run build
 
 建议验证：
 cd D:\project\excel-checkers\excel_check_pro
-rg -n "不提供 Sheet|全集|所有可见 Sheet|Sheet 下拉|默认观察全部图片" docs CONTEXT.md CHANGELOG.md PROJECT_RECORD.md
+rg -n "<旧 Source Evidence Sheet 范围措辞>" docs CONTEXT.md CHANGELOG.md PROJECT_RECORD.md
 git diff --check -- CONTEXT.md docs/specs/test-case-generation-v2-source-evidence.md docs/specs/test-case-generation-v2-requirements.md CHANGELOG.md PROJECT_RECORD.md
 ```
 

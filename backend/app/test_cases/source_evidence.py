@@ -43,6 +43,7 @@ from backend.app.test_cases.schemas import (
     GenerationWarning,
     ParsedSource,
     ParsedSourceResource,
+    ParsedSourceUnit,
     PlanningSnapshotCell,
     PlanningSnapshotResponse,
     PlanningSnapshotRow,
@@ -50,6 +51,7 @@ from backend.app.test_cases.schemas import (
     SourceEvidenceResourceResponse,
     SourceEvidenceRunCreateRequest,
     SourceEvidenceRunResponse,
+    SourceEvidenceSheetOption,
 )
 from backend.config import settings
 
@@ -115,6 +117,7 @@ class AdoptedVisualEvidenceContext:
     """生成/导出可用的已采纳视觉证据安全摘要。"""
 
     id: int
+    resource_id: int
     ref: str
     position: str
     summary: str
@@ -559,7 +562,16 @@ async def build_source_evidence_run_response(
         project_id=project_id,
         run_id=run.id,
     )
-    return _run_response(run, resource_count=len(resources))
+    parsed = _load_parsed_source_for_context(
+        project_id=project_id,
+        run_id=run.id,
+        source_type=run.source_type,
+    )
+    return _run_response(
+        run,
+        resource_count=len(resources),
+        sheet_options=_build_source_evidence_sheet_options(parsed),
+    )
 
 
 async def build_source_evidence_resources_response(
@@ -666,6 +678,7 @@ async def build_source_evidence_snapshot(
     *,
     project_id: int,
     run_id: int,
+    sheet_name: str | None = None,
 ) -> PlanningSnapshotResponse:
     """把 Source Evidence Run 转成兼容 PlanningSnapshotResponse 的快照。"""
     run = await get_project_source_evidence_run(db, project_id=project_id, run_id=run_id)
@@ -674,22 +687,49 @@ async def build_source_evidence_snapshot(
         raise SourceEvidenceError(409, "Source Evidence Run 尚未 ready，不能生成快照。")
 
     parsed = _load_parsed_source_for_snapshot(run)
+    resolved_sheet_name = _resolve_snapshot_sheet_name(parsed, sheet_name)
+    selected_sheet_unit = _find_sheet_unit(parsed, resolved_sheet_name)
     resources = await list_project_source_evidence_resources(
         db,
         project_id=project_id,
         run_id=run_id,
     )
-    rows = _build_snapshot_rows(run.source_type, parsed, resources)
+    snapshot_resources = (
+        _filter_resources_for_sheet(
+            resources,
+            selected_unit=selected_sheet_unit,
+            sheet_name=resolved_sheet_name,
+        )
+        if selected_sheet_unit is not None
+        else resources
+    )
+    rows = _build_snapshot_rows(
+        run.source_type,
+        parsed,
+        snapshot_resources,
+        selected_sheet_unit=selected_sheet_unit,
+    )
     warnings = _merge_snapshot_warnings(
         parsed.warnings,
-        resources,
+        snapshot_resources,
         _manifest_warnings(run),
-        textless_source=_is_textless_source(parsed),
+        textless_source=False if selected_sheet_unit is not None else _is_textless_source(parsed),
         source_type=parsed.source_type or run.source_type,
     )
+    if selected_sheet_unit is not None and not _sheet_unit_has_text_cells(selected_sheet_unit):
+        warnings = _deduplicate_warnings(
+            [
+                *warnings,
+                GenerationWarning(
+                    source="source_evidence",
+                    level="warning",
+                    message=f"所选 Sheet 无文本单元格：{resolved_sheet_name}。",
+                ),
+            ]
+        )
     return PlanningSnapshotResponse(
         source_summary=_source_summary(run, parsed),
-        sheet_name="Source Evidence",
+        sheet_name=resolved_sheet_name,
         rows=rows,
         columns=SOURCE_EVIDENCE_SNAPSHOT_COLUMNS,
         non_empty_cell_count=sum(1 for row in rows for cell in row.cells if cell.value.strip()),
@@ -704,6 +744,7 @@ async def build_source_evidence_safe_context(
     project_id: int,
     run_id: int,
     planning_snapshot: PlanningSnapshotResponse | None = None,
+    planning_sheet_name: str | None = None,
     adopted_visual_evidence_ids: list[int] | None = None,
 ) -> SourceEvidenceSafeContext:
     """构造生成/导出用安全摘要，不返回原文、token、路径或 prompt。"""
@@ -723,11 +764,22 @@ async def build_source_evidence_safe_context(
             planning_snapshot,
             source_summary=source_summary,
         )
+    active_sheet_name = _resolve_safe_context_sheet_name(
+        parsed,
+        planning_snapshot.sheet_name if planning_snapshot is not None else planning_sheet_name,
+        require_sheet_name_for_multi_sheet=planning_snapshot is None,
+    )
+    selected_sheet_unit = _find_sheet_unit(parsed, active_sheet_name) if parsed is not None else None
 
     resources = await list_project_source_evidence_resources(
         db,
         project_id=project_id,
         run_id=run_id,
+    )
+    scoped_resources = _safe_context_resources_for_sheet(
+        resources,
+        selected_unit=selected_sheet_unit,
+        sheet_name=active_sheet_name,
     )
     manifest = _json_object(run.raw_manifest_json)
     base_warnings = _deduplicate_warnings(
@@ -742,6 +794,9 @@ async def build_source_evidence_safe_context(
         run=run,
         parsed=parsed,
         resources=resources,
+        scoped_resources=scoped_resources,
+        selected_sheet_unit=selected_sheet_unit,
+        sheet_name=active_sheet_name,
         adopted_visual_evidence_ids=adopted_visual_evidence_ids or [],
         existing_warnings=base_warnings,
     )
@@ -755,19 +810,23 @@ async def build_source_evidence_safe_context(
         source_summary=source_summary,
         ttl_status=ttl_status,
         parsed=parsed,
-        resources=resources,
+        resources=scoped_resources,
         adopted_evidence=visual_validate.adopted_evidence,
         manifest=manifest,
         warnings=warnings,
+        sheet_name=active_sheet_name,
+        selected_sheet_unit=selected_sheet_unit,
     )
     export_summary = _build_source_evidence_export_summary(
         run=run,
         source_summary=source_summary,
         ttl_status=ttl_status,
         parsed=parsed,
-        resources=resources,
+        resources=scoped_resources,
         adopted_evidence=visual_validate.adopted_evidence,
         warnings=warnings,
+        sheet_name=active_sheet_name,
+        selected_sheet_unit=selected_sheet_unit,
     )
     return SourceEvidenceSafeContext(
         run_id=run.id,
@@ -1152,6 +1211,7 @@ def _run_response(
     run: SourceEvidenceRunRecord,
     *,
     resource_count: int,
+    sheet_options: list[SourceEvidenceSheetOption] | None = None,
 ) -> SourceEvidenceRunResponse:
     manifest_warnings = _manifest_warnings(run)
     status = "expired" if run.status != "cleaned" and is_source_evidence_expired(run) else run.status
@@ -1166,7 +1226,149 @@ def _run_response(
         expires_at=_datetime_to_iso(run.expires_at),
         warnings=manifest_warnings,
         resource_count=resource_count,
+        sheet_options=sheet_options or [],
     )
+
+
+def _build_source_evidence_sheet_options(
+    parsed: ParsedSource | None,
+) -> list[SourceEvidenceSheetOption]:
+    """从 parsed source 暴露安全 Sheet 摘要。"""
+    if parsed is None:
+        return []
+
+    options: list[SourceEvidenceSheetOption] = []
+    for unit in parsed.source_units:
+        if unit.kind != "sheet":
+            continue
+        name = unit.title.strip()
+        if not name:
+            continue
+        options.append(
+            SourceEvidenceSheetOption(
+                name=name,
+                kind=unit.kind,
+                cell_count=len(unit.cells),
+                resource_count=_safe_non_negative_int(
+                    unit.metadata.get("resource_count")
+                ),
+                is_default=not options,
+            )
+        )
+    return options
+
+
+def _safe_non_negative_int(value: Any) -> int:
+    try:
+        count = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(count, 0)
+
+
+def _resolve_snapshot_sheet_name(
+    parsed: ParsedSource,
+    sheet_name: str | None,
+) -> str:
+    options = _build_source_evidence_sheet_options(parsed)
+    if not options:
+        return "Source Evidence"
+
+    requested_sheet_name = sheet_name.strip() if sheet_name else ""
+    if not requested_sheet_name:
+        if len(options) == 1:
+            return options[0].name
+        raise SourceEvidenceError(400, "请选择 Sheet 后再生成快照。")
+
+    available_names = {option.name for option in options}
+    if requested_sheet_name not in available_names:
+        raise SourceEvidenceError(400, f"Sheet 不存在：{requested_sheet_name}")
+    return requested_sheet_name
+
+
+def _find_sheet_unit(
+    parsed: ParsedSource,
+    sheet_name: str,
+) -> ParsedSourceUnit | None:
+    if sheet_name == "Source Evidence":
+        return None
+    for unit in parsed.source_units:
+        if unit.kind == "sheet" and unit.title.strip() == sheet_name:
+            return unit
+    raise SourceEvidenceError(400, f"Sheet 不存在：{sheet_name}")
+
+
+def _sheet_unit_has_text_cells(unit: ParsedSourceUnit) -> bool:
+    return any(str(cell.text or "").strip() for cell in unit.cells)
+
+
+def _sheet_index_value(unit: ParsedSourceUnit) -> int | None:
+    return _optional_int(unit.metadata.get("sheet_index"))
+
+
+def _filter_resources_for_sheet(
+    resources: list[SourceEvidenceResourceRecord],
+    *,
+    selected_unit: ParsedSourceUnit,
+    sheet_name: str,
+) -> list[SourceEvidenceResourceRecord]:
+    return [
+        resource
+        for resource in resources
+        if _resource_matches_sheet(
+            resource,
+            selected_unit=selected_unit,
+            sheet_name=sheet_name,
+        )
+    ]
+
+
+def _resource_matches_sheet(
+    resource: SourceEvidenceResourceRecord,
+    *,
+    selected_unit: ParsedSourceUnit,
+    sheet_name: str,
+) -> bool:
+    metadata = _json_object(resource.metadata_json)
+
+    metadata_sheet_name = str(
+        metadata.get("sheet") or metadata.get("sheet_title") or ""
+    ).strip()
+    if metadata_sheet_name:
+        return metadata_sheet_name == sheet_name
+
+    metadata_sheet_id = str(metadata.get("sheet_id") or "").strip()
+    if metadata_sheet_id:
+        selected_sheet_id = str(selected_unit.metadata.get("sheet_id") or "").strip()
+        return bool(selected_sheet_id and metadata_sheet_id == selected_sheet_id)
+
+    metadata_sheet_index = _optional_int(metadata.get("sheet_index"))
+    if metadata_sheet_index is not None:
+        return metadata_sheet_index == _sheet_index_value(selected_unit)
+
+    position_sheet_name = _resource_position_sheet_name(resource.position)
+    return bool(position_sheet_name and position_sheet_name == sheet_name)
+
+
+def _optional_int(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _resource_position_sheet_name(position: str) -> str:
+    text = str(position or "").strip()
+    if not text:
+        return ""
+    excel_prefix = "excel:sheet="
+    if text.startswith(excel_prefix):
+        return text[len(excel_prefix) :].split(":", 1)[0].strip()
+    if "!" in text:
+        return text.split("!", 1)[0].strip()
+    return ""
 
 
 def _resource_response(
@@ -1311,6 +1513,8 @@ def _build_snapshot_rows(
     run_source_type: str,
     parsed: ParsedSource,
     resources: list[SourceEvidenceResourceRecord],
+    *,
+    selected_sheet_unit: ParsedSourceUnit | None = None,
 ) -> list[PlanningSnapshotRow]:
     rows: list[PlanningSnapshotRow] = []
     rendered_resource_refs: set[str] = set()
@@ -1318,8 +1522,13 @@ def _build_snapshot_rows(
     content_source_type = _snapshot_content_source_type(source_type, parsed.doc_type)
     next_row_index = 1
     fact_row_count = 0
+    resource_title = parsed.title
 
-    for unit in parsed.source_units:
+    units = [selected_sheet_unit] if selected_sheet_unit is not None else parsed.source_units
+    if selected_sheet_unit is not None:
+        resource_title = selected_sheet_unit.title
+
+    for unit in units:
         if unit.kind == "sheet":
             for cell in unit.cells:
                 content = str(cell.text or "").strip()
@@ -1388,21 +1597,22 @@ def _build_snapshot_rows(
             next_row_index += 1
             fact_row_count += 1
 
-    for line in _iter_snapshot_text_lines(parsed.markdown):
-        rows.append(
-            _snapshot_row(
-                row_index=next_row_index,
-                source_type=content_source_type,
-                position=f"{parsed.doc_type}:line:{next_row_index}",
-                title=parsed.title,
-                content=line,
-                evidence_status="text",
+    if selected_sheet_unit is None:
+        for line in _iter_snapshot_text_lines(parsed.markdown):
+            rows.append(
+                _snapshot_row(
+                    row_index=next_row_index,
+                    source_type=content_source_type,
+                    position=f"{parsed.doc_type}:line:{next_row_index}",
+                    title=parsed.title,
+                    content=line,
+                    evidence_status="text",
+                )
             )
-        )
-        next_row_index += 1
-        fact_row_count += 1
+            next_row_index += 1
+            fact_row_count += 1
 
-    if fact_row_count == 0 and _is_textless_source(parsed):
+    if selected_sheet_unit is None and fact_row_count == 0 and _is_textless_source(parsed):
         rows.append(
             _snapshot_row(
                 row_index=next_row_index,
@@ -1426,7 +1636,7 @@ def _build_snapshot_rows(
                 row_index=next_row_index,
                 source_type=_snapshot_resource_source_type(source_type, resource.resource_type),
                 position=resource.position or f"{resource.resource_type}:{resource.ref}",
-                title=parsed.title,
+                title=resource_title,
                 content=_resource_snapshot_content(resource),
                 evidence_status="pending_visual",
             )
@@ -1613,6 +1823,47 @@ def _ensure_snapshot_matches_source_evidence(
         )
 
 
+def _resolve_safe_context_sheet_name(
+    parsed: ParsedSource | None,
+    sheet_name: str | None,
+    *,
+    require_sheet_name_for_multi_sheet: bool,
+) -> str:
+    if parsed is None:
+        return "Source Evidence"
+    options = _build_source_evidence_sheet_options(parsed)
+    if not options:
+        return "Source Evidence"
+
+    requested_sheet_name = sheet_name.strip() if sheet_name else ""
+    if not requested_sheet_name:
+        if len(options) == 1:
+            return options[0].name
+        if require_sheet_name_for_multi_sheet:
+            raise SourceEvidenceError(400, "请选择 Sheet 后再导出。")
+        raise SourceEvidenceError(400, "请选择 Sheet 后再生成。")
+
+    available_names = {option.name for option in options}
+    if requested_sheet_name not in available_names:
+        raise SourceEvidenceError(400, f"Sheet 不存在：{requested_sheet_name}")
+    return requested_sheet_name
+
+
+def _safe_context_resources_for_sheet(
+    resources: list[SourceEvidenceResourceRecord],
+    *,
+    selected_unit: ParsedSourceUnit | None,
+    sheet_name: str,
+) -> list[SourceEvidenceResourceRecord]:
+    if selected_unit is None:
+        return resources
+    return _filter_resources_for_sheet(
+        resources,
+        selected_unit=selected_unit,
+        sheet_name=sheet_name,
+    )
+
+
 async def validate_source_evidence_for_generation(
     db: AsyncSession,
     *,
@@ -1622,6 +1873,9 @@ async def validate_source_evidence_for_generation(
     resources: list[SourceEvidenceResourceRecord],
     adopted_visual_evidence_ids: list[int],
     existing_warnings: list[GenerationWarning],
+    scoped_resources: list[SourceEvidenceResourceRecord] | None = None,
+    selected_sheet_unit: ParsedSourceUnit | None = None,
+    sheet_name: str = "Source Evidence",
 ) -> VisualValidateResult:
     """生成/导出前执行视觉证据硬校验和安全 warning 汇总。"""
     _ensure_run_can_be_used(run)
@@ -1633,6 +1887,22 @@ async def validate_source_evidence_for_generation(
         evidence_ids=adopted_visual_evidence_ids,
         resources_by_id=resources_by_id,
     )
+    scope_resources = scoped_resources if scoped_resources is not None else resources
+    scope_resource_ids = {
+        resource.id for resource in scope_resources if resource.id is not None
+    }
+    for item in adopted_evidence:
+        resource = resources_by_id.get(item.resource_id)
+        if resource is None:
+            raise SourceEvidenceError(409, "已采纳视觉证据与当前资源清单不一致，请重新观察并采纳。")
+        if resource.status != "adopted":
+            raise SourceEvidenceError(400, "只有已采纳的视觉证据可以进入生成。")
+        if selected_sheet_unit is not None and resource.id not in scope_resource_ids:
+            raise SourceEvidenceError(
+                400,
+                f"已采纳视觉证据不属于当前 Sheet：{item.ref}",
+            )
+
     adopted_refs = frozenset(item.ref for item in adopted_evidence if item.ref)
     resource_refs = {
         resource.ref
@@ -1649,7 +1919,7 @@ async def validate_source_evidence_for_generation(
 
     visual_warnings: list[GenerationWarning] = []
     image_resources = [
-        resource for resource in resources if _resource_is_image_like(resource)
+        resource for resource in scope_resources if _resource_is_image_like(resource)
     ]
     unobserved_count = sum(
         1
@@ -1751,6 +2021,7 @@ async def _load_adopted_visual_evidence_context(
         contexts.append(
             AdoptedVisualEvidenceContext(
                 id=record.id,
+                resource_id=record.resource_id,
                 ref=record.ref,
                 position=record.position,
                 summary=_coerce_text(detail.get("summary")),
@@ -1874,14 +2145,23 @@ def _build_source_evidence_prompt_context(
     adopted_evidence: list[AdoptedVisualEvidenceContext],
     manifest: dict[str, Any],
     warnings: list[GenerationWarning],
+    sheet_name: str,
+    selected_sheet_unit: ParsedSourceUnit | None,
 ) -> str:
     lines = [
         "Source Evidence 读取上下文：",
         f"- Run ID: {run.id}",
         f"- 来源摘要：{source_summary}",
         f"- TTL 状态：{ttl_status}",
+        f"- 当前 Planning Sheet：{sheet_name}",
+        "- 需求事实范围仅限当前 Planning Sheet 的文本、表格和已采纳视觉证据。",
         "读取范围：",
-        *_source_scope_lines(parsed=parsed, manifest=manifest),
+        *_source_scope_lines(
+            parsed=parsed,
+            manifest=manifest,
+            sheet_name=sheet_name,
+            selected_sheet_unit=selected_sheet_unit,
+        ),
         "排除/限制：",
         *_source_exclusion_lines(warnings),
         "资源清单摘要：",
@@ -1913,13 +2193,23 @@ def _build_source_evidence_export_summary(
     resources: list[SourceEvidenceResourceRecord],
     adopted_evidence: list[AdoptedVisualEvidenceContext],
     warnings: list[GenerationWarning],
+    sheet_name: str,
+    selected_sheet_unit: ParsedSourceUnit | None,
 ) -> str:
     resource_counts = _resource_counts(resources)
     warning_text = "；".join(warning.message for warning in warnings[:5]) or "无"
-    scope_text = "；".join(_source_scope_lines(parsed=parsed, manifest={})) or "未记录结构化读取范围"
+    scope_text = "；".join(
+        _source_scope_lines(
+            parsed=parsed,
+            manifest={},
+            sheet_name=sheet_name,
+            selected_sheet_unit=selected_sheet_unit,
+        )
+    ) or "未记录结构化读取范围"
     return "\n".join(
         [
             f"Source Evidence 摘要：Run ID={run.id}；{source_summary}",
+            f"当前 Planning Sheet：{sheet_name}",
             f"TTL 状态：{ttl_status}",
             (
                 "读取范围："
@@ -1948,15 +2238,22 @@ def _source_scope_lines(
     *,
     parsed: ParsedSource | None,
     manifest: dict[str, Any],
+    sheet_name: str = "Source Evidence",
+    selected_sheet_unit: ParsedSourceUnit | None = None,
 ) -> list[str]:
     if parsed is None:
         doc_type = str(manifest.get("doc_type") or "unknown")
         counts = manifest.get("counts") if isinstance(manifest.get("counts"), dict) else {}
         unit_count = counts.get("source_unit_count", 0) if isinstance(counts, dict) else 0
-        return [f"- 类型={doc_type}；结构化片段数={unit_count}"]
+        return [f"- 类型={doc_type}；当前 Planning Sheet={sheet_name}；结构化片段数={unit_count}"]
 
-    lines: list[str] = [f"- 类型={parsed.doc_type}；标题={parsed.title}"]
-    for unit in parsed.source_units[:20]:
+    lines: list[str] = [
+        f"- 类型={parsed.doc_type}；标题={parsed.title}；当前 Planning Sheet={sheet_name}"
+    ]
+    units = [selected_sheet_unit] if selected_sheet_unit is not None else parsed.source_units[:20]
+    for unit in units:
+        if unit is None:
+            continue
         metadata = unit.metadata if isinstance(unit.metadata, dict) else {}
         safe_parts = [
             f"kind={unit.kind}",
@@ -1977,7 +2274,7 @@ def _source_scope_lines(
         if unit.rows:
             safe_parts.append(f"rows={len(unit.rows)}")
         lines.append("- " + "；".join(safe_parts))
-    if len(parsed.source_units) > 20:
+    if selected_sheet_unit is None and len(parsed.source_units) > 20:
         lines.append(f"- 其余片段 {len(parsed.source_units) - 20} 个未展开。")
     return lines
 

@@ -1,10 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  cancelGenerationRun,
   createLocalFileSourceEvidenceRun,
+  createGenerationRun,
   createSourceEvidenceRun,
   createReferenceCategory,
   deleteReferenceFile,
+  downloadGenerationRunArtifact,
+  exportGenerationRunWorkbook,
   exportTestCaseWorkbook,
   fetchSourceEvidenceCleanupAudits,
   fetchSourceEvidenceCapabilities,
@@ -12,14 +16,20 @@ import {
   fetchSourceEvidenceRun,
   fetchSourceEvidenceVisualCandidates,
   fetchSourceEvidenceObservations,
+  getGenerationRun,
+  fetchGenerationRunArtifactText,
   fetchReferenceCategories,
   fetchReferenceFiles,
-  generateTestCases,
+  listGenerationRunAtoms,
+  listGenerationRunArtifacts,
+  listGenerationRunCases,
   observeSourceEvidenceRun,
   readPlanningSnapshot,
   readSourceEvidenceSnapshot,
   requestSourceEvidenceAuthorization,
   revokeSourceEvidenceVisualEvidence,
+  retryFailedGenerationChunks,
+  retryGenerationRunArtifacts,
   retrySourceEvidenceRun,
   adoptSourceEvidenceVisualEvidence,
   saveSourceEvidenceVisualSelections,
@@ -95,29 +105,67 @@ describe('test case generation api', () => {
     })
   })
 
-  it('generates test cases without reference inputs', async () => {
+  it('calls V3 Generation Run endpoints instead of the legacy synchronous generate path', async () => {
     const payload = {
-      planning_snapshot: {
-        source_summary: '上传 Excel：planning.xlsx',
-        sheet_name: '策划案',
-        rows: [],
-        columns: [],
-        non_empty_cell_count: 0,
-        truncated: false,
-        warnings: [],
-      },
+      source_evidence_run_id: 42,
+      planning_sheet_name: '策划案',
       reference_ids: [],
       primary_reference_id: null,
-      source_evidence_run_id: 42,
-      adopted_visual_evidence_ids: [7],
+      primary_reference_sheet_name: null,
+      strict_mode: true,
     }
 
-    await generateTestCases(payload)
+    await createGenerationRun(payload)
+    await getGenerationRun(7)
+    await cancelGenerationRun(7)
+    await retryFailedGenerationChunks(7)
+    await listGenerationRunAtoms(7)
+    await listGenerationRunCases(7)
+    await listGenerationRunArtifacts(7)
+    await retryGenerationRunArtifacts(7)
+    await downloadGenerationRunArtifact(7, 'quality_audit', '质量审计.json')
+    await fetchGenerationRunArtifactText(7, 'blueprint')
+    await exportGenerationRunWorkbook(7)
 
-    expect(apiFetchMock).toHaveBeenCalledWith('/api/v1/test-cases/generate', {
+    expect(apiFetchMock).toHaveBeenNthCalledWith(1, '/api/v1/test-cases/generation-runs', {
       method: 'POST',
       body: JSON.stringify(payload),
     })
+    expect(apiFetchMock).toHaveBeenNthCalledWith(2, '/api/v1/test-cases/generation-runs/7')
+    expect(apiFetchMock).toHaveBeenNthCalledWith(3, '/api/v1/test-cases/generation-runs/7/cancel', {
+      method: 'POST',
+    })
+    expect(apiFetchMock).toHaveBeenNthCalledWith(
+      4,
+      '/api/v1/test-cases/generation-runs/7/retry-failed-chunks',
+      {
+        method: 'POST',
+      },
+    )
+    expect(apiFetchMock).toHaveBeenNthCalledWith(5, '/api/v1/test-cases/generation-runs/7/atoms')
+    expect(apiFetchMock).toHaveBeenNthCalledWith(6, '/api/v1/test-cases/generation-runs/7/cases')
+    expect(apiFetchMock).toHaveBeenNthCalledWith(7, '/api/v1/test-cases/generation-runs/7/artifacts')
+    expect(apiFetchMock).toHaveBeenNthCalledWith(8, '/api/v1/test-cases/generation-runs/7/artifacts/retry', {
+      method: 'POST',
+    })
+    expect(apiDownloadFileMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/v1/test-cases/generation-runs/7/artifacts/quality_audit',
+      '质量审计.json',
+    )
+    expect(apiDownloadFileMock).toHaveBeenNthCalledWith(
+      2,
+      '/api/v1/test-cases/generation-runs/7/artifacts/blueprint?inline=true',
+      'blueprint',
+    )
+    expect(apiDownloadFileMock).toHaveBeenCalledWith(
+      '/api/v1/test-cases/generation-runs/7/export',
+      'test-cases-v3-run-7.xlsx',
+      {
+        method: 'POST',
+      },
+    )
+    expect(apiFetchMock).not.toHaveBeenCalledWith('/api/v1/test-cases/generate', expect.anything())
   })
 
   it('exports the current in-memory result through apiDownloadFile', async () => {
@@ -222,6 +270,56 @@ describe('test case generation api', () => {
     expect(apiFetchMock).toHaveBeenNthCalledWith(
       14,
       '/api/v1/test-cases/source-evidence-cleanup-audits?limit=25&offset=50',
+    )
+  })
+
+  it('passes Source Evidence sheet scope to snapshot, visual candidates, visual selections and export', async () => {
+    await fetchSourceEvidenceVisualCandidates(42, '需求A')
+    await saveSourceEvidenceVisualSelections(42, {
+      selected_refs: ['img_001'],
+      sheet_name: '需求A',
+    })
+    await readSourceEvidenceSnapshot(42, { sheet_name: '需求A' })
+
+    const exportPayload = {
+      blueprint: { modules: [], flows: [], warnings: [] },
+      cases: [],
+      warnings: [],
+      stats: {
+        total: 0,
+        priority_counts: {},
+        module_counts: {},
+        case_type_counts: {},
+        warning_count: 0,
+      },
+      export_columns: ['case_id', 'title'],
+      source_summary: '本地文件：planning.xlsx',
+      source_evidence_run_id: 42,
+      adopted_visual_evidence_ids: [7],
+      planning_sheet_name: '需求A',
+    }
+    await exportTestCaseWorkbook(exportPayload)
+
+    expect(apiFetchMock).toHaveBeenNthCalledWith(
+      1,
+      '/api/v1/test-cases/source-evidence-runs/42/visual-candidates?sheet_name=%E9%9C%80%E6%B1%82A',
+    )
+    expect(apiFetchMock).toHaveBeenNthCalledWith(2, '/api/v1/test-cases/source-evidence-runs/42/visual-selections', {
+      method: 'POST',
+      body: JSON.stringify({ selected_refs: ['img_001'], sheet_name: '需求A' }),
+    })
+    expect(apiFetchMock).toHaveBeenNthCalledWith(3, '/api/v1/test-cases/source-evidence-runs/42/snapshot', {
+      method: 'POST',
+      body: JSON.stringify({ sheet_name: '需求A' }),
+    })
+    expect(apiDownloadFileMock).toHaveBeenCalledWith(
+      '/api/v1/test-cases/export',
+      'test-cases-v1.xlsx',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(exportPayload),
+      },
     )
   })
 

@@ -5,10 +5,15 @@ import { readFileSync } from 'node:fs'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
+  cancelGenerationRun,
   createLocalFileSourceEvidenceRun,
+  createGenerationRun,
   createSourceEvidenceRun,
   createReferenceCategory,
   deleteReferenceFile,
+  downloadGenerationRunArtifact,
+  exportGenerationRunWorkbook,
+  fetchGenerationRunArtifactText,
   exportTestCaseWorkbook,
   fetchSourceEvidenceCapabilities,
   fetchSourceEvidenceResources,
@@ -18,12 +23,18 @@ import {
   fetchReferenceFiles,
   fetchSourceEvidenceRun,
   generateTestCases,
+  getGenerationRun,
+  listGenerationRunAtoms,
+  listGenerationRunArtifacts,
+  listGenerationRunCases,
   observeSourceEvidenceRun,
   readPlanningSnapshot,
   readPlanningSnapshotBrief,
   readSourceEvidenceSnapshot,
   requestSourceEvidenceAuthorization,
   revokeSourceEvidenceVisualEvidence,
+  retryFailedGenerationChunks,
+  retryGenerationRunArtifacts,
   retrySourceEvidenceRun,
   adoptSourceEvidenceVisualEvidence,
   saveSourceEvidenceVisualSelections,
@@ -36,10 +47,15 @@ import type { DataSource } from '../../src/types/workbench'
 import TestCaseGeneratorView from '../../src/views/TestCaseGeneratorView.vue'
 
 vi.mock('../../src/api/testCases', () => ({
+  cancelGenerationRun: vi.fn(),
   createLocalFileSourceEvidenceRun: vi.fn(),
+  createGenerationRun: vi.fn(),
   createSourceEvidenceRun: vi.fn(),
   createReferenceCategory: vi.fn(),
   deleteReferenceFile: vi.fn(),
+  downloadGenerationRunArtifact: vi.fn(),
+  exportGenerationRunWorkbook: vi.fn(),
+  fetchGenerationRunArtifactText: vi.fn(),
   exportTestCaseWorkbook: vi.fn(),
   fetchSourceEvidenceCapabilities: vi.fn(),
   fetchSourceEvidenceResources: vi.fn(),
@@ -49,12 +65,18 @@ vi.mock('../../src/api/testCases', () => ({
   fetchReferenceFiles: vi.fn(),
   fetchSourceEvidenceRun: vi.fn(),
   generateTestCases: vi.fn(),
+  getGenerationRun: vi.fn(),
+  listGenerationRunAtoms: vi.fn(),
+  listGenerationRunArtifacts: vi.fn(),
+  listGenerationRunCases: vi.fn(),
   observeSourceEvidenceRun: vi.fn(),
   readPlanningSnapshot: vi.fn(),
   readPlanningSnapshotBrief: vi.fn(),
   readSourceEvidenceSnapshot: vi.fn(),
   requestSourceEvidenceAuthorization: vi.fn(),
   revokeSourceEvidenceVisualEvidence: vi.fn(),
+  retryFailedGenerationChunks: vi.fn(),
+  retryGenerationRunArtifacts: vi.fn(),
   retrySourceEvidenceRun: vi.fn(),
   adoptSourceEvidenceVisualEvidence: vi.fn(),
   saveSourceEvidenceVisualSelections: vi.fn(),
@@ -132,6 +154,17 @@ const retrySourceEvidenceRunMock = vi.mocked(retrySourceEvidenceRun)
 const adoptSourceEvidenceVisualEvidenceMock = vi.mocked(adoptSourceEvidenceVisualEvidence)
 const revokeSourceEvidenceVisualEvidenceMock = vi.mocked(revokeSourceEvidenceVisualEvidence)
 const saveSourceEvidenceVisualSelectionsMock = vi.mocked(saveSourceEvidenceVisualSelections)
+const createGenerationRunMock = vi.mocked(createGenerationRun)
+const getGenerationRunMock = vi.mocked(getGenerationRun)
+const cancelGenerationRunMock = vi.mocked(cancelGenerationRun)
+const retryFailedGenerationChunksMock = vi.mocked(retryFailedGenerationChunks)
+const listGenerationRunAtomsMock = vi.mocked(listGenerationRunAtoms)
+const listGenerationRunCasesMock = vi.mocked(listGenerationRunCases)
+const listGenerationRunArtifactsMock = vi.mocked(listGenerationRunArtifacts)
+const downloadGenerationRunArtifactMock = vi.mocked(downloadGenerationRunArtifact)
+const fetchGenerationRunArtifactTextMock = vi.mocked(fetchGenerationRunArtifactText)
+const retryGenerationRunArtifactsMock = vi.mocked(retryGenerationRunArtifacts)
+const exportGenerationRunWorkbookMock = vi.mocked(exportGenerationRunWorkbook)
 const generateTestCasesMock = vi.mocked(generateTestCases)
 const exportTestCaseWorkbookMock = vi.mocked(exportTestCaseWorkbook)
 const fetchSourceEvidenceCapabilitiesMock = vi.mocked(fetchSourceEvidenceCapabilities)
@@ -335,6 +368,7 @@ const sourceEvidenceRunResponse = {
       },
     ],
     resource_count: 2,
+    sheet_options: [],
   },
 }
 
@@ -355,6 +389,22 @@ const localSourceEvidenceRunResponse = {
       },
     ],
     resource_count: 1,
+    sheet_options: [
+      {
+        name: '需求A',
+        kind: 'sheet',
+        cell_count: 3,
+        resource_count: 2,
+        is_default: true,
+      },
+      {
+        name: '需求B',
+        kind: 'sheet',
+        cell_count: 2,
+        resource_count: 1,
+        is_default: false,
+      },
+    ],
   },
 }
 
@@ -375,6 +425,22 @@ const svnSourceEvidenceRunResponse = {
       },
     ],
     resource_count: 1,
+    sheet_options: [
+      {
+        name: '需求A',
+        kind: 'sheet',
+        cell_count: 3,
+        resource_count: 2,
+        is_default: true,
+      },
+      {
+        name: '需求B',
+        kind: 'sheet',
+        cell_count: 2,
+        resource_count: 1,
+        is_default: false,
+      },
+    ],
   },
 }
 
@@ -594,6 +660,85 @@ const sourceEvidenceVisualCandidatesResponse = {
   },
 }
 
+const sourceEvidenceWorkbookVisualCandidatesForSheetA = {
+  code: 200,
+  msg: 'ok',
+  data: {
+    items: [
+      {
+        ref: 'img_a_001',
+        type: 'image',
+        position: '需求A!B2',
+        filename: '需求A入口.png',
+        status: 'ready',
+        selectable: true,
+        recommended: true,
+        selected: true,
+        recommendation_reasons: ['当前 Sheet 图片默认选中'],
+        download_status: 'downloaded',
+        adoption_status: 'unobserved',
+        dimensions: {},
+      },
+      {
+        ref: 'img_a_002',
+        type: 'image',
+        position: '需求A!C8',
+        filename: '需求A规则.png',
+        status: 'ready',
+        selectable: true,
+        recommended: false,
+        selected: true,
+        recommendation_reasons: ['当前 Sheet 图片默认选中'],
+        download_status: 'downloaded',
+        adoption_status: 'unobserved',
+        dimensions: {},
+      },
+      {
+        ref: 'img_b_001',
+        type: 'image',
+        position: '需求B!B3',
+        filename: '需求B入口.png',
+        status: 'ready',
+        selectable: true,
+        recommended: false,
+        selected: false,
+        recommendation_reasons: [],
+        download_status: 'downloaded',
+        adoption_status: 'unobserved',
+        dimensions: {},
+      },
+    ],
+    recommended_refs: ['img_a_001'],
+    selected_refs: ['img_a_001', 'img_a_002'],
+    warnings: [],
+  },
+}
+
+const sourceEvidenceWorkbookManualVisualCandidatesForSheetA = {
+  ...sourceEvidenceWorkbookVisualCandidatesForSheetA,
+  data: {
+    ...sourceEvidenceWorkbookVisualCandidatesForSheetA.data,
+    items: sourceEvidenceWorkbookVisualCandidatesForSheetA.data.items.map((candidate) => ({
+      ...candidate,
+      selected: candidate.ref === 'img_a_002',
+    })),
+    selected_refs: ['img_a_002'],
+  },
+}
+
+const sourceEvidenceWorkbookVisualCandidatesForSheetB = {
+  ...sourceEvidenceWorkbookVisualCandidatesForSheetA,
+  data: {
+    ...sourceEvidenceWorkbookVisualCandidatesForSheetA.data,
+    items: sourceEvidenceWorkbookVisualCandidatesForSheetA.data.items.map((candidate) => ({
+      ...candidate,
+      selected: candidate.ref === 'img_b_001',
+    })),
+    recommended_refs: [],
+    selected_refs: ['img_b_001'],
+  },
+}
+
 const sourceEvidenceObservedResponse = {
   code: 200,
   msg: 'ok',
@@ -676,6 +821,28 @@ const sourceEvidenceSnapshotResponse = {
         message: '图片/附件待观察，未作为需求事实。',
       },
     ],
+  },
+}
+
+const sourceEvidenceSheetASnapshotResponse = {
+  ...sourceEvidenceSnapshotResponse,
+  data: {
+    ...sourceEvidenceSnapshotResponse.data,
+    source_summary: '本地文件：QuestReward.xlsx',
+    sheet_name: '需求A',
+    rows: [
+      {
+        row_index: 1,
+        cells: [
+          { row_index: 1, column_index: 1, column_name: '来源类型', value: 'sheet' },
+          { row_index: 1, column_index: 2, column_name: '位置', value: '需求A!A1' },
+          { row_index: 1, column_index: 3, column_name: '标题/页签', value: '需求A' },
+          { row_index: 1, column_index: 4, column_name: '内容', value: '需求A入口按配置开放' },
+          { row_index: 1, column_index: 5, column_name: '证据状态', value: 'table' },
+        ],
+      },
+    ],
+    non_empty_cell_count: 5,
   },
 }
 
@@ -986,6 +1153,213 @@ const referenceFilesResponse = {
   },
 }
 
+function generationRunResponse(overrides: Record<string, unknown> = {}) {
+  return {
+    code: 200,
+    msg: 'ok',
+    data: {
+      id: 7001,
+      project_id: 1,
+      source_evidence_run_id: 43,
+      created_by: 1,
+      cancelled_by: null,
+      status: 'completed',
+      planning_sheet_name: '需求A',
+      reference_ids: [201],
+      primary_reference_id: 201,
+      primary_reference_sheet_name: '测试用例',
+      strict_mode: false,
+      total_chunks: 2,
+      completed_chunks: 2,
+      failed_chunks: 0,
+      atom_count: 2,
+      case_count: 1,
+      warning_count: 0,
+      error_summary: '',
+      warnings: [],
+      stage_payload: {
+        coverage_audit: {
+          status: 'completed',
+          total_atoms: 2,
+          covered_atoms: 2,
+          uncovered_atoms: 0,
+          failed_chunk_count: 0,
+          supplement: {},
+          export_limitations: [],
+        },
+      },
+      expires_at: '2026-07-10T08:00:00Z',
+      completed_at: '2026-07-03T08:10:00Z',
+      cancelled_at: null,
+      expired_at: null,
+      cleaned_at: null,
+      created_at: '2026-07-03T08:00:00Z',
+      updated_at: '2026-07-03T08:10:00Z',
+      ...overrides,
+    },
+  }
+}
+
+const generationRunQueuedResponse = generationRunResponse({
+  status: 'queued',
+  completed_chunks: 0,
+  atom_count: 0,
+  case_count: 0,
+  completed_at: null,
+  stage_payload: {},
+})
+
+const generationRunExtractingResponse = generationRunResponse({
+  status: 'extracting_atoms',
+  completed_chunks: 1,
+  failed_chunks: 1,
+  atom_count: 1,
+  case_count: 0,
+  completed_at: null,
+  stage_payload: {
+    atom_extraction: {
+      status: 'running',
+    },
+  },
+})
+
+const generationRunCancelledResponse = generationRunResponse({
+  status: 'cancelled',
+  completed_chunks: 1,
+  failed_chunks: 1,
+  atom_count: 1,
+  case_count: 0,
+  completed_at: null,
+  cancelled_at: '2026-07-03T08:06:00Z',
+})
+
+const generationRunPartialResponse = generationRunResponse({
+  status: 'partial_completed',
+  completed_chunks: 1,
+  failed_chunks: 1,
+  atom_count: 2,
+  case_count: 1,
+  warning_count: 2,
+  stage_payload: {
+    coverage_audit: {
+      status: 'partial_completed',
+      total_atoms: 2,
+      covered_atoms: 1,
+      uncovered_atoms: 1,
+      failed_chunk_count: 1,
+      supplement: { attempted: true, status: 'partial' },
+      export_limitations: [
+        {
+          type: 'uncovered_atoms',
+          level: 'warning',
+          message: '存在 1 个未覆盖 Requirement Atom。',
+          atom_ids: ['ATOM-0002'],
+          blocks_export: false,
+        },
+        {
+          type: 'failed_chunks',
+          level: 'warning',
+          message: '存在 1 个失败 chunk，可能有未知覆盖缺口。',
+          failed_chunk_count: 1,
+          blocks_export: false,
+        },
+      ],
+    },
+  },
+})
+
+const generationRunStrictPartialResponse = generationRunResponse({
+  ...generationRunPartialResponse.data,
+  strict_mode: true,
+  stage_payload: {
+    coverage_audit: {
+      ...((generationRunPartialResponse.data.stage_payload as Record<string, unknown>).coverage_audit as Record<
+        string,
+        unknown
+      >),
+      export_limitations: [
+        {
+          type: 'uncovered_atoms',
+          level: 'error',
+          message: '严格模式下存在覆盖缺口，不能导出。',
+          atom_ids: ['ATOM-0002'],
+          blocks_export: true,
+        },
+      ],
+    },
+  },
+})
+
+const generationRunAtomsResponse = {
+  code: 200,
+  msg: 'ok',
+  data: {
+    total: 2,
+    items: [
+      {
+        id: 1,
+        atom_id: 'ATOM-0001',
+        atom_type: 'rule',
+        requirement_text: '活动入口按配置开放',
+        source_sheet_name: '需求A',
+        source_row_start: 2,
+        source_row_end: 2,
+        source_columns: ['模块', '规则'],
+        visual_evidence_refs: [],
+        confidence: 0.95,
+        coverage_status: 'covered',
+      },
+      {
+        id: 2,
+        atom_id: 'ATOM-0002',
+        atom_type: 'timing',
+        requirement_text: '奖励每日只能领取一次',
+        source_sheet_name: '需求A',
+        source_row_start: 5,
+        source_row_end: 6,
+        source_columns: ['奖励', '次数'],
+        visual_evidence_refs: [],
+        confidence: 0.9,
+        coverage_status: 'unmapped',
+      },
+    ],
+  },
+}
+
+const generationRunCasesResponse = {
+  code: 200,
+  msg: 'ok',
+  data: {
+    total: 1,
+    items: [
+      {
+        id: 1,
+        case_id: 'TC-DB-001',
+        fields: {
+          case_id: 'TC-DB-001',
+          module: '活动入口',
+          feature: '入口开放',
+          scenario: '按配置开放入口',
+          title: '数据库中的活动入口用例',
+          preconditions: '活动配置已开启',
+          steps: '进入主界面并查看活动入口',
+          expected_results: '活动入口按配置展示',
+          priority: 'P1',
+          case_type: '功能',
+          source_requirement: '活动入口按配置开放',
+          config_source: '',
+          planning_answer: '',
+          initial_status: '未执行',
+          bug_link: '',
+          remarks: 'ATOM-0001',
+        },
+        atom_refs: ['ATOM-0001'],
+        status: 'official',
+      },
+    ],
+  },
+}
+
 const generationWithReferenceResponse = {
   ...generationResponse,
   data: {
@@ -1113,6 +1487,17 @@ describe('TestCaseGeneratorView', () => {
     adoptSourceEvidenceVisualEvidenceMock.mockReset()
     revokeSourceEvidenceVisualEvidenceMock.mockReset()
     saveSourceEvidenceVisualSelectionsMock.mockReset()
+    createGenerationRunMock.mockReset()
+    getGenerationRunMock.mockReset()
+    cancelGenerationRunMock.mockReset()
+    retryFailedGenerationChunksMock.mockReset()
+    listGenerationRunAtomsMock.mockReset()
+    listGenerationRunCasesMock.mockReset()
+    listGenerationRunArtifactsMock.mockReset()
+    downloadGenerationRunArtifactMock.mockReset()
+    fetchGenerationRunArtifactTextMock.mockReset()
+    retryGenerationRunArtifactsMock.mockReset()
+    exportGenerationRunWorkbookMock.mockReset()
     generateTestCasesMock.mockReset()
     exportTestCaseWorkbookMock.mockReset()
     fetchSourceEvidenceCapabilitiesMock.mockReset()
@@ -1129,6 +1514,7 @@ describe('TestCaseGeneratorView', () => {
     fetchSvnCredentialMock.mockReset()
     listSvnCredentialHostsMock.mockReset()
     listSvnDirectoryMock.mockReset()
+    window.localStorage.clear()
     fetchWorkbenchConfigMock.mockResolvedValue({ code: 200, msg: 'ok', data: {} })
     readPlanningSnapshotMock.mockResolvedValue(snapshotResponse)
     readPlanningSnapshotBriefMock.mockResolvedValue(snapshotBriefResponse)
@@ -1145,12 +1531,41 @@ describe('TestCaseGeneratorView', () => {
     adoptSourceEvidenceVisualEvidenceMock.mockResolvedValue(sourceEvidenceAdoptedResponse)
     revokeSourceEvidenceVisualEvidenceMock.mockResolvedValue(sourceEvidenceObservedResponse)
     saveSourceEvidenceVisualSelectionsMock.mockResolvedValue(sourceEvidenceVisualCandidatesResponse)
+    createGenerationRunMock.mockResolvedValue(generationRunQueuedResponse)
+    getGenerationRunMock.mockResolvedValue(generationRunResponse())
+    cancelGenerationRunMock.mockResolvedValue(generationRunCancelledResponse)
+    retryFailedGenerationChunksMock.mockResolvedValue({
+      code: 200,
+      msg: 'ok',
+      data: { run_id: 7001, status: 'chunking', retried_chunk_count: 1 },
+    })
+    listGenerationRunAtomsMock.mockResolvedValue(generationRunAtomsResponse)
+    listGenerationRunCasesMock.mockResolvedValue(generationRunCasesResponse)
+    listGenerationRunArtifactsMock.mockResolvedValue({
+      code: 200,
+      msg: 'ok',
+      data: { items: [], total: 0 },
+    })
+    downloadGenerationRunArtifactMock.mockResolvedValue({
+      blob: new Blob(['artifact']),
+      filename: '测试用例.xlsx',
+    })
+    fetchGenerationRunArtifactTextMock.mockResolvedValue('{}')
+    retryGenerationRunArtifactsMock.mockResolvedValue({
+      code: 200,
+      msg: 'ok',
+      data: { items: [], total: 0 },
+    })
     generateTestCasesMock.mockResolvedValue(generationResponse)
     fetchSourceEvidenceCapabilitiesMock.mockResolvedValue(sourceEvidenceCapabilitiesReadyResponse)
     saveWorkbenchConfigMock.mockResolvedValue({ code: 200, msg: 'ok' })
     exportTestCaseWorkbookMock.mockResolvedValue({
       blob: new Blob(['xlsx']),
       filename: 'test-cases-v1.xlsx',
+    })
+    exportGenerationRunWorkbookMock.mockResolvedValue({
+      blob: new Blob(['xlsx']),
+      filename: 'test-cases-v3-run-7001.xlsx',
     })
     fetchReferenceCategoriesMock.mockResolvedValue(referenceCategoriesResponse)
     fetchReferenceFilesMock.mockResolvedValue(referenceFilesResponse)
@@ -1201,7 +1616,7 @@ describe('TestCaseGeneratorView', () => {
     })
   })
 
-  it('renders the V1 test case generation workspace with reference data from API', async () => {
+  it('renders the V3 test case generation workspace with reference data from API', async () => {
     const wrapper = mountView()
     await flushPromises()
 
@@ -1214,8 +1629,8 @@ describe('TestCaseGeneratorView', () => {
     expect(wrapper.text()).toContain('活动回归模板.xlsx')
     expect(wrapper.text()).toContain('参考用例数量')
     expect(wrapper.text()).toContain('约 120 条')
-    expect(wrapper.text()).toContain('生成前先读取策划案快照')
-    expect(wrapper.text()).toContain('核对整理稿、测试用例和限制提示，确认后导出 Excel。')
+    expect(wrapper.text()).toContain('生成前先读取 Source Evidence')
+    expect(wrapper.text()).toContain('V3 读取完整 selected Planning Sheet')
   })
 
   it('hides Source Evidence runtime capability status when capability check endpoint is unavailable', async () => {
@@ -1291,12 +1706,13 @@ describe('TestCaseGeneratorView', () => {
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
     await flushPromises()
 
-    expect(generateTestCasesMock).toHaveBeenCalledWith(
+    expect(createGenerationRunMock).toHaveBeenCalledWith(
       expect.objectContaining({
         source_evidence_run_id: 43,
-        adopted_visual_evidence_ids: [],
+        planning_sheet_name: '需求A',
       }),
     )
+    expect(generateTestCasesMock).not.toHaveBeenCalled()
   })
 
   it('renders the source shell with three source modes and compact summary chips by default', () => {
@@ -1363,12 +1779,42 @@ describe('TestCaseGeneratorView', () => {
     expect(wrapper.find('[data-test="source-evidence-document-card"]').text()).toContain('图片未参与语义理解')
     expect(wrapper.text()).not.toContain('D:/runtime/uploads/project-1/20260701_quest_reward.xlsx')
     expect(wrapper.text()).not.toContain('20260701_quest_reward.xlsx')
+    expect(wrapper.find('[data-test="planning-sheet-select"]').exists()).toBe(true)
+    expect((wrapper.find('[data-test="planning-sheet-select"]').element as HTMLSelectElement).value).toBe('需求A')
 
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
 
-    expect(readSourceEvidenceSnapshotMock).toHaveBeenCalledWith(43)
+    expect(readSourceEvidenceSnapshotMock).toHaveBeenCalledWith(43, { sheet_name: '需求A' })
     expect(readPlanningSnapshotMock).not.toHaveBeenCalled()
+  })
+
+  it('clears Source Evidence snapshot, brief, generation and export readiness after switching workbook Sheet', async () => {
+    createLocalFileSourceEvidenceRunMock.mockResolvedValueOnce(localSourceEvidenceRunResponse)
+    readSourceEvidenceSnapshotMock.mockResolvedValueOnce(sourceEvidenceSheetASnapshotResponse)
+    fetchSourceEvidenceVisualCandidatesMock.mockResolvedValueOnce(sourceEvidenceWorkbookVisualCandidatesForSheetB)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await uploadLocalPlanningFile(wrapper, new File(['excel'], 'QuestReward.xlsx'))
+    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.text()).toContain('活动入口按配置展示')
+    expect(wrapper.find('[data-test="preview-export-button"]').attributes('disabled')).toBeUndefined()
+
+    fetchSourceEvidenceVisualCandidatesMock.mockClear()
+    await wrapper.find('[data-test="planning-sheet-select"]').setValue('需求B')
+    await flushPromises()
+
+    expect(fetchSourceEvidenceVisualCandidatesMock).toHaveBeenCalledWith(43, '需求B')
+    expect(wrapper.text()).not.toContain('活动入口按配置展示')
+    expect(wrapper.text()).toContain('来源已就绪，点击全量生成用例。')
+    expect(wrapper.find('[data-test="preview-generate-button"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-test="preview-export-button"]').attributes('disabled')).toBeDefined()
+    expect(readSourceEvidenceSnapshotMock).toHaveBeenCalledTimes(1)
   })
 
   it('blocks generation for a standalone image Source Evidence run without adopted visual evidence', async () => {
@@ -1415,7 +1861,7 @@ describe('TestCaseGeneratorView', () => {
 
     expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('本地文件')
     expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('QuestReward.xls')
-    expect(wrapper.find('[data-test="planning-sheet-select"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="planning-sheet-select"]').exists()).toBe(true)
 
     createSourceEvidenceRunMock.mockResolvedValueOnce(svnSourceEvidenceRunResponse)
     await openSvnSourcePanel(wrapper)
@@ -1509,11 +1955,13 @@ describe('TestCaseGeneratorView', () => {
     expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('QuestReward.xls')
     expect(wrapper.find('[data-test="source-evidence-document-card"]').text()).toContain('SVN 文件：QuestReward.xls')
     expect(wrapper.text()).toContain('图片未参与语义理解')
+    expect(wrapper.find('[data-test="planning-sheet-select"]').exists()).toBe(true)
+    expect((wrapper.find('[data-test="planning-sheet-select"]').element as HTMLSelectElement).value).toBe('需求A')
 
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
 
-    expect(readSourceEvidenceSnapshotMock).toHaveBeenCalledWith(44)
+    expect(readSourceEvidenceSnapshotMock).toHaveBeenCalledWith(44, { sheet_name: '需求A' })
     expect(readPlanningSnapshotMock).not.toHaveBeenCalled()
   })
 
@@ -1695,25 +2143,27 @@ describe('TestCaseGeneratorView', () => {
     expect(headerActions.text()).not.toContain('生成用例')
     expect(previewActions.exists()).toBe(true)
     expect(previewActions.text()).toContain('结果预览')
-    expect(previewActions.text()).toContain('核对整理稿、测试用例和限制提示，确认后导出 Excel。')
-    expect(previewActions.text()).toContain('生成用例')
-    expect(previewActions.text()).toContain('导出 Excel')
-    expect(previewText.indexOf('结果预览')).toBeLessThan(previewText.indexOf('策划案快照'))
+    expect(previewActions.text()).toContain('V3 读取完整 selected Planning Sheet')
+    expect(previewActions.text()).toContain('全量生成用例')
+    expect(previewActions.text()).toContain('下载所选文件')
+    expect(previewText.indexOf('结果预览')).toBeLessThan(previewText.indexOf('测试用例'))
   })
 
-  it('keeps preview tabs focused on brief, generated cases and warnings', () => {
+  it('keeps preview tabs focused on V3 cases, coverage, atoms and warnings', () => {
     const wrapper = mountView()
     const previewTabs = wrapper.find('.tcg-preview__tabs')
 
     expect(previewTabs.text()).toContain('AI 整理稿')
     expect(previewTabs.text()).toContain('测试用例')
+    expect(previewTabs.text()).toContain('覆盖审计')
+    expect(previewTabs.text()).toContain('需求原子')
     expect(previewTabs.text()).toContain('限制提示')
     expect(previewTabs.text()).not.toContain('原始表格/追踪视图')
     expect(previewTabs.text()).not.toContain('用例蓝图')
     expect(wrapper.find('.tcg-blueprint-summary').exists()).toBe(false)
   })
 
-  it('keeps generation disabled until a snapshot is read', async () => {
+  it('keeps V3 generation disabled for legacy snapshot-only sources', async () => {
     const wrapper = await mountViewWithPlanningSource()
 
     expect(wrapper.find('[data-test="preview-generate-button"]').attributes('disabled')).toBeDefined()
@@ -1730,8 +2180,11 @@ describe('TestCaseGeneratorView', () => {
       },
       sheet_name: '新增Sheet',
     })
-    expect(wrapper.find('[data-test="preview-generate-button"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-test="preview-generate-button"]').attributes('disabled')).toBeDefined()
     expect(wrapper.text()).toContain('按配置开放入口')
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    expect(generateTestCasesMock).not.toHaveBeenCalled()
+    expect(createGenerationRunMock).not.toHaveBeenCalled()
   })
 
   it('creates a Source Evidence Run and reads its compatible snapshot', async () => {
@@ -1752,6 +2205,7 @@ describe('TestCaseGeneratorView', () => {
     expect(wrapper.text()).toContain('隐藏 Sheet 已排除。')
     expect(wrapper.text()).toContain('文本/表格可继续，图片/附件待观察')
     expect(wrapper.text()).not.toContain('docx-token-redacted')
+    expect(wrapper.find('[data-test="planning-sheet-select"]').exists()).toBe(false)
 
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
@@ -1968,7 +2422,7 @@ describe('TestCaseGeneratorView', () => {
     expect(wrapper.find('[data-test="preview-export-button"]').attributes('disabled')).toBeDefined()
   })
 
-  it('passes source_evidence_run_id to generation and export', async () => {
+  it('uses source_evidence_run_id for V3 generation and run id export', async () => {
     const wrapper = mountView()
     await flushPromises()
 
@@ -1978,26 +2432,151 @@ describe('TestCaseGeneratorView', () => {
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
     await flushPromises()
 
-    expect(generateTestCasesMock).toHaveBeenCalledWith({
-      planning_snapshot: sourceEvidenceSnapshotResponse.data,
+    expect(createGenerationRunMock).toHaveBeenCalledWith({
+      source_evidence_run_id: 42,
+      planning_sheet_name: 'Source Evidence',
       reference_ids: [201],
       primary_reference_id: 201,
       primary_reference_sheet_name: '测试用例',
-      snapshot_brief_markdown: snapshotBriefMarkdown,
-      source_evidence_run_id: 42,
-      adopted_visual_evidence_ids: [],
+      strict_mode: false,
     })
+    expect(generateTestCasesMock).not.toHaveBeenCalled()
 
     await wrapper.find('[data-test="preview-export-button"]').trigger('click')
     await flushPromises()
 
-    expect(exportTestCaseWorkbookMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        source_summary: sourceEvidenceSnapshotResponse.data.source_summary,
-        source_evidence_run_id: 42,
-        adopted_visual_evidence_ids: [],
-      }),
-    )
+    expect(exportGenerationRunWorkbookMock).toHaveBeenCalledWith(7001)
+    expect(exportTestCaseWorkbookMock).not.toHaveBeenCalled()
+  })
+
+  it('creates a V3 generation run with source evidence scope and reference selection', async () => {
+    createGenerationRunMock.mockResolvedValueOnce(generationRunQueuedResponse)
+    getGenerationRunMock.mockResolvedValueOnce(generationRunResponse())
+    const wrapper = mountView()
+    await flushPromises()
+
+    await uploadLocalPlanningFile(wrapper, new File(['excel'], 'QuestReward.xlsx'))
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+
+    expect(createGenerationRunMock).toHaveBeenCalledWith({
+      source_evidence_run_id: 43,
+      planning_sheet_name: '需求A',
+      reference_ids: [201],
+      primary_reference_id: 201,
+      primary_reference_sheet_name: '测试用例',
+      strict_mode: false,
+    })
+    expect(generateTestCasesMock).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('全量生成用例')
+    expect(wrapper.text()).toContain('读取来源')
+    expect(wrapper.text()).toContain('结构切片')
+    expect(wrapper.text()).toContain('抽取需求')
+    expect(wrapper.text()).toContain('生成用例')
+    expect(wrapper.text()).toContain('覆盖审计')
+    expect(wrapper.text()).toContain('数据库中的活动入口用例')
+    expect(wrapper.text()).toContain('Requirement Atom')
+  })
+
+  it('cancels an active V3 generation run', async () => {
+    createGenerationRunMock.mockResolvedValueOnce(generationRunExtractingResponse)
+    getGenerationRunMock.mockResolvedValueOnce(generationRunExtractingResponse)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await uploadLocalPlanningFile(wrapper, new File(['excel'], 'QuestReward.xlsx'))
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="generation-run-cancel-button"]').trigger('click')
+    await flushPromises()
+
+    expect(cancelGenerationRunMock).toHaveBeenCalledWith(7001)
+    expect(wrapper.text()).toContain('已取消')
+  })
+
+  it('retries failed chunks for a partial V3 generation run', async () => {
+    createGenerationRunMock.mockResolvedValueOnce(generationRunPartialResponse)
+    getGenerationRunMock.mockResolvedValueOnce(generationRunPartialResponse)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await uploadLocalPlanningFile(wrapper, new File(['excel'], 'QuestReward.xlsx'))
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="generation-run-retry-button"]').trigger('click')
+    await flushPromises()
+
+    expect(retryFailedGenerationChunksMock).toHaveBeenCalledWith(7001)
+  })
+
+  it('renders completed V3 cases, coverage audit and requirement atoms', async () => {
+    createGenerationRunMock.mockResolvedValueOnce(generationRunResponse())
+    const wrapper = mountView()
+    await flushPromises()
+
+    await uploadLocalPlanningFile(wrapper, new File(['excel'], 'QuestReward.xlsx'))
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+
+    expect(listGenerationRunCasesMock).toHaveBeenCalledWith(7001)
+    expect(listGenerationRunAtomsMock).toHaveBeenCalledWith(7001)
+    expect(wrapper.text()).toContain('数据库中的活动入口用例')
+
+    await wrapper.find('[data-test="preview-tab-coverage"]').trigger('click')
+    expect(wrapper.text()).toContain('覆盖 2 / 2')
+    expect(wrapper.text()).toContain('失败 chunk 0')
+
+    await wrapper.find('[data-test="preview-tab-atoms"]').trigger('click')
+    expect(wrapper.text()).toContain('ATOM-0001')
+    expect(wrapper.text()).toContain('活动入口按配置开放')
+  })
+
+  it('shows partial completed limitations and blocks strict export with uncovered atoms', async () => {
+    createGenerationRunMock.mockResolvedValueOnce(generationRunStrictPartialResponse)
+    getGenerationRunMock.mockResolvedValueOnce(generationRunStrictPartialResponse)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await uploadLocalPlanningFile(wrapper, new File(['excel'], 'QuestReward.xlsx'))
+    await wrapper.find('[data-test="generation-strict-mode-checkbox"]').setValue(true)
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+
+    expect(createGenerationRunMock.mock.calls[0][0]).toMatchObject({ strict_mode: true })
+    expect(wrapper.text()).toContain('partial_completed')
+    expect(wrapper.text()).toContain('严格模式下存在覆盖缺口')
+    expect(wrapper.find('[data-test="preview-export-button"]').attributes('disabled')).toBeDefined()
+    await wrapper.find('[data-test="preview-export-button"]').trigger('click')
+    expect(exportGenerationRunWorkbookMock).not.toHaveBeenCalled()
+  })
+
+  it('exports V3 workbook by run id without posting generated cases', async () => {
+    createGenerationRunMock.mockResolvedValueOnce(generationRunPartialResponse)
+    getGenerationRunMock.mockResolvedValueOnce(generationRunPartialResponse)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await uploadLocalPlanningFile(wrapper, new File(['excel'], 'QuestReward.xlsx'))
+    await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-test="preview-export-button"]').trigger('click')
+    await flushPromises()
+
+    expect(exportGenerationRunWorkbookMock).toHaveBeenCalledWith(7001)
+    expect(exportTestCaseWorkbookMock).not.toHaveBeenCalled()
+  })
+
+  it('restores the latest short-lived V3 run from local storage after refresh', async () => {
+    window.localStorage.setItem('test-case-generation:v3:last-run-id', '7001')
+    getGenerationRunMock.mockResolvedValueOnce(generationRunResponse())
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(getGenerationRunMock).toHaveBeenCalledWith(7001)
+    expect(listGenerationRunCasesMock).toHaveBeenCalledWith(7001)
+    expect(listGenerationRunAtomsMock).toHaveBeenCalledWith(7001)
+    expect(wrapper.text()).toContain('数据库中的活动入口用例')
   })
 
   it('shows Source Evidence visual candidates in a drawer and saves selection', async () => {
@@ -2030,6 +2609,45 @@ describe('TestCaseGeneratorView', () => {
     expect(saveSourceEvidenceVisualSelectionsMock).toHaveBeenCalledWith(42, { selected_refs: [] })
   })
 
+  it('defaults current workbook Sheet visual candidates and preserves manual selection until switching Sheet', async () => {
+    createLocalFileSourceEvidenceRunMock.mockResolvedValueOnce(localSourceEvidenceRunResponse)
+    fetchSourceEvidenceVisualCandidatesMock.mockResolvedValueOnce(sourceEvidenceWorkbookVisualCandidatesForSheetA)
+    saveSourceEvidenceVisualSelectionsMock.mockResolvedValueOnce(sourceEvidenceWorkbookManualVisualCandidatesForSheetA)
+    fetchSourceEvidenceVisualCandidatesMock.mockResolvedValueOnce(sourceEvidenceWorkbookVisualCandidatesForSheetB)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await uploadLocalPlanningFile(wrapper, new File(['excel'], 'QuestReward.xlsx'))
+    await wrapper.find('[data-test="source-evidence-resources-button"]').trigger('click')
+    await flushPromises()
+
+    expect(fetchSourceEvidenceVisualCandidatesMock).toHaveBeenCalledWith(43, '需求A')
+    expect((wrapper.find('[data-test="visual-candidate-checkbox-img_a_001"]').element as HTMLInputElement).checked).toBe(true)
+    expect((wrapper.find('[data-test="visual-candidate-checkbox-img_a_002"]').element as HTMLInputElement).checked).toBe(true)
+    expect((wrapper.find('[data-test="visual-candidate-checkbox-img_b_001"]').element as HTMLInputElement).checked).toBe(false)
+
+    fetchSourceEvidenceVisualCandidatesMock.mockClear()
+    await wrapper.find('[data-test="visual-candidate-checkbox-img_a_001"]').setValue(false)
+    await wrapper.find('[data-test="source-evidence-visual-selection-save-button"]').trigger('click')
+    await flushPromises()
+
+    expect(saveSourceEvidenceVisualSelectionsMock).toHaveBeenCalledWith(43, {
+      selected_refs: ['img_a_002'],
+      sheet_name: '需求A',
+    })
+    expect(fetchSourceEvidenceVisualCandidatesMock).not.toHaveBeenCalled()
+    expect((wrapper.find('[data-test="visual-candidate-checkbox-img_a_001"]').element as HTMLInputElement).checked).toBe(false)
+    expect((wrapper.find('[data-test="visual-candidate-checkbox-img_a_002"]').element as HTMLInputElement).checked).toBe(true)
+
+    await wrapper.find('[data-test="planning-sheet-select"]').setValue('需求B')
+    await flushPromises()
+
+    expect(fetchSourceEvidenceVisualCandidatesMock).toHaveBeenCalledWith(43, '需求B')
+    expect((wrapper.find('[data-test="visual-candidate-checkbox-img_a_001"]').element as HTMLInputElement).checked).toBe(false)
+    expect((wrapper.find('[data-test="visual-candidate-checkbox-img_a_002"]').element as HTMLInputElement).checked).toBe(false)
+    expect((wrapper.find('[data-test="visual-candidate-checkbox-img_b_001"]').element as HTMLInputElement).checked).toBe(true)
+  })
+
   it('observes selected visual candidates and adopts evidence for generation/export', async () => {
     const wrapper = mountView()
     await flushPromises()
@@ -2057,22 +2675,19 @@ describe('TestCaseGeneratorView', () => {
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
     await flushPromises()
 
-    expect(generateTestCasesMock).toHaveBeenCalledWith(
+    expect(createGenerationRunMock).toHaveBeenCalledWith(
       expect.objectContaining({
         source_evidence_run_id: 42,
-        adopted_visual_evidence_ids: [7],
+        planning_sheet_name: 'Source Evidence',
       }),
     )
+    expect(generateTestCasesMock).not.toHaveBeenCalled()
 
     await wrapper.find('[data-test="preview-export-button"]').trigger('click')
     await flushPromises()
 
-    expect(exportTestCaseWorkbookMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        source_evidence_run_id: 42,
-        adopted_visual_evidence_ids: [7],
-      }),
-    )
+    expect(exportGenerationRunWorkbookMock).toHaveBeenCalledWith(7001)
+    expect(exportTestCaseWorkbookMock).not.toHaveBeenCalled()
   })
 
   it('revokes adopted visual evidence and marks generated result stale', async () => {
@@ -2225,7 +2840,7 @@ describe('TestCaseGeneratorView', () => {
     })
   })
 
-  it('keeps the planning snapshot and allows generation when snapshot brief fails', async () => {
+  it('keeps the planning snapshot preview when snapshot brief fails but does not unlock V3 generation', async () => {
     readPlanningSnapshotBriefMock.mockRejectedValueOnce(new Error('brief failed'))
     const wrapper = await mountViewWithPlanningSource()
 
@@ -2237,22 +2852,16 @@ describe('TestCaseGeneratorView', () => {
       planning_snapshot: snapshotResponse.data,
     })
     expect(wrapper.text()).toContain('按配置开放入口')
-    expect(wrapper.find('[data-test="preview-generate-button"]').attributes('disabled')).toBeUndefined()
+    expect(wrapper.find('[data-test="preview-generate-button"]').attributes('disabled')).toBeDefined()
 
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
     await flushPromises()
 
-    expect(generateTestCasesMock).toHaveBeenCalledWith({
-      planning_snapshot: snapshotResponse.data,
-      reference_ids: [],
-      primary_reference_id: null,
-      primary_reference_sheet_name: null,
-    })
-    expect(generateTestCasesMock.mock.calls[0][0]).not.toHaveProperty('snapshot_brief_markdown')
-    expect(generateTestCasesMock.mock.calls[0][0]).not.toHaveProperty('generation_options')
+    expect(generateTestCasesMock).not.toHaveBeenCalled()
+    expect(createGenerationRunMock).not.toHaveBeenCalled()
   })
 
-  it('does not wait for a pending snapshot brief before generating cases', async () => {
+  it('does not start V3 generation from a pending legacy snapshot brief', async () => {
     let resolveSnapshotBrief!: (value: typeof snapshotBriefResponse) => void
     const pendingSnapshotBrief = new Promise<typeof snapshotBriefResponse>((resolve) => {
       resolveSnapshotBrief = resolve
@@ -2271,18 +2880,13 @@ describe('TestCaseGeneratorView', () => {
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
     await Promise.resolve()
 
-    expect(generateTestCasesMock).toHaveBeenCalledWith({
-      planning_snapshot: snapshotResponse.data,
-      reference_ids: [],
-      primary_reference_id: null,
-      primary_reference_sheet_name: null,
-    })
-    expect(generateTestCasesMock.mock.calls[0][0]).not.toHaveProperty('snapshot_brief_markdown')
+    expect(generateTestCasesMock).not.toHaveBeenCalled()
+    expect(createGenerationRunMock).not.toHaveBeenCalled()
     resolveSnapshotBrief(snapshotBriefResponse)
     await flushPromises()
   })
 
-  it('generates cases without reference selection and renders result sections', async () => {
+  it('keeps legacy snapshot preview separate from V3 generation without reference selection', async () => {
     const wrapper = await mountViewWithPlanningSource()
 
     await selectCategory(wrapper, '礼包用例')
@@ -2292,20 +2896,13 @@ describe('TestCaseGeneratorView', () => {
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
     await flushPromises()
 
-    expect(generateTestCasesMock).toHaveBeenCalledWith({
-      planning_snapshot: snapshotResponse.data,
-      reference_ids: [],
-      primary_reference_id: null,
-      primary_reference_sheet_name: null,
-      snapshot_brief_markdown: snapshotBriefMarkdown,
-    })
-    expect(wrapper.text()).toContain('活动入口按配置展示')
-    expect(wrapper.text()).toContain('入口图语义未读取，需人工确认。')
-    expect(wrapper.text()).toContain('未使用参考案例增强。')
-    expect(wrapper.text()).toContain('用例总数 1')
+    expect(generateTestCasesMock).not.toHaveBeenCalled()
+    expect(createGenerationRunMock).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('按配置开放入口')
+    expect(wrapper.text()).toContain('V3 生成读取完整 selected Planning Sheet')
   })
 
-  it('passes selected reference ids and primary reference sheet to generation', async () => {
+  it('does not pass legacy snapshot facts to V3 generation', async () => {
     const wrapper = await mountViewWithPlanningSource()
 
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
@@ -2313,16 +2910,11 @@ describe('TestCaseGeneratorView', () => {
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
     await flushPromises()
 
-    expect(generateTestCasesMock).toHaveBeenCalledWith({
-      planning_snapshot: snapshotResponse.data,
-      reference_ids: [201],
-      primary_reference_id: 201,
-      primary_reference_sheet_name: '测试用例',
-      snapshot_brief_markdown: snapshotBriefMarkdown,
-    })
+    expect(generateTestCasesMock).not.toHaveBeenCalled()
+    expect(createGenerationRunMock).not.toHaveBeenCalled()
   })
 
-  it('passes completed snapshot brief markdown as top-level generation context', async () => {
+  it('does not pass completed snapshot brief markdown as V3 generation facts', async () => {
     const wrapper = await mountViewWithPlanningSource()
 
     await selectCategory(wrapper, '礼包用例')
@@ -2331,14 +2923,8 @@ describe('TestCaseGeneratorView', () => {
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
     await flushPromises()
 
-    expect(generateTestCasesMock).toHaveBeenCalledWith({
-      planning_snapshot: snapshotResponse.data,
-      reference_ids: [],
-      primary_reference_id: null,
-      primary_reference_sheet_name: null,
-      snapshot_brief_markdown: snapshotBriefMarkdown,
-    })
-    expect(generateTestCasesMock.mock.calls[0][0]).not.toHaveProperty('generation_options')
+    expect(generateTestCasesMock).not.toHaveBeenCalled()
+    expect(createGenerationRunMock).not.toHaveBeenCalled()
   })
 
   it('copies generated snapshot brief markdown', async () => {
@@ -2374,32 +2960,26 @@ describe('TestCaseGeneratorView', () => {
     expect(wrapper.find('[data-test="snapshot-brief-markdown"]').text()).toContain('按配置开放活动入口')
   })
 
-  it('exports using the current in-memory generation result', async () => {
-    generateTestCasesMock.mockResolvedValueOnce(generationWithReferenceResponse)
-    const wrapper = await mountViewWithPlanningSource()
+  it('exports using the persisted V3 generation run result', async () => {
+    const wrapper = mountView()
+    await flushPromises()
 
-    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await uploadLocalPlanningFile(wrapper, new File(['excel'], 'QuestReward.xlsx'))
     await flushPromises()
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-test="preview-export-button"]').trigger('click')
     await flushPromises()
 
-    expect(exportTestCaseWorkbookMock).toHaveBeenCalledWith({
-      blueprint: generationResponse.data.blueprint,
-      cases: generationResponse.data.cases,
-      warnings: generationResponse.data.warnings,
-      stats: generationResponse.data.stats,
-      export_columns: generationWithReferenceResponse.data.export_columns,
-      primary_reference_profile: generationWithReferenceResponse.data.primary_reference_profile,
-      source_summary: snapshotResponse.data.source_summary,
-    })
+    expect(exportGenerationRunWorkbookMock).toHaveBeenCalledWith(7001)
+    expect(exportTestCaseWorkbookMock).not.toHaveBeenCalled()
   })
 
   it('disables export after reference settings make the generated result stale', async () => {
-    const wrapper = await mountViewWithPlanningSource()
+    const wrapper = mountView()
+    await flushPromises()
 
-    await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
+    await uploadLocalPlanningFile(wrapper, new File(['excel'], 'QuestReward.xlsx'))
     await flushPromises()
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
     await flushPromises()
@@ -2413,24 +2993,25 @@ describe('TestCaseGeneratorView', () => {
     expect(wrapper.text()).toContain('主参考案例已切换，需要重新生成。')
     expect(wrapper.find('[data-test="preview-export-button"]').attributes('disabled')).toBeDefined()
     await wrapper.find('[data-test="preview-export-button"]').trigger('click')
+    expect(exportGenerationRunWorkbookMock).not.toHaveBeenCalled()
     expect(exportTestCaseWorkbookMock).not.toHaveBeenCalled()
   })
 
-  it('clears snapshot and generated result after switching the active 01 source', async () => {
+  it('clears snapshot preview after switching the active 01 source', async () => {
     const wrapper = await mountViewWithPlanningSource()
 
     await wrapper.find('[data-test="read-snapshot-button"]').trigger('click')
     await flushPromises()
     await wrapper.find('[data-test="preview-generate-button"]').trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('活动入口按配置展示')
+    expect(wrapper.text()).toContain('按配置开放入口')
 
     await openSvnSourcePanel(wrapper)
     await flushPromises()
 
     expect(wrapper.text()).not.toContain('活动入口按配置展示')
     expect(wrapper.find('[data-test="current-source-card"]').text()).toContain('SVN 文件')
-    expect(wrapper.text()).toContain('生成前先读取策划案快照')
+    expect(wrapper.text()).toContain('读取来源预览后可查看整理稿')
     expect(wrapper.find('[data-test="preview-generate-button"]').attributes('disabled')).toBeDefined()
   })
 

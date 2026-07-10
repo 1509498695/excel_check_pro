@@ -241,6 +241,11 @@ def _validate_blueprint_payload(payload: dict[str, Any]) -> TestCaseBlueprint:
         ) from error
 
 
+def validate_test_case_blueprint_payload(payload: dict[str, Any]) -> TestCaseBlueprint:
+    """Validate a provider blueprint payload through the shared generation contract."""
+    return _validate_blueprint_payload(payload)
+
+
 def _validate_case_payload(payload: dict[str, Any]) -> _CaseGenerationStagePayload:
     try:
         return _CaseGenerationStagePayload.model_validate(

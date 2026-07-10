@@ -53,11 +53,13 @@ Source Evidence Run
 -> 按 module / atom group 分批生成用例
 -> Coverage Audit
 -> 对 uncovered atoms 自动补生成一次
+-> Case Quality Audit 与一次安全定向修复
+-> 自动渲染并校验 xlsx / blueprint / stats / coverage / quality 产物
 -> completed / partial_completed / failed
--> 后端按 run id 导出 workbook
+-> 页面选择文件预览，下载读取已生成文件
 ```
 
-V3 的需求事实只来自当前 selected `Planning Sheet` 的完整文本/表格事实和同 sheet 的 `Adopted Visual Evidence`。参考案例库只影响字段顺序、命名、粒度和导出风格，不产生新需求。旧 `Planning Sheet Snapshot` 可以继续作为来源预览、AI 整理稿输入或兼容接口使用，但不承担 V3 全量生成输入语义。
+V3 的需求事实只来自当前 selected `Planning Sheet` 的完整文本/表格事实和同 sheet 的 `Adopted Visual Evidence`。参考案例库只影响层级、命名、粒度和历史风格，不得改变 canonical 字段、执行列或产生新需求。旧 `Planning Sheet Snapshot` 可以继续作为来源预览、AI 整理稿输入或兼容接口使用，但不承担 V3 全量生成输入语义。
 
 ## 3. 角色与权限
 
@@ -85,9 +87,9 @@ V3 的需求事实只来自当前 selected `Planning Sheet` 的完整文本/表�
 - 旧 `Planning Sheet Snapshot` 只作为受控预览/兼容接口，不驱动 V3 全量生成。
 - 支持项目级参考案例库，参考文件格式为 `.xlsx`、`.xls`、`.md`、`.txt`。
 - 参考案例上传时生成确定性的 `Reference Test Case Profile`。
-- 生成流程采用“Full Context -> chunks -> Requirement Atoms -> Blueprint -> Cases -> Coverage Audit”的异步多阶段编排。
-- 页面展示 run 状态、阶段进度、测试用例、覆盖审计、需求原子和限制提示。
-- Excel 导出必须按 `generation_run_id` 从后端读取短期结果，至少包含 `测试用例`、`用例蓝图`、`生成说明`、`覆盖审计`。
+- 生成流程采用“Full Context -> chunks -> Requirement Atoms -> Blueprint -> Cases -> Coverage Audit -> Case Quality Audit -> Artifacts”的异步多阶段编排。
+- 页面展示 run 状态、阶段进度、测试用例、覆盖审计、质量审计、需求原子、限制提示和产物选择器。
+- Generation Run 完成前自动从后端短期 DB 真相渲染产物包；Excel 至少包含 `测试用例`、`用例蓝图`、`生成说明`、`覆盖审计`，并同时生成 blueprint Markdown、stats JSON、coverage JSON、quality JSON。
 - 所有 AI 调用只使用项目级 AI 凭据。
 
 ### 4.2 明确不支持
@@ -117,9 +119,11 @@ V3 的需求事实只来自当前 selected `Planning Sheet` 的完整文本/表�
 | Planning Sheet | 本次生成选择的单个策划案 Sheet |
 | Planning Sheet Snapshot | 从 Planning Sheet 读取后经过预算限制、截断和 warnings 标记的受控预览；当前 V3 不把它作为全量生成输入 |
 | Full Planning Sheet Context | V3 从当前 selected Planning Sheet 构造的完整输入，包含所有可读文本/表格事实和同 sheet 已采纳视觉证据 |
-| Generation Run | V3 短期异步工作流，承载读取、切片、原子抽取、蓝图、用例、覆盖审计、导出和 TTL 清理 |
+| Generation Run | V3 短期异步工作流，承载读取、切片、原子抽取、蓝图、用例、覆盖审计、质量审计、产物渲染和 TTL 清理 |
 | Requirement Atom | 从 Full Planning Sheet Context 抽取出的可追踪需求事实，是 V3 蓝图和用例的正式需求来源 |
 | Coverage Audit | 比对 official atoms、cases、failed chunks 和限制项的覆盖审计结果 |
+| Case Quality Audit | 按 QA Case Method 检查可执行性并最多执行一次安全定向修复；不能用模型猜测补齐不确定需求 |
+| Generated Test Case Artifact | 从 Generation Run 数据库真相确定性生成并校验的短期文件，包括 xlsx、blueprint Markdown 和三类 JSON 审计/统计文件 |
 | AI-Assisted Snapshot Brief | 从 Planning Sheet Snapshot 自动整理出的 Markdown 阅读稿，用于策划/QA 对齐和来源预览，不替代 V3 full context |
 | Reference Test Case Library | 当前项目共享的参考案例库 |
 | Primary Reference Test Case | 本次生成主要贴近的参考案例 |
@@ -304,7 +308,7 @@ V1 支持格式：
 - “未分类”视为 `category_id = null` 的独立推荐范围，也可以设置一个推荐主参考。
 - 普通成员可以选择推荐主参考，也可以在本次生成中手动选择其他主参考。
 - 推荐主参考只是分类切换后的默认增强选择；用户可以清空主参考并按无参考模式生成。
-- 推荐主参考不得成为生成前置条件，参考案例只补充格式、粒度、字段顺序和历史风格。
+- 推荐主参考不得成为生成前置条件，参考案例只补充层级、命名、粒度和历史风格，不改变 canonical 字段与模板布局。
 
 ### 9.4 主参考 Sheet
 
@@ -377,7 +381,7 @@ V1 至少提炼：
 
 AI 生成正式用例前必须先形成 `Test Case Blueprint`。V3 蓝图只从合并后的 official `Requirement Atom`、`QA Case Method` 矩阵、来源摘要和已知 warnings 生成，不直接读取 raw sheet、旧 `Planning Sheet Snapshot` 或参考案例事实。
 
-参考案例库不是必需输入；选择参考案例时只作为字段顺序、粒度、命名和历史风格的增强信号，不能补充新需求。`AI-Assisted Snapshot Brief` 只用于人工阅读和来源预览，不作为 V3 需求事实输入。
+参考案例库不是必需输入；选择参考案例时只作为层级、命名、粒度和历史风格的增强信号，不能改变 canonical 字段或补充新需求。`AI-Assisted Snapshot Brief` 只用于人工阅读和来源预览，不作为 V3 需求事实输入。
 
 V3 的 `QA Case Method` 包含：
 
@@ -455,13 +459,10 @@ V3 的 `QA Case Method` 包含：
 导出策略：
 
 - V3 导出入口是 `POST /api/v1/test-cases/generation-runs/{run_id}/export`。
-- 后端按 `generation_run_id` 从短期 DB 结果读取 blueprint、cases、warnings、stats 和 audit，前端不得提交生成用例、blueprint 或 stats 作为导出事实。
-- 不严格复刻主参考案例。
-- 采用“标准字段兜底 + 尽量贴近主参考”。
-- 能映射到标准字段的主参考列，按主参考顺序输出。
-- 主参考缺少关键标准字段时，在后续追加标准字段。
-- 无法识别语义的主参考列不强行生成。
-- 没有主参考或画像不可用时，使用基础用例字段顺序。
+- Generation Run 在终态前自动按短期 DB 结果生成并校验完整产物包；下载接口只读已生成文件，不在点击下载时重新调用 AI 或临时拼工作簿。
+- canonical workbook 使用仓库内版本化模板，固定 A-I 为编号、一级模块、二级模块、检查点、前置条件、步骤、预期、优先级、备注，J-L 为三个中性执行列，优先级枚举固定为 P0/P1/P2/P3。
+- 参考案例不严格复刻，只用于层级、命名、粒度和历史风格，不能重排或扩展 canonical 字段。
+- artifact retry 只重跑确定性渲染，不重跑来源读取、AI、Requirement Atom、蓝图或用例生成。
 
 导出文件至少包含：
 
@@ -472,7 +473,7 @@ V3 的 `QA Case Method` 包含：
 | 生成说明 | Source Evidence 摘要、Sheet 名、Generation Run 状态、主参考案例、附加参考、warnings、AI 供应商脱敏状态、生成时间、coverage limitation |
 | 覆盖审计 | atom id、source sheet、source rows、source columns、atom type、atom text、coverage status、linked case ids、failed chunk、limitation notes |
 
-strict mode 下存在 uncovered atoms 时，导出必须返回 409 中文错误。`partial_completed` 且非 strict mode 可以导出，但 `生成说明` 和 `覆盖审计` 必须显著标记未覆盖范围、失败 chunk 和导出限制。
+strict mode 下存在覆盖或质量阻塞项时不生成可下载 workbook，但仍生成其余审计产物。`partial_completed` 且非 strict mode 可以生成 workbook，但 `生成说明` 和 `覆盖审计` 必须显著标记未覆盖范围、失败 chunk、质量问题和导出限制。
 
 导出安全要求：
 
@@ -493,8 +494,8 @@ strict mode 下存在 uncovered atoms 时，导出必须返回 409 中文错误�
 
 - 策划案来源区：01 数据源模块、策划案来源选择、Sheet 选择。
 - 参考案例区：分类、文件列表、上传、主参考选择、主参考 Sheet 选择、推荐标识、参考用例数量。
-- 操作区：来源预览位于生成输入区；创建 Generation Run、取消、失败 chunk 重试与导出 Excel 统一放在结果区顶部。
-- 预览区：提供 `测试用例`、`覆盖审计`、`需求原子`、`限制提示` 页签；可保留 `AI 整理稿` 作为来源预览辅助页签。
+- 操作区：来源预览位于生成输入区；创建 Generation Run、取消、失败 chunk 重试与产物操作统一放在结果区顶部。
+- 预览区：提供生成文件选择器；xlsx 映射为测试用例表格预览，Markdown/JSON 读取已生成文本预览，并保留 `覆盖审计`、`需求原子`、`限制提示` 等结果视图。
 - 状态区：AI 可用状态、读取/生成/导出进度、错误提示。
 
 状态规则：
@@ -506,9 +507,9 @@ strict mode 下存在 uncovered atoms 时，导出必须返回 409 中文错误�
 - 整理稿未完成或失败时允许创建 Generation Run，页面提示“整理稿仅用于来源预览，未作为 V3 需求事实”或等价文案。
 - 页面刷新后不恢复整理稿或原始快照；可通过 localStorage 中的最近 run id 调用 `GET /generation-runs/{run_id}` 恢复短期 active/latest run。
 - active 状态每 2 秒轮询；`completed`、`partial_completed`、`failed`、`cancelled`、`expired` 后停止轮询。
-- `completed` 或 `partial_completed` 后拉取 atoms/cases，并展示 Coverage Audit 摘要。
-- `partial_completed` 必须显著提示 uncovered atoms、failed chunks 和 export limitations；strict mode 且 uncovered atoms 大于 0 时禁用导出。
-- 未选择参考案例时仍可生成，后端按 `qa-case` 标准蓝图、完整性矩阵和基础字段顺序输出。
+- `completed` 或 `partial_completed` 后拉取 atoms/cases/artifacts，并展示 Coverage Audit 与 Case Quality Audit 摘要。
+- `partial_completed` 必须显著提示 uncovered atoms、failed chunks、quality issues 和 export limitations；strict mode 存在阻塞项时 workbook 显示为 blocked。
+- 未选择参考案例时仍可生成，后端按 `qa-case-xlsx` 标准蓝图、完整性矩阵和 canonical 字段输出。
 - 当前参考案例分类没有推荐主参考时，不自动选择任何参考案例，生成仍可用，并提示本次未使用参考案例增强。
 - 切换参考案例分类时清空已选参考案例、主参考案例和主参考 Sheet；如果新分类有推荐主参考，则默认勾选该推荐主参考并设为主参考。
 - 同一分类内可选择多个参考案例；主参考可选，选择时最多一个。
@@ -530,7 +531,7 @@ strict mode 下存在 uncovered atoms 时，导出必须返回 409 中文错误�
 - AI 快照整理稿：接收当前页面持有的 `Planning Sheet Snapshot`，调用项目级 AI 生成 Markdown 整理稿，不保存整理结果。
 - Generation Run：创建、读取、取消、失败 chunk 重试、TTL/expired 懒清理、阶段进度和项目隔离。
 - Full Context / chunking / Requirement Atom / Blueprint / Cases / Coverage Audit：按阶段推进 run，不保存 raw prompt/raw response。
-- Excel 导出：基于 `generation_run_id` 读取短期 DB 结果生成文件，不依赖前端页面内存结果。
+- 产物渲染：基于 `generation_run_id` 读取短期 DB 结果自动生成 xlsx/md/json 文件，不依赖前端页面内存结果；下载只读文件，重试只重跑 renderer。
 
 接口边界：
 
@@ -542,7 +543,8 @@ strict mode 下存在 uncovered atoms 时，导出必须返回 409 中文错误�
 - V3 `GET /generation-runs/{run_id}` 返回 run summary 和 sanitized stage payload。
 - V3 `POST /generation-runs/{run_id}/cancel` 取消 active run；`POST /generation-runs/{run_id}/retry-failed-chunks` 只允许对存在 failed chunks 的 partial run 重新打开后续阶段。
 - V3 `GET /generation-runs/{run_id}/atoms`、`GET /generation-runs/{run_id}/cases` 返回短期结果。
-- V3 `POST /generation-runs/{run_id}/export` 只按 run id 导出，不接收前端提交的 cases/blueprint/stats。
+- V3 `GET /generation-runs/{run_id}/artifacts` 返回短期产物元数据，`GET /generation-runs/{run_id}/artifacts/{artifact_key}` 预览或下载已校验文件。
+- V3 `POST /generation-runs/{run_id}/artifacts/retry` 只重跑确定性产物渲染；`POST /generation-runs/{run_id}/export` 保留为 workbook 下载兼容入口，均不接收前端提交的 cases/blueprint/stats。
 - 旧 `POST /api/v1/test-cases/generate` 若保留，必须明确不支持 V3 全量生成，不能被前端主流程依赖。
 - 响应结构沿用当前项目 API 风格。
 
@@ -570,9 +572,9 @@ strict mode 下存在 uncovered atoms 时，导出必须返回 409 中文错误�
 - 未选择任何参考案例时，项目成员也可以创建 Generation Run，并得到基于 `qa-case` 标准逻辑、official atoms 和 Coverage Audit 的蓝图、用例和 warnings。
 - 切换到无推荐主参考的参考案例分类时，页面不自动选择文件，并提示本次未使用参考案例增强。
 - 参考案例文件过多时，页面通过搜索、筛选、排序和每页 5 条分页保持布局稳定。
-- 点击“全量生成用例”后页面展示 Generation Run stage progress、用例表格、Coverage Audit、Requirement Atom、warnings 和统计摘要。
-- `completed` run 可导出 Excel，至少包含 `测试用例`、`用例蓝图`、`生成说明`、`覆盖审计` 四个 Sheet。
-- `partial_completed` 非 strict run 可导出并显著提示限制；strict mode 下存在 uncovered atoms 时导出被阻塞。
+- 点击“全量生成用例”后页面展示 Generation Run stage progress、用例表格、Coverage Audit、Case Quality Audit、Requirement Atom、warnings、统计摘要和产物选择器。
+- `completed` run 已自动生成可下载 Excel，至少包含 `测试用例`、`用例蓝图`、`生成说明`、`覆盖审计` 四个 Sheet，同时可选择预览/下载 blueprint、stats、coverage、quality 文件。
+- `partial_completed` 非 strict run 可生成 workbook 并显著提示限制；strict mode 下存在覆盖或质量阻塞项时 workbook 被阻塞，审计文件仍可预览下载。
 - 刷新页面后可通过最近 run id 恢复 TTL 内的 active/latest Generation Run。
 
 ### 17.2 权限验收
@@ -606,8 +608,8 @@ strict mode 下存在 uncovered atoms 时，导出必须返回 409 中文错误�
 - Requirement Atom：chunk 抽取、非法 JSON 容错、去重合并、unfounded candidate 不计入 official atom set。
 - Blueprint/Cases：只从 official atoms 生成，正式用例必须引用 atom id，无依据 case 进入 audit candidates。
 - Coverage Audit：covered/uncovered atom 计算、单轮 supplement、strict/non-strict export 行为、failed chunks 导致 partial。
-- Excel 导出：列顺序、标准字段兜底、四 Sheet、run id DB truth、前端篡改 cases 不影响导出、脱敏。
-- 前端页面：01 数据源模块、策划案来源选择、策划案 Sheet 选择、主参考 Sheet 选择、Generation Run 创建/轮询/取消/重试、warnings 展示、cases/coverage/atoms tabs、run id 导出按钮状态。
+- 产物渲染：canonical A-L 列、P0-P3、四 Sheet、五文件包、run id DB truth、前端篡改 cases 不影响文件、哈希/大小校验、strict block、确定性 retry 和脱敏。
+- 前端页面：01 数据源模块、策划案来源选择、策划案 Sheet 选择、主参考 Sheet 选择、Generation Run 创建/轮询/取消/重试、warnings 展示、cases/coverage/atoms 视图、文件选择预览和已生成文件下载状态。
 - 参考案例库前端页面：分类 pill 和数量、切换分类清空选择、推荐主参考默认选中、无推荐分类不自动选择、多选参考案例、设为主参考自动勾选、主参考下拉仅展示已选参考、搜索空态、文件过多时每页 5 条分页展示。
 
 ## 19. 历史边界与后续候选

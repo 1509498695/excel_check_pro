@@ -190,6 +190,144 @@ async def _seed_visual_run(
         return run.id
 
 
+async def _seed_sheet_visual_run(project_id: int) -> int:
+    async with async_session_factory() as session:
+        run = SourceEvidenceRunRecord(
+            project_id=project_id,
+            source_type="local_file",
+            source_identifier=f"xlsx-{uuid4().hex[:8]}",
+            source_title="Sheet 视觉观察.xlsx",
+            status="ready",
+            expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1),
+            raw_manifest_json=json.dumps(
+                {
+                    "doc_type": "xlsx",
+                    "warnings": [],
+                    "counts": {"resource_count": 3, "source_unit_count": 2},
+                },
+                ensure_ascii=False,
+            ),
+        )
+        session.add(run)
+        await session.flush()
+        source_evidence_storage.ensure_source_evidence_subdirs(
+            project_id=project_id,
+            run_id=run.id,
+        )
+        for relative_path in ("images/a-1.png", "images/a-2.png", "images/b-1.png"):
+            source_evidence_storage.write_source_evidence_bytes(
+                project_id,
+                run.id,
+                relative_path,
+                _PNG_1X1,
+            )
+        source_evidence_storage.write_source_evidence_json(
+            project_id,
+            run.id,
+            "raw/parsed_source.json",
+            {
+                "source_type": "local_file",
+                "title": "Sheet 视觉观察.xlsx",
+                "doc_type": "xlsx",
+                "token": "sha256:sheet-observation",
+                "url": "",
+                "markdown": "",
+                "source_units": [
+                    {
+                        "unit_id": "sheet_a",
+                        "kind": "sheet",
+                        "title": "需求A",
+                        "cells": [],
+                        "metadata": {"sheet_id": "gid-a", "sheet_index": 1, "resource_count": 2},
+                    },
+                    {
+                        "unit_id": "sheet_b",
+                        "kind": "sheet",
+                        "title": "需求B",
+                        "cells": [],
+                        "metadata": {"sheet_id": "gid-b", "sheet_index": 2, "resource_count": 1},
+                    },
+                ],
+                "resources": [],
+                "raw_manifest": {},
+                "warnings": [],
+            },
+        )
+        resources = [
+            SourceEvidenceResourceRecord(
+                run_id=run.id,
+                project_id=project_id,
+                ref="img_a1",
+                resource_type="image",
+                position="excel:sheet=需求A:image=10:anchor=B2",
+                filename="需求A-流程图-1.png",
+                status="unobserved",
+                download_status="downloaded",
+                local_path="images/a-1.png",
+                mime_type="image/png",
+                metadata_json=json.dumps(
+                    {"sheet": "需求A", "sheet_index": 1, "anchor": "B2"},
+                    ensure_ascii=False,
+                ),
+            ),
+            SourceEvidenceResourceRecord(
+                run_id=run.id,
+                project_id=project_id,
+                ref="img_a2",
+                resource_type="image",
+                position="excel:sheet=需求A:image=11:anchor=C8",
+                filename="需求A-流程图-2.png",
+                status="unobserved",
+                download_status="downloaded",
+                local_path="images/a-2.png",
+                mime_type="image/png",
+                metadata_json=json.dumps(
+                    {"sheet_index": 1, "anchor": "C8"},
+                    ensure_ascii=False,
+                ),
+            ),
+            SourceEvidenceResourceRecord(
+                run_id=run.id,
+                project_id=project_id,
+                ref="img_b1",
+                resource_type="image",
+                position="需求B!D1",
+                filename="需求B-入口截图.png",
+                status="unobserved",
+                download_status="downloaded",
+                local_path="images/b-1.png",
+                mime_type="image/png",
+                metadata_json=json.dumps(
+                    {"nearby_text_before": "如下图展示入口按钮"},
+                    ensure_ascii=False,
+                ),
+            ),
+        ]
+        session.add_all(resources)
+        await session.flush()
+        source_evidence_storage.write_source_evidence_json(
+            project_id,
+            run.id,
+            "resources.json",
+            [
+                {
+                    "id": resource.id,
+                    "ref": resource.ref,
+                    "type": resource.resource_type,
+                    "position": resource.position,
+                    "filename": resource.filename,
+                    "download_status": resource.download_status,
+                    "adoption_status": resource.status,
+                    "mime_type": resource.mime_type,
+                    "local_path": resource.local_path,
+                }
+                for resource in resources
+            ],
+        )
+        await session.commit()
+        return run.id
+
+
 async def _seed_foreign_project_run() -> int:
     async with async_session_factory() as session:
         project = Project(name=f"vision-foreign-{uuid4().hex[:8]}", description="")
@@ -260,7 +398,7 @@ async def _create_observation(
 
 
 @pytest.mark.anyio
-async def test_vision_unconfigured_returns_displayable_error_but_text_generation_still_works(
+async def test_vision_unconfigured_is_displayable_and_legacy_sync_generation_is_retired(
     auth_client: AsyncClient,
     test_project_id: int,
     monkeypatch: pytest.MonkeyPatch,
@@ -310,8 +448,8 @@ async def test_vision_unconfigured_returns_displayable_error_but_text_generation
         },
     )
 
-    assert generate_response.status_code == 200, generate_response.text
-    assert generate_response.json()["data"]["cases"][0]["case_id"] == "TC-001"
+    assert generate_response.status_code == 410
+    assert generate_response.json()["detail"] == "同步用例生成入口已停用，请使用 V3 Generation Run。"
 
 
 @pytest.mark.anyio
@@ -369,6 +507,75 @@ async def test_observation_uses_saved_selection_and_does_not_leak_sensitive_fiel
         assert "provider_response" not in json.dumps(payload, ensure_ascii=False)
         assert "prompt" not in json.dumps(payload, ensure_ascii=False)
         assert "images/ui.png" not in json.dumps(payload, ensure_ascii=False)
+
+
+@pytest.mark.anyio
+async def test_sheet_default_selection_observes_only_current_sheet_and_does_not_adopt(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id = await _seed_sheet_visual_run(test_project_id)
+    await _seed_project_vision_ai(test_project_id)
+    observed_refs: list[str] = []
+
+    async def fake_call_provider_vision_json(**kwargs: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+        prompt = str(kwargs["user_prompt"])
+        ref = next(item for item in ("img_a1", "img_a2", "img_b1") if item in prompt)
+        observed_refs.append(ref)
+        return {
+            "summary": f"{ref} 的截图观察。",
+            "visible_text": ref,
+            "confidence": 0.9,
+            "limitations": [],
+        }, {"usage": {"total_tokens": 8}}
+
+    monkeypatch.setattr(
+        "backend.app.test_cases.visual_evidence.call_provider_vision_json",
+        fake_call_provider_vision_json,
+    )
+
+    candidates_response = await auth_client.get(
+        f"/api/v1/test-cases/source-evidence-runs/{run_id}/visual-candidates",
+        params={"sheet_name": "需求A"},
+    )
+    assert candidates_response.status_code == 200, candidates_response.text
+    assert set(candidates_response.json()["data"]["selected_refs"]) == {"img_a1", "img_a2"}
+
+    observation_response = await auth_client.post(
+        f"/api/v1/test-cases/source-evidence-runs/{run_id}/observations",
+        json={},
+    )
+
+    assert observation_response.status_code == 200, observation_response.text
+    data = observation_response.json()["data"]
+    assert {item["ref"] for item in data["items"]} == {"img_a1", "img_a2"}
+    assert {item["status"] for item in data["items"]} == {"observed"}
+    assert set(observed_refs) == {"img_a1", "img_a2"}
+
+    try:
+        adopted_index = source_evidence_storage.read_source_evidence_json(
+            test_project_id,
+            run_id,
+            "visual_evidence/adopted_visual_evidence.json",
+        )
+    except FileNotFoundError:
+        adopted_index = {"items": []}
+    assert adopted_index["items"] == []
+
+    async with async_session_factory() as session:
+        resources = (
+            await session.execute(
+                select(SourceEvidenceResourceRecord).where(
+                    SourceEvidenceResourceRecord.project_id == test_project_id,
+                    SourceEvidenceResourceRecord.run_id == run_id,
+                )
+            )
+        ).scalars().all()
+        status_by_ref = {resource.ref: resource.status for resource in resources}
+        assert status_by_ref["img_a1"] == "observed"
+        assert status_by_ref["img_a2"] == "observed"
+        assert status_by_ref["img_b1"] == "unobserved"
 
 
 @pytest.mark.anyio

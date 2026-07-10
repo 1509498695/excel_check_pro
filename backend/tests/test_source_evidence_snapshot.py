@@ -73,12 +73,169 @@ def _parsed_sheet_source() -> ParsedFeishuSource:
     )
 
 
+def _multi_sheet_parsed_source() -> ParsedSource:
+    return ParsedSource(
+        source_type="local_file",
+        title="multi.xlsx",
+        doc_type="xlsx",
+        token="sha256:multi",
+        url="",
+        markdown="",
+        source_units=[
+            ParsedSourceUnit(
+                unit_id="xlsx_s001",
+                kind="sheet",
+                title="第一页",
+                cells=[
+                    ParsedSourceCell(coord="A1", row=1, col=1, text="第一行"),
+                ],
+                metadata={"resource_count": 0},
+            ),
+            ParsedSourceUnit(
+                unit_id="xlsx_s002",
+                kind="sheet",
+                title="第二页",
+                cells=[
+                    ParsedSourceCell(coord="A1", row=1, col=1, text="第二行"),
+                    ParsedSourceCell(coord="B2", row=2, col=2, text="第二页规则"),
+                ],
+                metadata={"resource_count": 1},
+            ),
+        ],
+        raw_manifest={"doc_type": "xlsx"},
+    )
+
+
+def _sheet_scoped_xlsx_parsed_source() -> ParsedSource:
+    return ParsedSource(
+        source_type="local_file",
+        title="scope.xlsx",
+        doc_type="xlsx",
+        token="sha256:scope",
+        url="",
+        markdown=(
+            "# Source: scope.xlsx\n"
+            "## Sheet: 需求A\n"
+            "- markdown-only-A-should-not-render\n"
+            "## Sheet: 需求B\n"
+            "- markdown-only-B-should-not-leak\n"
+        ),
+        source_units=[
+            ParsedSourceUnit(
+                unit_id="xlsx_s001",
+                kind="sheet",
+                title="需求A",
+                cells=[
+                    ParsedSourceCell(coord="A1", row=1, col=1, text="需求A标题"),
+                    ParsedSourceCell(coord="B2", row=2, col=2, text="A规则-只在A"),
+                ],
+                metadata={"sheet_index": 1, "sheet_id": "gidA", "resource_count": 2},
+            ),
+            ParsedSourceUnit(
+                unit_id="xlsx_s002",
+                kind="sheet",
+                title="需求B",
+                cells=[
+                    ParsedSourceCell(coord="A1", row=1, col=1, text="需求B标题"),
+                    ParsedSourceCell(coord="B2", row=2, col=2, text="B规则-只在B"),
+                ],
+                metadata={"sheet_index": 2, "sheet_id": "gidB", "resource_count": 2},
+            ),
+            ParsedSourceUnit(
+                unit_id="xlsx_s003",
+                kind="sheet",
+                title="空图",
+                cells=[],
+                metadata={"sheet_index": 3, "sheet_id": "gidEmpty", "resource_count": 1},
+            ),
+        ],
+        raw_manifest={"doc_type": "xlsx"},
+    )
+
+
+def _sheet_scoped_xlsx_resources() -> list[dict]:
+    return [
+        {
+            "ref": "img_a",
+            "type": "image",
+            "position": "excel:sheet=需求A:image=1:anchor=B12",
+            "filename": "a.png",
+            "file_token": "secret-file-token-a",
+            "local_path": "D:/secret/source-evidence/a.png",
+            "metadata": {
+                "sheet": "需求A",
+                "sheet_index": 1,
+                "anchor": "B12",
+                "provider_response": "provider raw must not leak",
+            },
+        },
+        {
+            "ref": "img_a_index",
+            "type": "image",
+            "position": "legacy:image=需求A-index-only",
+            "filename": "a-index.png",
+            "file_token": "secret-file-token-a-index",
+            "local_path": "D:/secret/source-evidence/a-index.png",
+            "metadata": {
+                "sheet_index": 1,
+                "provider_response": "provider raw must not leak",
+            },
+        },
+        {
+            "ref": "img_b",
+            "type": "image",
+            "position": "excel:sheet=需求B:image=1:anchor=C12",
+            "filename": "b.png",
+            "file_token": "secret-file-token-b",
+            "local_path": "D:/secret/source-evidence/b.png",
+            "metadata": {
+                "sheet": "需求B",
+                "sheet_index": 2,
+                "anchor": "C12",
+                "provider_response": "provider raw must not leak",
+            },
+        },
+        {
+            "ref": "img_b_position",
+            "type": "image",
+            "position": "需求B!D7",
+            "filename": "b-position.png",
+            "file_token": "secret-file-token-b-position",
+            "local_path": "D:/secret/source-evidence/b-position.png",
+            "metadata": {"provider_response": "provider raw must not leak"},
+        },
+        {
+            "ref": "img_empty",
+            "type": "image",
+            "position": "excel:sheet=空图:image=1:anchor=D4",
+            "filename": "empty.png",
+            "file_token": "secret-file-token-empty",
+            "local_path": "D:/secret/source-evidence/empty.png",
+            "metadata": {
+                "sheet": "空图",
+                "sheet_index": 3,
+                "anchor": "D4",
+                "provider_response": "provider raw must not leak",
+            },
+        },
+    ]
+
+
 def _cell_values(snapshot: dict) -> list[str]:
     return [
         cell["value"]
         for row in snapshot["rows"]
         for cell in row["cells"]
     ]
+
+
+def _rows_with_status(snapshot: dict, status: str) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for row in snapshot["rows"]:
+        values = {cell["column_name"]: cell["value"] for cell in row["cells"]}
+        if values.get("证据状态") == status:
+            rows.append(values)
+    return rows
 
 
 async def _seed_generic_source_evidence_run(
@@ -180,6 +337,7 @@ async def test_source_evidence_snapshot_is_planning_snapshot_compatible(
     assert snapshot_response.status_code == 200
     snapshot = PlanningSnapshotResponse.model_validate(snapshot_response.json()["data"])
     assert snapshot.source_summary == "飞书 sheets：富表格"
+    assert snapshot.sheet_name == "需求"
     assert snapshot.columns == ["来源类型", "位置", "标题/页签", "内容", "证据状态"]
     assert any(
         cell.column_name == "证据状态" and cell.value == "pending_visual"
@@ -278,6 +436,7 @@ async def test_docx_snapshot_uses_neutral_resource_rows_without_marker_content(
 
     assert response.status_code == 200, response.text
     snapshot_text = json.dumps(response.json()["data"], ensure_ascii=False)
+    assert response.json()["data"]["sheet_name"] == "Source Evidence"
     values = _cell_values(response.json()["data"])
     assert "正文规则：每日可领取一次。" in values
     assert any("资源 docx_img_001" in value for value in values)
@@ -285,6 +444,192 @@ async def test_docx_snapshot_uses_neutral_resource_rows_without_marker_content(
     assert "doccn-secret-token" not in snapshot_text
     assert "raw provider response" not in snapshot_text
     assert "D:/runtime" not in snapshot_text
+
+
+@pytest.mark.anyio
+async def test_multi_sheet_snapshot_requires_sheet_name(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    run_id = await _seed_generic_source_evidence_run(
+        test_project_id,
+        source_type="local_file",
+        doc_type="xlsx",
+        title="multi.xlsx",
+        parsed_source=_multi_sheet_parsed_source().model_dump(mode="json"),
+    )
+
+    response = await auth_client.post(
+        f"/api/v1/test-cases/source-evidence-runs/{run_id}/snapshot"
+    )
+
+    assert response.status_code == 400
+    assert "Sheet" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_multi_sheet_snapshot_accepts_selected_sheet_name(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    run_id = await _seed_generic_source_evidence_run(
+        test_project_id,
+        source_type="local_file",
+        doc_type="xlsx",
+        title="multi.xlsx",
+        parsed_source=_multi_sheet_parsed_source().model_dump(mode="json"),
+    )
+
+    response = await auth_client.post(
+        f"/api/v1/test-cases/source-evidence-runs/{run_id}/snapshot",
+        json={"sheet_name": "第二页"},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["sheet_name"] == "第二页"
+
+
+@pytest.mark.anyio
+async def test_xlsx_snapshot_filters_rows_and_images_to_selected_sheet_a(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    run_id = await _seed_generic_source_evidence_run(
+        test_project_id,
+        source_type="local_file",
+        doc_type="xlsx",
+        title="scope.xlsx",
+        parsed_source=_sheet_scoped_xlsx_parsed_source().model_dump(mode="json"),
+        manifest={"svn_password": "secret_password_should_not_leak", "warnings": []},
+        resources=_sheet_scoped_xlsx_resources(),
+    )
+
+    response = await auth_client.post(
+        f"/api/v1/test-cases/source-evidence-runs/{run_id}/snapshot",
+        json={"sheet_name": "需求A"},
+    )
+
+    assert response.status_code == 200, response.text
+    snapshot = response.json()["data"]
+    assert snapshot["sheet_name"] == "需求A"
+    assert snapshot["columns"] == ["来源类型", "位置", "标题/页签", "内容", "证据状态"]
+    values = _cell_values(snapshot)
+    assert "需求A标题" in values
+    assert "A规则-只在A" in values
+    assert "需求B标题" not in values
+    assert "B规则-只在B" not in values
+    pending_visual_text = json.dumps(
+        _rows_with_status(snapshot, "pending_visual"),
+        ensure_ascii=False,
+    )
+    assert "img_a" in pending_visual_text
+    assert "img_a_index" in pending_visual_text
+    assert "img_b" not in pending_visual_text
+    assert "img_b_position" not in pending_visual_text
+    assert "img_empty" not in pending_visual_text
+    snapshot_text = json.dumps(snapshot, ensure_ascii=False)
+    assert "markdown-only-A-should-not-render" not in snapshot_text
+    assert "markdown-only-B-should-not-leak" not in snapshot_text
+    assert "D:/secret" not in snapshot_text
+    assert "secret-file-token" not in snapshot_text
+    assert "provider_response" not in snapshot_text
+    assert "secret_password_should_not_leak" not in snapshot_text
+
+
+@pytest.mark.anyio
+async def test_xlsx_snapshot_filters_rows_and_images_to_selected_sheet_b(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    run_id = await _seed_generic_source_evidence_run(
+        test_project_id,
+        source_type="local_file",
+        doc_type="xlsx",
+        title="scope.xlsx",
+        parsed_source=_sheet_scoped_xlsx_parsed_source().model_dump(mode="json"),
+        resources=_sheet_scoped_xlsx_resources(),
+    )
+
+    response = await auth_client.post(
+        f"/api/v1/test-cases/source-evidence-runs/{run_id}/snapshot",
+        json={"sheet_name": "需求B"},
+    )
+
+    assert response.status_code == 200, response.text
+    snapshot = response.json()["data"]
+    assert snapshot["sheet_name"] == "需求B"
+    values = _cell_values(snapshot)
+    assert "需求B标题" in values
+    assert "B规则-只在B" in values
+    assert "需求A标题" not in values
+    assert "A规则-只在A" not in values
+    pending_visual_text = json.dumps(
+        _rows_with_status(snapshot, "pending_visual"),
+        ensure_ascii=False,
+    )
+    assert "img_b" in pending_visual_text
+    assert "img_b_position" in pending_visual_text
+    assert "img_a" not in pending_visual_text
+    assert "img_a_index" not in pending_visual_text
+    assert "img_empty" not in pending_visual_text
+
+
+@pytest.mark.anyio
+async def test_empty_xlsx_sheet_snapshot_warns_and_keeps_sheet_images(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    run_id = await _seed_generic_source_evidence_run(
+        test_project_id,
+        source_type="local_file",
+        doc_type="xlsx",
+        title="scope.xlsx",
+        parsed_source=_sheet_scoped_xlsx_parsed_source().model_dump(mode="json"),
+        resources=_sheet_scoped_xlsx_resources(),
+    )
+
+    response = await auth_client.post(
+        f"/api/v1/test-cases/source-evidence-runs/{run_id}/snapshot",
+        json={"sheet_name": "空图"},
+    )
+
+    assert response.status_code == 200, response.text
+    snapshot = response.json()["data"]
+    assert snapshot["sheet_name"] == "空图"
+    assert _rows_with_status(snapshot, "table") == []
+    pending_visual_text = json.dumps(
+        _rows_with_status(snapshot, "pending_visual"),
+        ensure_ascii=False,
+    )
+    assert "img_empty" in pending_visual_text
+    assert "img_a" not in pending_visual_text
+    assert "img_b" not in pending_visual_text
+    assert any(
+        "所选 Sheet 无文本单元格：空图" in warning["message"]
+        for warning in snapshot["warnings"]
+    )
+
+
+@pytest.mark.anyio
+async def test_unknown_sheet_name_rejects_snapshot(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    run_id = await _seed_generic_source_evidence_run(
+        test_project_id,
+        source_type="local_file",
+        doc_type="xlsx",
+        title="multi.xlsx",
+        parsed_source=_multi_sheet_parsed_source().model_dump(mode="json"),
+    )
+
+    response = await auth_client.post(
+        f"/api/v1/test-cases/source-evidence-runs/{run_id}/snapshot",
+        json={"sheet_name": "不存在"},
+    )
+
+    assert response.status_code == 400
+    assert "Sheet 不存在" in response.json()["detail"]
 
 
 @pytest.mark.anyio

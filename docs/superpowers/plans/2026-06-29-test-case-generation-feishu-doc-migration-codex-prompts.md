@@ -133,7 +133,7 @@ python -m pytest backend/tests/test_source_evidence_models.py backend/tests/test
 - docx blocks 要提取图片块、文件块、inline file、inline block、表格单元格子块和 unsupported resource candidates。
 - docx 文本中保留 <image ref="..." position="..." /> 和 <attachment ref="..." position="..." /> marker。
 - 不把 raw_content 中出现的 image.png 文件名当作真实图片证据。
-- sheets 富读取要读取所有可见 Sheet，保留 Sheet title、坐标、稀疏单元格、资源位置、隐藏 Sheet 排除 warning。
+- sheets 富读取要读取可见 Sheet 集合，保留 Sheet title、坐标、稀疏单元格、资源位置、隐藏 Sheet 排除 warning。
 - bitable 先做架构预留和只读 records/search 基础解析，允许 API 暂不开放。
 - 输出统一 Parsed Source 结构，包含 markdown/source units/resources/raw manifest/warnings。
 - 所有 Feishu 错误必须脱敏，不输出 app_secret、tenant_access_token、user_access_token、OAuth code。

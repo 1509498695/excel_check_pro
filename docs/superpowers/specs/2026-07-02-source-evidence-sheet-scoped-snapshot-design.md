@@ -2,7 +2,9 @@
 
 ## Context
 
-The test case generation workspace currently creates a `Source Evidence Run` for local files, SVN files, and Feishu documents. Workbook readers parse all visible sheets and resources into one run, while the snapshot endpoint converts the full parsed source into a single `PlanningSnapshotResponse` with `sheet_name = Source Evidence`.
+The test case generation workspace creates a `Source Evidence Run` for local files, SVN files, and Feishu documents. Before the sheet-scoped contract, workbook readers parsed all visible sheets and resources into one run, and the snapshot endpoint converted the parsed workbook content into a single `PlanningSnapshotResponse` with `sheet_name = Source Evidence`.
+
+That earlier snapshot behavior has been replaced by the current contract: `Source Evidence Run` remains the whole-source reading session, while snapshot, generation, and export resolve one selected `Planning Sheet` for workbook-like sources.
 
 The desired behavior is to restore the domain rule that one generation is based on one `Planning Sheet`: after a workbook is read, the user chooses a sheet, and the generated snapshot and test cases use that sheet's text, tables, and images.
 

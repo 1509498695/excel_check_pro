@@ -103,6 +103,16 @@ class SourceEvidenceRunCreateRequest(TestCaseBaseModel):
     source_url: str = Field(min_length=1)
 
 
+class SourceEvidenceSheetOption(TestCaseBaseModel):
+    """Source Evidence 可选 Sheet 摘要，不返回单元格原文。"""
+
+    name: str
+    kind: str
+    cell_count: int = Field(default=0, ge=0)
+    resource_count: int = Field(default=0, ge=0)
+    is_default: bool = False
+
+
 class SourceEvidenceRunResponse(TestCaseBaseModel):
     """Source Evidence Run 摘要响应，不返回原文或本地路径。"""
 
@@ -116,6 +126,151 @@ class SourceEvidenceRunResponse(TestCaseBaseModel):
     expires_at: str | None = None
     warnings: list[GenerationWarning] = Field(default_factory=list)
     resource_count: int = Field(default=0, ge=0)
+    sheet_options: list[SourceEvidenceSheetOption] = Field(default_factory=list)
+
+
+GenerationRunStatus = Literal[
+    "queued",
+    "reading",
+    "chunking",
+    "extracting_atoms",
+    "merging_atoms",
+    "blueprinting",
+    "generating_cases",
+    "auditing_coverage",
+    "supplementing",
+    "auditing_quality",
+    "repairing_cases",
+    "rendering_artifacts",
+    "completed",
+    "partial_completed",
+    "failed",
+    "cancelled",
+    "expired",
+]
+
+
+class TestCaseGenerationArtifactResponse(TestCaseBaseModel):
+    """Generation Run 自动生成产物的安全元数据。"""
+
+    key: str
+    label: str
+    file_name: str
+    media_type: str
+    preview_kind: Literal["cases", "markdown", "json"]
+    size_bytes: int = Field(default=0, ge=0)
+    sha256: str = ""
+    status: Literal["ready", "blocked", "missing", "failed"] = "ready"
+    message: str = ""
+
+
+class TestCaseGenerationArtifactListResponse(TestCaseBaseModel):
+    """Generation Run 自动生成产物列表。"""
+
+    items: list[TestCaseGenerationArtifactResponse] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
+
+
+class TestCaseGenerationRunCreateRequest(TestCaseBaseModel):
+    """创建 V3 Generation Run 的请求。"""
+
+    source_evidence_run_id: int = Field(ge=1)
+    planning_sheet_name: str = Field(min_length=1, max_length=255)
+    reference_ids: list[int] = Field(default_factory=list)
+    primary_reference_id: int | None = Field(default=None, ge=1)
+    primary_reference_sheet_name: str | None = Field(default=None, max_length=255)
+    strict_mode: bool = False
+
+
+class TestCaseGenerationRunResponse(TestCaseBaseModel):
+    """V3 Generation Run 摘要响应，不包含 prompt 或 provider 原文。"""
+
+    id: int
+    project_id: int
+    source_evidence_run_id: int
+    created_by: int | None = None
+    cancelled_by: int | None = None
+    status: GenerationRunStatus
+    planning_sheet_name: str
+    reference_ids: list[int] = Field(default_factory=list)
+    primary_reference_id: int | None = None
+    primary_reference_sheet_name: str | None = None
+    strict_mode: bool = False
+    total_chunks: int = Field(default=0, ge=0)
+    completed_chunks: int = Field(default=0, ge=0)
+    failed_chunks: int = Field(default=0, ge=0)
+    atom_count: int = Field(default=0, ge=0)
+    case_count: int = Field(default=0, ge=0)
+    warning_count: int = Field(default=0, ge=0)
+    error_summary: str = ""
+    warnings: list[GenerationWarning] = Field(default_factory=list)
+    stage_payload: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[TestCaseGenerationArtifactResponse] = Field(default_factory=list)
+    expires_at: str | None = None
+    completed_at: str | None = None
+    cancelled_at: str | None = None
+    expired_at: str | None = None
+    cleaned_at: str | None = None
+    created_at: str | None = None
+    updated_at: str | None = None
+
+
+class TestCaseGenerationRunCancelResponse(TestCaseGenerationRunResponse):
+    """取消 Generation Run 后返回的 run 摘要。"""
+
+
+class TestCaseGenerationRunRetryFailedChunksResponse(TestCaseBaseModel):
+    """重试失败 chunk 的骨架响应。"""
+
+    run_id: int
+    status: GenerationRunStatus
+    retried_chunk_count: int = Field(default=0, ge=0)
+
+
+class TestCaseRequirementAtomResponse(TestCaseBaseModel):
+    """V3 需求原子安全响应。"""
+
+    id: int
+    atom_id: str
+    atom_type: str = "requirement"
+    requirement_text: str = ""
+    source_sheet_name: str = ""
+    source_row_start: int | None = None
+    source_row_end: int | None = None
+    source_columns: list[str] = Field(default_factory=list)
+    visual_evidence_refs: list[str] = Field(default_factory=list)
+    confidence: float | None = Field(default=None, ge=0, le=1)
+    coverage_status: str = "unmapped"
+
+
+class TestCaseRequirementAtomListResponse(TestCaseBaseModel):
+    """V3 需求原子列表。"""
+
+    items: list[TestCaseRequirementAtomResponse] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
+
+
+class TestCaseGenerationCaseResponse(TestCaseBaseModel):
+    """V3 生成用例安全响应。"""
+
+    id: int
+    case_id: str
+    fields: dict[str, Any] = Field(default_factory=dict)
+    atom_refs: list[str] = Field(default_factory=list)
+    status: str = "official"
+
+
+class TestCaseGenerationCaseListResponse(TestCaseBaseModel):
+    """V3 生成用例列表。"""
+
+    items: list[TestCaseGenerationCaseResponse] = Field(default_factory=list)
+    total: int = Field(default=0, ge=0)
+
+
+class SourceEvidenceSnapshotRequest(TestCaseBaseModel):
+    """Source Evidence Snapshot 可选 Sheet 选择。"""
+
+    sheet_name: str | None = None
 
 
 class SourceEvidenceCapabilityItem(TestCaseBaseModel):
@@ -249,6 +404,7 @@ class SourceEvidenceVisualSelectionRequest(TestCaseBaseModel):
     """替换式保存用户选择的视觉候选 ref。"""
 
     selected_refs: list[str] = Field(default_factory=list)
+    sheet_name: str | None = None
 
 
 class SourceEvidenceObservationResponse(TestCaseBaseModel):
@@ -412,6 +568,9 @@ class GeneratedTestCase(TestCaseBaseModel):
     """标准测试用例行。"""
 
     case_id: str = ""
+    primary_module: str = ""
+    secondary_module: str = ""
+    checkpoint: str = ""
     module: str = ""
     feature: str = ""
     scenario: str = ""
@@ -496,6 +655,7 @@ class TestCaseExportRequest(TestCaseBaseModel):
     source_summary: str = ""
     source_evidence_run_id: int | None = Field(default=None, ge=1)
     adopted_visual_evidence_ids: list[int] = Field(default_factory=list)
+    planning_sheet_name: str | None = None
     source_evidence_summary: str = ""
     evidence_summary: str = ""
 

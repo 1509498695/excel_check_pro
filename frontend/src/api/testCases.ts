@@ -17,11 +17,18 @@ import type {
   SourceEvidenceResourceListApiResponse,
   SourceEvidenceRunApiResponse,
   SourceEvidenceRunCreateRequest,
+  SourceEvidenceSnapshotRequest,
   SourceEvidenceVisualCandidatesApiResponse,
   SourceEvidenceVisualSelectionRequest,
   TestCaseExportRequest,
+  TestCaseGenerationCaseListApiResponse,
+  TestCaseGenerationArtifactListApiResponse,
   TestCaseGenerationApiResponse,
   TestCaseGenerationRequest,
+  TestCaseGenerationRunApiResponse,
+  TestCaseGenerationRunCreateRequest,
+  TestCaseGenerationRunRetryFailedChunksApiResponse,
+  TestCaseRequirementAtomListApiResponse,
   SourceEvidenceAuthorizationRequestApiResponse,
   SourceEvidenceCapabilityStatusApiResponse,
 } from '../types/testCases'
@@ -79,9 +86,12 @@ export async function fetchSourceEvidenceResources(runId: number): Promise<Sourc
 
 export async function fetchSourceEvidenceVisualCandidates(
   runId: number,
+  sheetName?: string | null,
 ): Promise<SourceEvidenceVisualCandidatesApiResponse> {
+  const normalizedSheetName = sheetName?.trim()
+  const query = normalizedSheetName ? `?sheet_name=${encodeURIComponent(normalizedSheetName)}` : ''
   return apiFetch<SourceEvidenceVisualCandidatesApiResponse>(
-    `/api/v1/test-cases/source-evidence-runs/${runId}/visual-candidates`,
+    `/api/v1/test-cases/source-evidence-runs/${runId}/visual-candidates${query}`,
   )
 }
 
@@ -142,10 +152,17 @@ export async function revokeSourceEvidenceVisualEvidence(
   )
 }
 
-export async function readSourceEvidenceSnapshot(runId: number): Promise<PlanningSnapshotApiResponse> {
-  return apiFetch<PlanningSnapshotApiResponse>(`/api/v1/test-cases/source-evidence-runs/${runId}/snapshot`, {
+export async function readSourceEvidenceSnapshot(
+  runId: number,
+  payload?: SourceEvidenceSnapshotRequest | null,
+): Promise<PlanningSnapshotApiResponse> {
+  const options: RequestInit = {
     method: 'POST',
-  })
+  }
+  if (payload) {
+    options.body = JSON.stringify(payload)
+  }
+  return apiFetch<PlanningSnapshotApiResponse>(`/api/v1/test-cases/source-evidence-runs/${runId}/snapshot`, options)
 }
 
 export async function retrySourceEvidenceRun(runId: number): Promise<SourceEvidenceRunApiResponse> {
@@ -188,6 +205,101 @@ export async function generateTestCases(
     method: 'POST',
     body: JSON.stringify(payload),
   })
+}
+
+export async function createGenerationRun(
+  payload: TestCaseGenerationRunCreateRequest,
+): Promise<TestCaseGenerationRunApiResponse> {
+  return apiFetch<TestCaseGenerationRunApiResponse>('/api/v1/test-cases/generation-runs', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function fetchGenerationRun(runId: number): Promise<TestCaseGenerationRunApiResponse> {
+  return apiFetch<TestCaseGenerationRunApiResponse>(`/api/v1/test-cases/generation-runs/${runId}`)
+}
+
+export const getGenerationRun = fetchGenerationRun
+
+export async function cancelGenerationRun(runId: number): Promise<TestCaseGenerationRunApiResponse> {
+  return apiFetch<TestCaseGenerationRunApiResponse>(`/api/v1/test-cases/generation-runs/${runId}/cancel`, {
+    method: 'POST',
+  })
+}
+
+export async function retryFailedGenerationChunks(
+  runId: number,
+): Promise<TestCaseGenerationRunRetryFailedChunksApiResponse> {
+  return apiFetch<TestCaseGenerationRunRetryFailedChunksApiResponse>(
+    `/api/v1/test-cases/generation-runs/${runId}/retry-failed-chunks`,
+    {
+      method: 'POST',
+    },
+  )
+}
+
+export async function fetchGenerationRunAtoms(runId: number): Promise<TestCaseRequirementAtomListApiResponse> {
+  return apiFetch<TestCaseRequirementAtomListApiResponse>(`/api/v1/test-cases/generation-runs/${runId}/atoms`)
+}
+
+export const listGenerationRunAtoms = fetchGenerationRunAtoms
+
+export async function fetchGenerationRunCases(runId: number): Promise<TestCaseGenerationCaseListApiResponse> {
+  return apiFetch<TestCaseGenerationCaseListApiResponse>(`/api/v1/test-cases/generation-runs/${runId}/cases`)
+}
+
+export const listGenerationRunCases = fetchGenerationRunCases
+
+export async function fetchGenerationRunArtifacts(
+  runId: number,
+): Promise<TestCaseGenerationArtifactListApiResponse> {
+  return apiFetch<TestCaseGenerationArtifactListApiResponse>(
+    `/api/v1/test-cases/generation-runs/${runId}/artifacts`,
+  )
+}
+
+export const listGenerationRunArtifacts = fetchGenerationRunArtifacts
+
+export async function downloadGenerationRunArtifact(
+  runId: number,
+  artifactKey: string,
+  fallbackFilename: string,
+): Promise<ApiFileResponse> {
+  return apiDownloadFile(
+    `/api/v1/test-cases/generation-runs/${runId}/artifacts/${encodeURIComponent(artifactKey)}`,
+    fallbackFilename,
+  )
+}
+
+export async function fetchGenerationRunArtifactText(
+  runId: number,
+  artifactKey: string,
+): Promise<string> {
+  const file = await apiDownloadFile(
+    `/api/v1/test-cases/generation-runs/${runId}/artifacts/${encodeURIComponent(artifactKey)}?inline=true`,
+    artifactKey,
+  )
+  return file.blob.text()
+}
+
+export async function retryGenerationRunArtifacts(
+  runId: number,
+): Promise<TestCaseGenerationArtifactListApiResponse> {
+  return apiFetch<TestCaseGenerationArtifactListApiResponse>(
+    `/api/v1/test-cases/generation-runs/${runId}/artifacts/retry`,
+    { method: 'POST' },
+  )
+}
+
+export async function exportGenerationRunWorkbook(runId: number): Promise<ApiFileResponse> {
+  return apiDownloadFile(
+    `/api/v1/test-cases/generation-runs/${runId}/export`,
+    `test-cases-v3-run-${runId}.xlsx`,
+    {
+      method: 'POST',
+    },
+  )
 }
 
 export async function exportTestCaseWorkbook(payload: TestCaseExportRequest): Promise<ApiFileResponse> {

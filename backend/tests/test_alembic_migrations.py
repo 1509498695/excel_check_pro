@@ -4,11 +4,34 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from alembic import command
 import sqlalchemy as sa
 
 from backend.app import models as _models  # noqa: F401
 from backend.app.database import Base
-from backend.app.db_migrations import run_database_migrations, to_sync_database_url
+from backend.app.db_migrations import (
+    make_alembic_config,
+    run_database_migrations,
+    to_sync_database_url,
+)
+
+
+CURRENT_ALEMBIC_HEAD = "0018_test_case_generation_artifact_stages"
+V3_BASE_ALEMBIC_HEAD = "0016_test_case_generation_runs"
+PRE_V3_ALEMBIC_HEAD = "0015_source_evidence_svn_roots"
+GENERATION_RUN_TABLES = {
+    "test_case_generation_runs",
+    "test_case_generation_chunks",
+    "test_case_requirement_atoms",
+    "test_case_generation_cases",
+    "test_case_coverage_audits",
+}
+FORBIDDEN_GENERATION_RUN_COLUMNS = {
+    "raw_prompt",
+    "raw_response",
+    "prompt",
+    "provider_response",
+}
 
 
 def _async_sqlite_url(path: Path) -> str:
@@ -29,6 +52,128 @@ def _column_names(inspector: sa.Inspector, table_name: str) -> set[str]:
 
 def _index_names(inspector: sa.Inspector, table_name: str) -> set[str]:
     return {index["name"] for index in inspector.get_indexes(table_name)}
+
+
+def _assert_generation_run_schema(inspector: sa.Inspector) -> None:
+    tables = set(inspector.get_table_names())
+    assert GENERATION_RUN_TABLES.issubset(tables)
+
+    run_columns = _column_names(inspector, "test_case_generation_runs")
+    assert {
+        "project_id",
+        "source_evidence_run_id",
+        "created_by",
+        "cancelled_by",
+        "status",
+        "planning_sheet_name",
+        "reference_ids_json",
+        "primary_reference_id",
+        "primary_reference_sheet_name",
+        "strict_mode",
+        "total_chunks",
+        "completed_chunks",
+        "failed_chunks",
+        "atom_count",
+        "case_count",
+        "warning_count",
+        "error_summary",
+        "warnings_json",
+        "summary_json",
+        "stage_payload_json",
+        "minimal_audit_json",
+        "expires_at",
+        "completed_at",
+        "cancelled_at",
+        "expired_at",
+        "cleaned_at",
+        "created_at",
+        "updated_at",
+    }.issubset(run_columns)
+    assert FORBIDDEN_GENERATION_RUN_COLUMNS.isdisjoint(run_columns)
+    run_indexes = _index_names(inspector, "test_case_generation_runs")
+    assert "ix_test_case_generation_runs_project_status" in run_indexes
+    assert "ix_test_case_generation_runs_project_expires" in run_indexes
+    assert "ix_test_case_generation_runs_source_evidence_run" in run_indexes
+
+    chunk_columns = _column_names(inspector, "test_case_generation_chunks")
+    assert {
+        "run_id",
+        "project_id",
+        "chunk_index",
+        "status",
+        "retry_count",
+        "error_summary",
+        "structure_hints_json",
+        "created_at",
+        "updated_at",
+    }.issubset(chunk_columns)
+    assert FORBIDDEN_GENERATION_RUN_COLUMNS.isdisjoint(chunk_columns)
+    chunk_indexes = _index_names(inspector, "test_case_generation_chunks")
+    assert "uq_test_case_generation_chunks_run_chunk_index" in chunk_indexes
+    assert "ix_test_case_generation_chunks_project_status" in chunk_indexes
+
+    atom_columns = _column_names(inspector, "test_case_requirement_atoms")
+    assert {
+        "run_id",
+        "project_id",
+        "chunk_id",
+        "atom_id",
+        "atom_type",
+        "requirement_text",
+        "source_sheet_name",
+        "source_row_start",
+        "source_row_end",
+        "source_columns_json",
+        "visual_evidence_refs_json",
+        "confidence",
+        "coverage_status",
+        "merge_group_id",
+        "created_at",
+        "updated_at",
+    }.issubset(atom_columns)
+    assert FORBIDDEN_GENERATION_RUN_COLUMNS.isdisjoint(atom_columns)
+    atom_indexes = _index_names(inspector, "test_case_requirement_atoms")
+    assert "uq_test_case_requirement_atoms_run_atom_id" in atom_indexes
+    assert "ix_test_case_requirement_atoms_project_type" in atom_indexes
+
+    case_columns = _column_names(inspector, "test_case_generation_cases")
+    assert {
+        "run_id",
+        "project_id",
+        "case_id",
+        "fields_json",
+        "atom_refs_json",
+        "status",
+        "created_at",
+        "updated_at",
+    }.issubset(case_columns)
+    assert FORBIDDEN_GENERATION_RUN_COLUMNS.isdisjoint(case_columns)
+    case_indexes = _index_names(inspector, "test_case_generation_cases")
+    assert "uq_test_case_generation_cases_run_case_id" in case_indexes
+    assert "ix_test_case_generation_cases_project_id" in case_indexes
+
+    audit_columns = _column_names(inspector, "test_case_coverage_audits")
+    assert {
+        "run_id",
+        "project_id",
+        "status",
+        "total_atoms",
+        "covered_atoms",
+        "uncovered_atoms",
+        "unfounded_case_count",
+        "failed_chunk_count",
+        "uncovered_atom_ids_json",
+        "unfounded_candidates_json",
+        "supplement_summary_json",
+        "export_limitations_json",
+        "warnings_json",
+        "created_at",
+        "updated_at",
+    }.issubset(audit_columns)
+    assert FORBIDDEN_GENERATION_RUN_COLUMNS.isdisjoint(audit_columns)
+    audit_indexes = _index_names(inspector, "test_case_coverage_audits")
+    assert "uq_test_case_coverage_audits_run_id" in audit_indexes
+    assert "ix_test_case_coverage_audits_project_id" in audit_indexes
 
 
 def _sqlite_master_sql(path: Path, object_name: str) -> str:
@@ -400,7 +545,59 @@ def test_migrate_empty_sqlite_database_creates_current_schema(tmp_path: Path) ->
         "local_path",
         "file_token",
     }.isdisjoint(_column_names(inspector, "source_evidence_visual_observations"))
-    assert _alembic_version(db_path) == "0015_source_evidence_svn_roots"
+    _assert_generation_run_schema(inspector)
+    assert _alembic_version(db_path) == CURRENT_ALEMBIC_HEAD
+
+
+def test_downgrade_from_v3_removes_generation_run_tables(tmp_path: Path) -> None:
+    """从 V3 迁移降级回 0015 时应删除 Generation Run 新表。"""
+    db_path = tmp_path / "downgrade-v3.db"
+    db_url = _async_sqlite_url(db_path)
+
+    run_database_migrations(db_url)
+    command.downgrade(make_alembic_config(db_url), PRE_V3_ALEMBIC_HEAD)
+
+    inspector = _inspect_database(db_path)
+    assert GENERATION_RUN_TABLES.isdisjoint(set(inspector.get_table_names()))
+    assert _alembic_version(db_path) == PRE_V3_ALEMBIC_HEAD
+
+
+def test_generation_run_cleanup_migration_adds_and_downgrades_columns(
+    tmp_path: Path,
+) -> None:
+    """0017 只为 Generation Run 主表增加 TTL 清理审计列，可降级移除。"""
+    db_path = tmp_path / "generation-run-cleanup.db"
+    db_url = _async_sqlite_url(db_path)
+    cleanup_columns = {
+        "completed_at",
+        "cleaned_at",
+        "stage_payload_json",
+        "minimal_audit_json",
+    }
+
+    config = make_alembic_config(db_url)
+    command.upgrade(config, V3_BASE_ALEMBIC_HEAD)
+    inspector = _inspect_database(db_path)
+    assert GENERATION_RUN_TABLES.issubset(set(inspector.get_table_names()))
+    assert cleanup_columns.isdisjoint(
+        _column_names(inspector, "test_case_generation_runs")
+    )
+
+    command.upgrade(config, CURRENT_ALEMBIC_HEAD)
+    inspector = _inspect_database(db_path)
+    assert cleanup_columns.issubset(
+        _column_names(inspector, "test_case_generation_runs")
+    )
+    assert FORBIDDEN_GENERATION_RUN_COLUMNS.isdisjoint(
+        _column_names(inspector, "test_case_generation_runs")
+    )
+
+    command.downgrade(config, V3_BASE_ALEMBIC_HEAD)
+    inspector = _inspect_database(db_path)
+    assert cleanup_columns.isdisjoint(
+        _column_names(inspector, "test_case_generation_runs")
+    )
+    assert _alembic_version(db_path) == V3_BASE_ALEMBIC_HEAD
 
 
 def test_migrate_legacy_sqlite_database_adds_missing_columns_and_indexes(
@@ -519,6 +716,7 @@ def test_migrate_legacy_sqlite_database_adds_missing_columns_and_indexes(
     assert "source_evidence_runs" in set(inspector.get_table_names())
     assert "source_evidence_resources" in set(inspector.get_table_names())
     assert "project_source_evidence_svn_roots" in set(inspector.get_table_names())
+    assert GENERATION_RUN_TABLES.issubset(set(inspector.get_table_names()))
     assert "ai_provider_credentials" not in set(inspector.get_table_names())
     assert {
         "enabled",
@@ -623,7 +821,8 @@ def test_migrate_old_reference_library_revision_adds_category_name_key(
     assert "source_evidence_resources" in set(inspector.get_table_names())
     assert "source_evidence_authorizations" in set(inspector.get_table_names())
     assert "project_source_evidence_svn_roots" in set(inspector.get_table_names())
-    assert _alembic_version(db_path) == "0015_source_evidence_svn_roots"
+    assert GENERATION_RUN_TABLES.issubset(set(inspector.get_table_names()))
+    assert _alembic_version(db_path) == CURRENT_ALEMBIC_HEAD
 
 
 def test_migration_can_run_twice_without_duplicate_columns(tmp_path: Path) -> None:
@@ -644,5 +843,6 @@ def test_migration_can_run_twice_without_duplicate_columns(tmp_path: Path) -> No
     assert "source_evidence_resources" in set(inspector.get_table_names())
     assert "source_evidence_authorizations" in set(inspector.get_table_names())
     assert "project_source_evidence_svn_roots" in set(inspector.get_table_names())
+    assert GENERATION_RUN_TABLES.issubset(set(inspector.get_table_names()))
     assert "name_key" in _column_names(inspector, "test_case_reference_categories")
-    assert _alembic_version(db_path) == "0015_source_evidence_svn_roots"
+    assert _alembic_version(db_path) == CURRENT_ALEMBIC_HEAD

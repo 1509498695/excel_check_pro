@@ -64,6 +64,14 @@ export interface SourceEvidenceRunCreateRequest {
   source_url: string
 }
 
+export interface SourceEvidenceSheetOption {
+  name: string
+  kind: string
+  cell_count: number
+  resource_count: number
+  is_default: boolean
+}
+
 export interface SourceEvidenceRunResponse {
   id: number
   status: string
@@ -75,6 +83,11 @@ export interface SourceEvidenceRunResponse {
   expires_at?: string | null
   warnings: GenerationWarning[]
   resource_count: number
+  sheet_options: SourceEvidenceSheetOption[]
+}
+
+export interface SourceEvidenceSnapshotRequest {
+  sheet_name?: string | null
 }
 
 export interface SourceEvidenceCapabilityItem {
@@ -171,6 +184,7 @@ export interface SourceEvidenceVisualCandidatesResponse {
 
 export interface SourceEvidenceVisualSelectionRequest {
   selected_refs: string[]
+  sheet_name?: string | null
 }
 
 export interface SourceEvidenceObservationResponse {
@@ -257,6 +271,9 @@ export interface TestCaseBlueprint {
 
 export interface GeneratedTestCase {
   case_id: string
+  primary_module?: string
+  secondary_module?: string
+  checkpoint?: string
   module: string
   feature: string
   scenario: string
@@ -404,8 +421,196 @@ export interface TestCaseExportRequest {
   source_summary: string
   source_evidence_run_id?: number | null
   adopted_visual_evidence_ids?: number[]
+  planning_sheet_name?: string | null
   source_evidence_summary?: string
   evidence_summary?: string
+}
+
+export type TestCaseGenerationRunStatus =
+  | 'queued'
+  | 'reading'
+  | 'chunking'
+  | 'extracting_atoms'
+  | 'merging_atoms'
+  | 'blueprinting'
+  | 'generating_cases'
+  | 'auditing_coverage'
+  | 'supplementing'
+  | 'auditing_quality'
+  | 'repairing_cases'
+  | 'rendering_artifacts'
+  | 'completed'
+  | 'partial_completed'
+  | 'failed'
+  | 'cancelled'
+  | 'expired'
+
+export interface TestCaseGenerationRunCreateRequest {
+  source_evidence_run_id: number
+  planning_sheet_name: string
+  reference_ids: number[]
+  primary_reference_id?: number | null
+  primary_reference_sheet_name?: string | null
+  strict_mode?: boolean
+}
+
+export type TestCaseGenerationStageKey =
+  | 'queued'
+  | 'reading'
+  | 'chunking'
+  | 'extracting_atoms'
+  | 'merging_atoms'
+  | 'blueprinting'
+  | 'generating_cases'
+  | 'auditing_coverage'
+  | 'supplementing'
+  | 'auditing_quality'
+  | 'repairing_cases'
+  | 'rendering_artifacts'
+
+export interface TestCaseGenerationStageProgress {
+  key: TestCaseGenerationStageKey
+  label: string
+  status: 'pending' | 'active' | 'done'
+}
+
+export interface TestCaseGenerationChunkProgress {
+  total_chunks: number
+  completed_chunks: number
+  failed_chunks: number
+}
+
+export interface TestCaseGenerationRunExportLimitation {
+  level?: string
+  type?: string
+  message?: string
+  atom_ids?: string[]
+  failed_chunk_count?: number
+  blocks_export?: boolean
+}
+
+export interface TestCaseCoverageAuditSummary {
+  status?: string
+  total_atoms?: number
+  covered_atoms?: number
+  uncovered_atoms?: number
+  failed_chunk_count?: number
+  uncovered_atom_ids?: string[]
+  export_limitations?: Array<string | TestCaseGenerationRunExportLimitation>
+  warnings?: Array<string | GenerationWarning>
+  supplement_summary?: Record<string, unknown>
+}
+
+export interface TestCaseQualityAuditSummary {
+  status?: string
+  case_count?: number
+  blocking_count?: number
+  warning_count?: number
+  repair_attempted?: boolean
+  repaired_case_count?: number
+  blocks_export?: boolean
+  recommended_run_status?: TestCaseGenerationRunStatus
+  issues?: Array<{
+    case_id?: string
+    severity?: 'blocking' | 'warning' | string
+    code?: string
+    message?: string
+  }>
+}
+
+export interface TestCaseGenerationArtifactResponse {
+  key: string
+  label: string
+  file_name: string
+  media_type: string
+  preview_kind: 'cases' | 'markdown' | 'json'
+  size_bytes: number
+  sha256: string
+  status: 'ready' | 'blocked' | 'missing' | 'failed'
+  message: string
+}
+
+export interface TestCaseGenerationArtifactListResponse {
+  items: TestCaseGenerationArtifactResponse[]
+  total: number
+}
+
+export interface TestCaseGenerationRunStagePayload {
+  stage?: string
+  coverage_audit?: TestCaseCoverageAuditSummary
+  quality_audit?: TestCaseQualityAuditSummary
+  export_limitations?: Array<string | TestCaseGenerationRunExportLimitation>
+  warnings?: Array<string | GenerationWarning>
+  [key: string]: unknown
+}
+
+export interface TestCaseGenerationRunResponse {
+  id: number
+  project_id: number
+  source_evidence_run_id: number
+  created_by?: number | null
+  cancelled_by?: number | null
+  status: TestCaseGenerationRunStatus
+  planning_sheet_name: string
+  reference_ids: number[]
+  primary_reference_id?: number | null
+  primary_reference_sheet_name?: string | null
+  strict_mode: boolean
+  total_chunks: number
+  completed_chunks: number
+  failed_chunks: number
+  atom_count: number
+  case_count: number
+  warning_count: number
+  error_summary: string
+  warnings: GenerationWarning[]
+  stage_payload: TestCaseGenerationRunStagePayload
+  artifacts?: TestCaseGenerationArtifactResponse[]
+  expires_at?: string | null
+  completed_at?: string | null
+  cancelled_at?: string | null
+  expired_at?: string | null
+  cleaned_at?: string | null
+  created_at?: string | null
+  updated_at?: string | null
+}
+
+export interface TestCaseGenerationRunRetryFailedChunksResponse {
+  run_id: number
+  status: TestCaseGenerationRunStatus
+  retried_chunk_count: number
+}
+
+export interface TestCaseRequirementAtomResponse {
+  id: number
+  atom_id: string
+  atom_type: string
+  requirement_text: string
+  source_sheet_name: string
+  source_row_start?: number | null
+  source_row_end?: number | null
+  source_columns: string[]
+  visual_evidence_refs: string[]
+  confidence?: number | null
+  coverage_status: string
+}
+
+export interface TestCaseRequirementAtomListResponse {
+  items: TestCaseRequirementAtomResponse[]
+  total: number
+}
+
+export interface TestCaseGenerationCaseResponse {
+  id: number
+  case_id: string
+  fields: Record<string, unknown>
+  atom_refs: string[]
+  status: string
+}
+
+export interface TestCaseGenerationCaseListResponse {
+  items: TestCaseGenerationCaseResponse[]
+  total: number
 }
 
 export type PlanningSnapshotApiResponse = ApiResponse<PlanningSnapshotResponse>
@@ -418,6 +623,13 @@ export type SourceEvidenceVisualCandidatesApiResponse = ApiResponse<SourceEviden
 export type SourceEvidenceObservationListApiResponse = ApiResponse<SourceEvidenceObservationListResponse>
 export type SourceEvidenceCleanupAuditListApiResponse = ApiResponse<SourceEvidenceCleanupAuditListResponse>
 export type TestCaseGenerationApiResponse = ApiResponse<TestCaseGenerationResponse>
+export type TestCaseGenerationRunApiResponse = ApiResponse<TestCaseGenerationRunResponse>
+export type TestCaseGenerationRunRetryFailedChunksApiResponse =
+  ApiResponse<TestCaseGenerationRunRetryFailedChunksResponse>
+export type TestCaseRequirementAtomListApiResponse = ApiResponse<TestCaseRequirementAtomListResponse>
+export type TestCaseGenerationCaseListApiResponse = ApiResponse<TestCaseGenerationCaseListResponse>
+export type TestCaseGenerationArtifactListApiResponse =
+  ApiResponse<TestCaseGenerationArtifactListResponse>
 export type ReferenceCategoryListApiResponse = ApiResponse<ReferenceCategoryListResponse>
 export type ReferenceCategoryApiResponse = ApiResponse<ReferenceCategoryResponse>
 export type ReferenceFileListApiResponse = ApiResponse<ReferenceFileListResponse>

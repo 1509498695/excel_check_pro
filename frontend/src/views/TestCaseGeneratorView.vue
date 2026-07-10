@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, reactive, ref, watch, type Component } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch, type Component } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   Collection,
@@ -30,18 +30,25 @@ import SecondaryButton from '../components/shell/SecondaryButton.vue'
 import SvnCredentialDialog from '../components/workbench/SvnCredentialDialog.vue'
 import {
   adoptSourceEvidenceVisualEvidence,
+  cancelGenerationRun,
   createLocalFileSourceEvidenceRun,
+  createGenerationRun,
   createSourceEvidenceRun,
   createReferenceCategory as createReferenceCategoryApi,
   deleteReferenceFile,
-  exportTestCaseWorkbook,
+  downloadGenerationRunArtifact,
+  exportGenerationRunWorkbook,
+  fetchGenerationRunArtifactText,
   fetchSourceEvidenceCapabilities,
   fetchSourceEvidenceResources,
   fetchSourceEvidenceObservations,
   fetchSourceEvidenceVisualCandidates,
   fetchReferenceCategories,
   fetchReferenceFiles,
-  generateTestCases,
+  getGenerationRun,
+  listGenerationRunAtoms,
+  listGenerationRunArtifacts,
+  listGenerationRunCases,
   observeSourceEvidenceRun,
   readPlanningSnapshot,
   readPlanningSnapshotBrief,
@@ -49,6 +56,8 @@ import {
   requestSourceEvidenceAuthorization,
   revokeSourceEvidenceVisualEvidence,
   retrySourceEvidenceRun,
+  retryFailedGenerationChunks,
+  retryGenerationRunArtifacts,
   saveSourceEvidenceVisualSelections,
   setRecommendedPrimaryReference,
   uploadReferenceFile,
@@ -79,15 +88,19 @@ import type {
   SourceEvidenceCapabilityStatusResponse,
   SourceEvidenceResourceResponse,
   SourceEvidenceRunResponse,
+  SourceEvidenceSheetOption,
   SourceEvidenceObservationResponse,
   SourceEvidenceVisualCandidateResponse,
-  TestCaseExportRequest,
+  TestCaseGenerationCaseResponse,
+  TestCaseGenerationArtifactResponse,
+  TestCaseGenerationRunResponse,
+  TestCaseGenerationRunStatus,
   TestCaseGenerationResponse,
-  TestCaseGenerationRequest,
+  TestCaseRequirementAtomResponse,
 } from '../types/testCases'
 import type { DataSource, SourceMetadata } from '../types/workbench'
 
-type PreviewTab = 'brief' | 'cases' | 'warnings'
+type PreviewTab = 'brief' | 'cases' | 'coverage' | 'atoms' | 'warnings' | 'artifact'
 type Priority = string
 type ReferenceFileType = 'xlsx'
 type ReferenceSort = 'recommended' | 'newest' | 'name'
@@ -96,6 +109,20 @@ type LocalReadStepStatus = 'done' | 'current' | 'pending'
 type ProgressStepKey = 'source' | 'reference' | 'generate' | 'export'
 type ProgressStepStatus = 'done' | 'active' | 'pending'
 type ActiveGenerationInputKind = 'empty' | 'local_excel' | 'svn' | 'source_evidence' | 'legacy_feishu'
+type GenerationRunStageKey =
+  | 'queued'
+  | 'reading'
+  | 'chunking'
+  | 'extracting_atoms'
+  | 'merging_atoms'
+  | 'blueprinting'
+  | 'generating_cases'
+  | 'auditing_coverage'
+  | 'supplementing'
+  | 'auditing_quality'
+  | 'repairing_cases'
+  | 'rendering_artifacts'
+type GenerationRunStageStatus = 'done' | 'active' | 'pending'
 
 interface ReadFlowStep {
   label: string
@@ -181,6 +208,11 @@ interface ReferenceSheetOption {
   caseCount?: number
 }
 
+interface PlanningSheetSelectorOption {
+  name: string
+  sheet_id?: string | null
+}
+
 interface GeneratedCase {
   id: string
   module: string
@@ -189,6 +221,16 @@ interface GeneratedCase {
   priority: Priority
   status: string
   remarks: string
+}
+
+interface CoverageAuditDisplaySummary {
+  status: string
+  totalAtoms: number
+  coveredAtoms: number
+  uncoveredAtoms: number
+  failedChunkCount: number
+  exportLimitations: string[]
+  warnings: string[]
 }
 
 const activeTab = ref<PreviewTab>('cases')
@@ -273,11 +315,23 @@ const snapshotBriefMarkdown = ref('')
 const snapshotBriefWarnings = ref<GenerationWarning[]>([])
 const snapshotBriefErrorMessage = ref('')
 const generationResult = ref<TestCaseGenerationResponse | null>(null)
+const generationRun = ref<TestCaseGenerationRunResponse | null>(null)
+const generationRunAtoms = ref<TestCaseRequirementAtomResponse[]>([])
+const generationRunCases = ref<TestCaseGenerationCaseResponse[]>([])
+const generationRunArtifacts = ref<TestCaseGenerationArtifactResponse[]>([])
+const selectedArtifactKey = ref('workbook')
+const artifactPreviewText = ref('')
+const isArtifactPreviewLoading = ref(false)
+const isArtifactRenderingRetrying = ref(false)
+const strictMode = ref(false)
 const apiErrorMessage = ref('')
 const isSnapshotLoading = ref(false)
 const isSnapshotBriefLoading = ref(false)
 const isGeneratingCases = ref(false)
 const isExportingCases = ref(false)
+const isGenerationRunPolling = ref(false)
+const isGenerationRunCancelling = ref(false)
+const isGenerationRunRetrying = ref(false)
 const snapshotBriefParticipatedInLastGeneration = ref<boolean | null>(null)
 const workbenchConfigSnapshot = ref<Record<string, unknown>>({})
 const hasLoadedWorkbenchConfig = ref(false)
@@ -285,11 +339,13 @@ const isPlanningSourceConfigHydrating = ref(false)
 const planningSourcePersistenceError = ref('')
 
 let snapshotBriefRequestId = 0
+let generationRunPollTimer: ReturnType<typeof window.setTimeout> | null = null
 let hasPlanningSourceConfigLocalEdits = false
 let isApplyingPlanningSourceConfig = false
 
 const referencePageSize = 5
 const TEST_CASE_GENERATION_CONFIG_KEY = 'test_case_generation'
+const GENERATION_RUN_STORAGE_KEY = 'test-case-generation:v3:last-run-id'
 const PLANNING_SOURCE_TYPES = new Set<string>(['local_excel', 'feishu', 'svn'])
 const SOURCE_EVIDENCE_READABLE_STATUSES = new Set(['ready', 'vision_pending'])
 const SOURCE_EVIDENCE_RETRYABLE_STATUSES = new Set(['pending_permission', 'failed'])
@@ -298,6 +354,49 @@ const SOURCE_EVIDENCE_PERMISSION_RESOURCE_STATUSES = new Set(['pending_permissio
 const SOURCE_EVIDENCE_AUTHORIZATION_WAITING_STATUSES = new Set(['authorization_sent', 'already_sent'])
 const SOURCE_EVIDENCE_AUTHORIZATION_READY_STATUSES = new Set(['already_authorized', 'already_readable'])
 const SOURCE_EVIDENCE_AUTHORIZATION_RETRYABLE_STATUSES = new Set(['send_failed', 'bot_not_configured'])
+const GENERATION_RUN_ACTIVE_STATUSES = new Set<TestCaseGenerationRunStatus>([
+  'queued',
+  'reading',
+  'chunking',
+  'extracting_atoms',
+  'merging_atoms',
+  'blueprinting',
+  'generating_cases',
+  'auditing_coverage',
+  'supplementing',
+  'auditing_quality',
+  'repairing_cases',
+  'rendering_artifacts',
+])
+const GENERATION_RUN_RESULT_STATUSES = new Set<TestCaseGenerationRunStatus>(['completed', 'partial_completed'])
+const GENERATION_RUN_STAGE_ORDER: GenerationRunStageKey[] = [
+  'queued',
+  'reading',
+  'chunking',
+  'extracting_atoms',
+  'merging_atoms',
+  'blueprinting',
+  'generating_cases',
+  'auditing_coverage',
+  'supplementing',
+  'auditing_quality',
+  'repairing_cases',
+  'rendering_artifacts',
+]
+const GENERATION_RUN_STAGE_LABELS: Record<GenerationRunStageKey, string> = {
+  queued: '排队中',
+  reading: '读取来源',
+  chunking: '结构切片',
+  extracting_atoms: '抽取需求',
+  merging_atoms: '合并需求',
+  blueprinting: '生成蓝图',
+  generating_cases: '生成用例',
+  auditing_coverage: '覆盖审计',
+  supplementing: '补充生成',
+  auditing_quality: '质量审计',
+  repairing_cases: '定向修复',
+  rendering_artifacts: '生成文件',
+}
 
 const planningSourceStore = reactive<SourceManagementStoreLike>({
   sources: [],
@@ -377,29 +476,128 @@ const REFERENCE_UNCATEGORIZED_CATEGORY_ID = 'uncategorized'
 const referenceCategories = ref<ReferenceCategory[]>([])
 const referenceFiles = ref<ReferenceFile[]>([])
 
+function stringifyCaseField(value: unknown): string {
+  if (Array.isArray(value)) {
+    return value.map((item) => stringifyCaseField(item)).filter(Boolean).join('\n')
+  }
+  if (value === null || value === undefined) {
+    return ''
+  }
+  return String(value)
+}
+
+function mapGenerationRunCase(caseItem: TestCaseGenerationCaseResponse, index: number): GeneratedCase {
+  const fields = caseItem.fields ?? {}
+  const caseId = stringifyCaseField(fields.case_id) || caseItem.case_id || `TC-${String(index + 1).padStart(4, '0')}`
+  const moduleName = stringifyCaseField(fields.primary_module || fields.module || fields.feature) || '-'
+  const checkpoint = stringifyCaseField(
+    fields.secondary_module || fields.feature || fields.scenario || fields.case_type,
+  ) || '-'
+  const title = stringifyCaseField(fields.checkpoint || fields.title || fields.scenario || fields.source_requirement) || '-'
+  const expectedResults = stringifyCaseField(fields.expected_results)
+  const remarks = stringifyCaseField(fields.remarks || fields.config_source)
+  const traceText = caseItem.atom_refs.join(', ')
+  return {
+    id: caseId,
+    module: moduleName,
+    checkpoint,
+    title,
+    priority: stringifyCaseField(fields.priority) || 'P2',
+    status: stringifyCaseField(fields.initial_status || caseItem.status) || '未执行',
+    remarks: [expectedResults, remarks, traceText].filter(Boolean).join(' / ') || '-',
+  }
+}
+
+function toNumber(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function normalizePayloadMessages(items: unknown): string[] {
+  if (!Array.isArray(items)) {
+    return []
+  }
+  return items
+    .map((item) => {
+      if (typeof item === 'string') {
+        return item
+      }
+      if (isRecord(item)) {
+        const message = item.message ?? item.reason ?? item.type
+        return typeof message === 'string' ? message : ''
+      }
+      return ''
+    })
+    .filter(Boolean)
+}
+
+const coverageAuditSummary = computed<CoverageAuditDisplaySummary>(() => {
+  const payload = generationRun.value?.stage_payload ?? {}
+  const audit = isRecord(payload.coverage_audit) ? payload.coverage_audit : {}
+  const rootLimitations = normalizePayloadMessages(payload.export_limitations)
+  const auditLimitations = normalizePayloadMessages(audit.export_limitations)
+  const rootWarnings = normalizePayloadMessages(payload.warnings)
+  const auditWarnings = normalizePayloadMessages(audit.warnings)
+  return {
+    status: typeof audit.status === 'string' ? audit.status : generationRun.value?.status ?? '',
+    totalAtoms: toNumber(audit.total_atoms) || generationRun.value?.atom_count || generationRunAtoms.value.length,
+    coveredAtoms: toNumber(audit.covered_atoms),
+    uncoveredAtoms: toNumber(audit.uncovered_atoms),
+    failedChunkCount: toNumber(audit.failed_chunk_count) || generationRun.value?.failed_chunks || 0,
+    exportLimitations: [...new Set([...rootLimitations, ...auditLimitations])],
+    warnings: [...new Set([...rootWarnings, ...auditWarnings])],
+  }
+})
+
+const qualityAuditSummary = computed(() => {
+  const payload = generationRun.value?.stage_payload ?? {}
+  return isRecord(payload.quality_audit) ? payload.quality_audit : {}
+})
+
+const selectedGenerationArtifact = computed(() =>
+  generationRunArtifacts.value.find((item) => item.key === selectedArtifactKey.value) ?? null,
+)
+
+const workbookGenerationArtifact = computed(() =>
+  generationRunArtifacts.value.find((item) => item.key === 'workbook') ?? null,
+)
+
 const generatedCases = computed<GeneratedCase[]>(() =>
-  (generationResult.value?.cases ?? []).map((caseItem, index) => ({
-    id: caseItem.case_id || `TC-${String(index + 1).padStart(3, '0')}`,
-    module: caseItem.module || caseItem.feature || '-',
-    checkpoint: caseItem.feature || caseItem.scenario || caseItem.case_type || '-',
-    title: caseItem.title || caseItem.scenario || caseItem.source_requirement || '-',
-    priority: caseItem.priority || 'P2',
-    status: caseItem.initial_status || '未执行',
-    remarks: caseItem.remarks || caseItem.config_source || '-',
-  })),
+  generationRunCases.value.length
+    ? generationRunCases.value.map(mapGenerationRunCase)
+    : (generationResult.value?.cases ?? []).map((caseItem, index) => ({
+        id: caseItem.case_id || `TC-${String(index + 1).padStart(4, '0')}`,
+        module: caseItem.primary_module || caseItem.module || caseItem.feature || '-',
+        checkpoint: caseItem.secondary_module || caseItem.feature || caseItem.scenario || caseItem.case_type || '-',
+        title: caseItem.checkpoint || caseItem.title || caseItem.scenario || caseItem.source_requirement || '-',
+        priority: caseItem.priority || 'P2',
+        status: caseItem.initial_status || '未执行',
+        remarks: caseItem.remarks || caseItem.config_source || '-',
+      })),
 )
 
 const warnings = computed<string[]>(() => {
+  const runWarnings = generationRun.value?.warnings.map((warning) => warning.message).filter(Boolean) ?? []
+  const auditWarnings = coverageAuditSummary.value.warnings
+  const limitationWarnings = coverageAuditSummary.value.exportLimitations
   const warningItems: GenerationWarning[] = generationResult.value
     ? [...generationResult.value.warnings, ...(generationResult.value.blueprint.warnings ?? [])]
     : planningSnapshot.value?.warnings ?? []
-  return [...new Set(warningItems.map((warning) => warning.message).filter(Boolean))]
+  return [
+    ...new Set([
+      ...runWarnings,
+      ...auditWarnings,
+      ...limitationWarnings,
+      ...warningItems.map((warning) => warning.message).filter(Boolean),
+    ]),
+  ]
 })
 
 const tabs: Array<{ key: PreviewTab; label: string }> = [
-  { key: 'brief', label: 'AI 整理稿' },
   { key: 'cases', label: '测试用例' },
+  { key: 'coverage', label: '覆盖审计' },
+  { key: 'atoms', label: '需求原子' },
   { key: 'warnings', label: '限制提示' },
+  { key: 'brief', label: 'AI 整理稿' },
 ]
 
 const selectedPlanningSource = computed(
@@ -511,6 +709,11 @@ const sourceEvidenceVisualSelectionLabel = computed(() => {
   }
   return `推荐 ${sourceEvidenceRecommendedVisualRefs.value.length} 个 · 已选 ${sourceEvidenceSelectedVisualRefs.value.length} 个`
 })
+const sourceEvidenceVisualSelectionDescription = computed(() =>
+  hasSourceEvidenceSheetOptions.value
+    ? '当前 Sheet 的可观察图片默认选中，用户仍可手动调整；未采纳资源不作为需求事实。'
+    : '默认只选系统推荐集合，不会全量观察所有图片/附件。',
+)
 const sourceEvidenceAdoptedVisualEvidenceIds = computed(() =>
   sourceEvidenceObservations.value.filter((item) => item.status === 'adopted').map((item) => item.id),
 )
@@ -1203,7 +1406,14 @@ const activeGenerationInputKey = computed(() => {
   }
   return `${input.kind}:${input.source?.id ?? 'none'}`
 })
-const activePlanningSheetOptions = computed(() => activeGenerationInput.value.metadata?.sheets ?? [])
+const sourceEvidenceSheetOptions = computed<SourceEvidenceSheetOption[]>(() => sourceEvidenceRun.value?.sheet_options ?? [])
+const hasSourceEvidenceSheetOptions = computed(() => sourceEvidenceSheetOptions.value.length > 0)
+const activePlanningSheetOptions = computed<PlanningSheetSelectorOption[]>(() => {
+  if (activeGenerationInput.value.kind === 'source_evidence') {
+    return sourceEvidenceSheetOptions.value
+  }
+  return activeGenerationInput.value.metadata?.sheets ?? []
+})
 const hasPlanningSheetOptions = computed(() => activePlanningSheetOptions.value.length > 0)
 const activeGenerationInputIconLabel = computed(() => {
   if (activeGenerationInput.value.kind === 'svn') {
@@ -1239,6 +1449,11 @@ const activeGenerationReadinessLabel = computed(() => {
     if (sourceEvidenceGenerationBlockMessage.value) {
       return sourceEvidenceGenerationBlockMessage.value
     }
+    if (hasSourceEvidenceSheetOptions.value) {
+      return selectedPlanningSheetName.value
+        ? `当前 Sheet：${selectedPlanningSheetName.value}`
+        : '请选择 Sheet 后读取快照'
+    }
     return canReadActiveSourceEvidenceSnapshot.value ? '可生成兼容快照' : '等待来源读取完成'
   }
   if (input.kind === 'empty') {
@@ -1249,7 +1464,7 @@ const activeGenerationReadinessLabel = computed(() => {
   }
   return `已读取 ${activePlanningSheetOptions.value.length} 个 Sheet`
 })
-const shouldShowPlanningSheetSelector = computed(() => activeGenerationInput.value.kind !== 'source_evidence')
+const shouldShowPlanningSheetSelector = computed(() => hasPlanningSheetOptions.value)
 
 const currentReferenceCategory = computed(
   () => referenceCategories.value.find((category) => category.id === selectedReferenceCategoryId.value) ?? null,
@@ -1349,12 +1564,22 @@ const referenceCaseCountDisplay = computed(() => {
   return typeof caseCount === 'number' ? `约 ${caseCount} 条` : '未识别'
 })
 const hasPlanningSnapshot = computed(() => Boolean(planningSnapshot.value))
-const hasGeneratedResult = computed(() => Boolean(generationResult.value))
+const hasGenerationRunResult = computed(() =>
+  Boolean(generationRun.value && GENERATION_RUN_RESULT_STATUSES.has(generationRun.value.status) && generationRun.value.case_count > 0),
+)
+const hasGeneratedResult = computed(() => hasGenerationRunResult.value || Boolean(generationResult.value))
 const hasSnapshotBriefMarkdown = computed(() => Boolean(snapshotBriefMarkdown.value.trim()))
+const selectedGenerationSheetName = computed(() => {
+  const explicitSheetName = getSelectedSourceEvidenceSheetName() || selectedPlanningSheetName.value.trim()
+  if (explicitSheetName) {
+    return explicitSheetName
+  }
+  return sourceEvidenceRun.value ? 'Source Evidence' : ''
+})
 const canReadSnapshot = computed(() => {
   const input = activeGenerationInput.value
   if (input.kind === 'source_evidence') {
-    return canReadActiveSourceEvidenceSnapshot.value
+    return canReadActiveSourceEvidenceSnapshot.value && (!hasSourceEvidenceSheetOptions.value || Boolean(selectedPlanningSheetName.value))
   }
   if (input.kind === 'empty') {
     return false
@@ -1378,13 +1603,27 @@ const sourceEvidenceGenerationBlockMessage = computed(() =>
 )
 const isGenerationReady = computed(
   () =>
-    hasPlanningSnapshot.value &&
+    Boolean(sourceEvidenceRun.value) &&
+    Boolean(selectedGenerationSheetName.value) &&
+    canReadActiveSourceEvidenceSnapshot.value &&
     !isSnapshotLoading.value &&
     !isGeneratingCases.value &&
+    !isGenerationRunPolling.value &&
     !isSourceEvidenceSnapshotBlocked.value &&
     !sourceEvidenceTextlessNeedsAdoption.value,
 )
-const prioritySummary = computed(() => Object.entries(generationResult.value?.stats.priority_counts ?? {}))
+const prioritySummary = computed(() => {
+  if (generationRunCases.value.length) {
+    return Object.entries(
+      generationRunCases.value.reduce<Record<string, number>>((accumulator, caseItem) => {
+        const priority = stringifyCaseField(caseItem.fields.priority) || 'P2'
+        accumulator[priority] = (accumulator[priority] ?? 0) + 1
+        return accumulator
+      }, {}),
+    )
+  }
+  return Object.entries(generationResult.value?.stats.priority_counts ?? {})
+})
 const snapshotBriefWarningMessages = computed(() =>
   snapshotBriefWarnings.value.map((warning) => warning.message).filter(Boolean),
 )
@@ -1399,6 +1638,9 @@ const snapshotFirstRowSummary = computed(() => {
     .join(' / ')
 })
 const previewStatusLabel = computed(() => {
+  if (generationRun.value) {
+    return getGenerationRunStatusLabel(generationRun.value.status)
+  }
   if (generationResult.value) {
     return '用例已生成'
   }
@@ -1407,9 +1649,35 @@ const previewStatusLabel = computed(() => {
   }
   return '待读取快照'
 })
-const previewStatusType = computed(() => (generationResult.value ? 'primary' : planningSnapshot.value ? 'success' : 'info'))
+const previewStatusType = computed(() => {
+  if (!generationRun.value) {
+    return generationResult.value ? 'primary' : planningSnapshot.value ? 'success' : 'info'
+  }
+  if (generationRun.value.status === 'failed' || generationRun.value.status === 'expired') {
+    return 'danger'
+  }
+  if (generationRun.value.status === 'partial_completed') {
+    return 'warning'
+  }
+  if (generationRun.value.status === 'cancelled') {
+    return 'info'
+  }
+  return GENERATION_RUN_RESULT_STATUSES.has(generationRun.value.status) ? 'success' : 'primary'
+})
 const canExportGeneratedResult = computed(
-  () => hasGeneratedResult.value && !isGeneratedResultStale.value && !isSourceEvidenceSnapshotBlocked.value,
+  () =>
+    Boolean(generationRun.value) &&
+    (generationRun.value?.status === 'completed' ||
+      (generationRun.value?.status === 'partial_completed' && !generationRunStrictExportBlocked.value)) &&
+    generationRun.value.case_count > 0 &&
+    (!workbookGenerationArtifact.value || workbookGenerationArtifact.value.status === 'ready') &&
+    !isGeneratedResultStale.value &&
+    !isSourceEvidenceSnapshotBlocked.value,
+)
+const canDownloadSelectedArtifact = computed(() =>
+  selectedGenerationArtifact.value
+    ? selectedGenerationArtifact.value.status === 'ready'
+    : canExportGeneratedResult.value,
 )
 const selectedReferenceSummary = computed(() => {
   if (!selectedReferenceFiles.value.length) {
@@ -1464,6 +1732,59 @@ const profilePreviewFile = computed(
   () => referenceFiles.value.find((file) => file.id === profilePreviewFileId.value) ?? null,
 )
 const referenceMoreFile = computed(() => referenceFiles.value.find((file) => file.id === referenceMoreFileId.value) ?? null)
+const generationRunStrictExportBlocked = computed(
+  () =>
+    Boolean(generationRun.value?.strict_mode) &&
+    (coverageAuditSummary.value.uncoveredAtoms > 0 || Boolean(qualityAuditSummary.value.blocks_export)),
+)
+const generationRunPartialMessages = computed(() => {
+  const messages: string[] = []
+  if (generationRun.value?.status === 'partial_completed') {
+    messages.push('partial_completed：当前结果存在覆盖缺口或阶段限制。')
+  }
+  if (coverageAuditSummary.value.uncoveredAtoms > 0) {
+    messages.push(`未覆盖 Requirement Atom ${coverageAuditSummary.value.uncoveredAtoms} 个。`)
+  }
+  if (coverageAuditSummary.value.failedChunkCount > 0) {
+    messages.push(`失败 chunk ${coverageAuditSummary.value.failedChunkCount} 个。`)
+  }
+  const qualityBlockingCount = toNumber(qualityAuditSummary.value.blocking_count)
+  const qualityWarningCount = toNumber(qualityAuditSummary.value.warning_count)
+  if (qualityBlockingCount > 0) {
+    messages.push(`Case Quality Audit 有 ${qualityBlockingCount} 个阻塞问题。`)
+  }
+  if (qualityWarningCount > 0) {
+    messages.push(`Case Quality Audit 有 ${qualityWarningCount} 个警告。`)
+  }
+  messages.push(...coverageAuditSummary.value.exportLimitations)
+  if (generationRunStrictExportBlocked.value) {
+    messages.push('严格模式下存在覆盖或质量阻塞，不能下载 Excel。')
+  }
+  return [...new Set(messages)]
+})
+const generationRunStageItems = computed<
+  Array<{
+    key: GenerationRunStageKey
+    label: string
+    status: GenerationRunStageStatus
+  }>
+>(() => {
+  const currentStatus = generationRun.value?.status
+  const currentIndex = currentStatus ? GENERATION_RUN_STAGE_ORDER.indexOf(currentStatus as GenerationRunStageKey) : -1
+  const isTerminal = currentStatus ? !GENERATION_RUN_ACTIVE_STATUSES.has(currentStatus) : false
+  return GENERATION_RUN_STAGE_ORDER.map((key, index) => ({
+    key,
+    label: GENERATION_RUN_STAGE_LABELS[key],
+    status:
+      currentIndex < 0
+        ? 'pending'
+        : isTerminal || index < currentIndex
+          ? 'done'
+          : index === currentIndex
+            ? 'active'
+            : 'pending',
+  }))
+})
 const metrics = computed(() => [
   {
     label: '快照行数',
@@ -1480,10 +1801,10 @@ const metrics = computed(() => [
     iconTone: 'success' as const,
   },
   {
-    label: '预览用例',
-    value: generationResult.value ? `${generationResult.value.stats.total} 条` : '未生成',
-    statusLabel: generationResult.value ? '未保存' : '待生成',
-    statusType: generationResult.value ? ('neutral' as const) : ('neutral' as const),
+    label: 'V3 用例',
+    value: generationRun.value ? `${generationRun.value.case_count} 条` : '未生成',
+    statusLabel: generationRun.value ? getGenerationRunStatusLabel(generationRun.value.status) : '待生成',
+    statusType: generationRun.value ? ('success' as const) : ('neutral' as const),
     iconTone: 'purple' as const,
   },
   {
@@ -1505,7 +1826,7 @@ const progressStepItems = computed<
 >(() => {
   const hasReadableSource = canReadSnapshot.value || hasPlanningSnapshot.value
   const hasSelectedReference = selectedReferenceFiles.value.length > 0
-  const hasGeneratedCases = Boolean(generationResult.value)
+  const hasGeneratedCases = hasGeneratedResult.value
 
   return [
     {
@@ -1526,21 +1847,56 @@ const progressStepItems = computed<
       key: 'generate',
       step: 3,
       label: '生成',
-      description: hasGeneratedCases ? `${generationResult.value?.stats.total ?? 0} 条用例` : hasPlanningSnapshot.value ? '可生成用例' : '待读取快照',
-      status: hasGeneratedCases ? 'done' : hasPlanningSnapshot.value ? 'active' : 'pending',
+      description: hasGeneratedCases
+        ? `${generationRun.value?.case_count ?? generationResult.value?.stats.total ?? 0} 条用例`
+        : sourceEvidenceRun.value
+          ? '可全量生成'
+          : '待读取来源',
+      status: hasGeneratedCases ? 'done' : sourceEvidenceRun.value ? 'active' : 'pending',
     },
     {
       key: 'export',
       step: 4,
       label: '导出',
-      description: canExportGeneratedResult.value ? '可导出 Excel' : hasGeneratedCases ? '结果需确认' : '待生成结果',
-      status: canExportGeneratedResult.value ? 'done' : hasGeneratedCases ? 'active' : 'pending',
+      description: generationRunArtifacts.value.some((item) => item.status === 'ready')
+        ? '文件已生成'
+        : hasGeneratedCases
+          ? '结果需确认'
+          : '待生成结果',
+      status: generationRunArtifacts.value.some((item) => item.status === 'ready')
+        ? 'done'
+        : hasGeneratedCases
+          ? 'active'
+          : 'pending',
     },
   ]
 })
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function getGenerationRunStatusLabel(status: TestCaseGenerationRunStatus): string {
+  const labels: Record<TestCaseGenerationRunStatus, string> = {
+    queued: '排队中',
+    reading: '读取来源',
+    chunking: '结构切片',
+    extracting_atoms: '抽取需求',
+    merging_atoms: '合并需求',
+    blueprinting: '生成蓝图',
+    generating_cases: '生成用例',
+    auditing_coverage: '覆盖审计',
+    supplementing: '补充生成',
+    auditing_quality: '质量审计',
+    repairing_cases: '定向修复',
+    rendering_artifacts: '生成文件',
+    completed: '已完成',
+    partial_completed: 'partial_completed',
+    failed: '生成失败',
+    cancelled: '已取消',
+    expired: '已过期',
+  }
+  return labels[status]
 }
 
 function sourceModeForSourceEvidenceRun(run: SourceEvidenceRunResponse): SourceMode {
@@ -1587,6 +1943,28 @@ function sourceEvidenceEmptyAuthorizationDescription(): string {
     return '读取文档后展示授权和资源下载状态。'
   }
   return '创建 Source Evidence Run 后展示读取状态、资源清单和视觉证据状态。'
+}
+
+function getDefaultSourceEvidenceSheetName(run: SourceEvidenceRunResponse | null): string {
+  const options = run?.sheet_options ?? []
+  return options.find((sheet) => sheet.is_default)?.name ?? options[0]?.name ?? ''
+}
+
+function applySourceEvidenceRun(run: SourceEvidenceRunResponse): void {
+  sourceEvidenceRun.value = run
+  selectedPlanningSheetName.value = getDefaultSourceEvidenceSheetName(run)
+}
+
+function getSelectedSourceEvidenceSheetName(): string | null {
+  if (activeGenerationInput.value.kind !== 'source_evidence' || !hasSourceEvidenceSheetOptions.value) {
+    return null
+  }
+  return selectedPlanningSheetName.value.trim() || null
+}
+
+function buildSourceEvidenceSnapshotRequest(): { sheet_name: string } | undefined {
+  const sheetName = getSelectedSourceEvidenceSheetName()
+  return sheetName ? { sheet_name: sheetName } : undefined
 }
 
 function warningNeedsVisualSemanticsNote(message: string): boolean {
@@ -1672,10 +2050,12 @@ function normalizePlanningSourceConfig(rawConfig: unknown): TestCaseGenerationPl
 
 function buildPlanningSourceConfig(): TestCaseGenerationPlanningSourceConfig {
   const preferredSourceId = selectedPlanningSourceId.value || planningSourceStore.preferredSourceId || null
+  const persistedPlanningSheetName =
+    activeGenerationInput.value.kind === 'source_evidence' ? null : selectedPlanningSheetName.value.trim() || null
   return {
     planning_sources: planningSourceStore.sources.map((source) => ({ ...source })),
     preferred_planning_source_id: preferredSourceId,
-    selected_planning_sheet_name: selectedPlanningSheetName.value.trim() || null,
+    selected_planning_sheet_name: persistedPlanningSheetName,
   }
 }
 
@@ -1838,6 +2218,13 @@ watch(
       return
     }
     if (activeGenerationInput.value.kind === 'source_evidence') {
+      if (!sheetOptions.length) {
+        selectedPlanningSheetName.value = ''
+        return
+      }
+      if (!sheetOptions.some((sheet) => sheet.name === selectedPlanningSheetName.value)) {
+        selectedPlanningSheetName.value = getDefaultSourceEvidenceSheetName(sourceEvidenceRun.value)
+      }
       return
     }
     if (!sheetOptions.length) {
@@ -1870,6 +2257,9 @@ watch(
 watch(
   selectedPlanningSheetOptions,
   (sheetOptions) => {
+    if (activeGenerationInput.value.kind === 'source_evidence') {
+      return
+    }
     if (sheetOptions.some((sheet) => sheet.name === selectedPlanningSheetName.value)) {
       return
     }
@@ -2110,7 +2500,11 @@ function clearSnapshotAndGeneratedResult(): void {
 }
 
 function clearGeneratedResult(): void {
+  stopGenerationRunPolling()
   generationResult.value = null
+  generationRun.value = null
+  generationRunAtoms.value = []
+  generationRunCases.value = []
   apiErrorMessage.value = ''
   isGeneratedResultStale.value = false
   generatedResultStaleReason.value = ''
@@ -2204,7 +2598,7 @@ async function uploadLocalSourceFile(file: File | null | undefined): Promise<voi
   localSourceUploadErrorMessage.value = ''
   try {
     const response = await createLocalFileSourceEvidenceRun(file)
-    sourceEvidenceRun.value = response.data
+    applySourceEvidenceRun(response.data)
     sourceEvidenceRunUrl.value = ''
     localSourceUploadMeta.value = {
       sourceId: `source-evidence-run-${response.data.id}`,
@@ -2269,7 +2663,7 @@ async function refreshCurrentLocalSourceSheets(): Promise<void> {
   localSourceUploadErrorMessage.value = ''
   try {
     const response = await retrySourceEvidenceRun(run.id)
-    sourceEvidenceRun.value = response.data
+    applySourceEvidenceRun(response.data)
     resetSourceEvidenceAuthorizationState()
     resetSourceEvidenceVisualCandidates()
     sourceEvidenceResourcesErrorMessage.value = ''
@@ -2519,7 +2913,7 @@ async function readCurrentSvnData(): Promise<void> {
       source_type: 'svn_file',
       source_url: sourceUrl,
     })
-    sourceEvidenceRun.value = response.data
+    applySourceEvidenceRun(response.data)
     sourceEvidenceRunUrl.value = sourceUrl
     activeSourceMode.value = 'feishu_doc'
     resetSourceEvidenceAuthorizationState()
@@ -2723,7 +3117,7 @@ async function createFeishuSourceEvidenceRun(): Promise<void> {
       source_type: 'feishu',
       source_url: sourceUrl,
     })
-    sourceEvidenceRun.value = response.data
+    applySourceEvidenceRun(response.data)
     sourceEvidenceRunUrl.value = sourceUrl
     resetSourceEvidenceAuthorizationState()
     resetSourceEvidenceVisualCandidates()
@@ -2748,7 +3142,7 @@ async function retryFeishuSourceEvidenceRun(): Promise<void> {
   sourceEvidenceApiErrorMessage.value = ''
   try {
     const response = await retrySourceEvidenceRun(run.id)
-    sourceEvidenceRun.value = response.data
+    applySourceEvidenceRun(response.data)
     resetSourceEvidenceAuthorizationState()
     resetSourceEvidenceVisualCandidates()
     sourceEvidenceResourcesErrorMessage.value = ''
@@ -2797,14 +3191,39 @@ async function openSourceEvidenceResources(): Promise<void> {
   isSourceEvidenceResourcesLoading.value = true
   sourceEvidenceResourcesErrorMessage.value = ''
   try {
+    const sheetName = getSelectedSourceEvidenceSheetName()
     const [resourceResponse, candidateResponse, observationResponse] = await Promise.all([
       fetchSourceEvidenceResources(run.id),
-      fetchSourceEvidenceVisualCandidates(run.id),
+      sheetName ? fetchSourceEvidenceVisualCandidates(run.id, sheetName) : fetchSourceEvidenceVisualCandidates(run.id),
       fetchSourceEvidenceObservations(run.id),
     ])
     applySourceEvidenceResources(resourceResponse.data)
     applySourceEvidenceVisualCandidates(candidateResponse.data)
     applySourceEvidenceObservations(observationResponse.data)
+  } catch (error) {
+    sourceEvidenceResourcesErrorMessage.value = getApiErrorMessage(error, '读取视觉候选失败，请稍后重试。')
+  } finally {
+    isSourceEvidenceResourcesLoading.value = false
+  }
+}
+
+async function refreshSourceEvidenceVisualCandidatesForCurrentSheet(): Promise<void> {
+  const run = sourceEvidenceRun.value
+  if (!run || activeGenerationInput.value.kind !== 'source_evidence' || isSourceEvidenceBlocked.value) {
+    return
+  }
+  if (hasSourceEvidenceSheetOptions.value && !getSelectedSourceEvidenceSheetName()) {
+    return
+  }
+
+  isSourceEvidenceResourcesLoading.value = sourceEvidenceResourcesDrawerVisible.value
+  sourceEvidenceResourcesErrorMessage.value = ''
+  try {
+    const sheetName = getSelectedSourceEvidenceSheetName()
+    const response = sheetName
+      ? await fetchSourceEvidenceVisualCandidates(run.id, sheetName)
+      : await fetchSourceEvidenceVisualCandidates(run.id)
+    applySourceEvidenceVisualCandidates(response.data)
   } catch (error) {
     sourceEvidenceResourcesErrorMessage.value = getApiErrorMessage(error, '读取视觉候选失败，请稍后重试。')
   } finally {
@@ -2841,11 +3260,13 @@ async function saveSourceEvidenceVisualSelection(): Promise<void> {
   isSourceEvidenceVisualSaving.value = true
   sourceEvidenceResourcesErrorMessage.value = ''
   try {
+    const sheetName = getSelectedSourceEvidenceSheetName()
     const response = await saveSourceEvidenceVisualSelections(run.id, {
       selected_refs: sourceEvidenceSelectedVisualRefs.value,
+      ...(sheetName ? { sheet_name: sheetName } : {}),
     })
     applySourceEvidenceVisualCandidates(response.data)
-    if (generationResult.value) {
+    if (hasGeneratedResult.value) {
       markGeneratedResultStale('视觉观察选择已变化，需要重新生成。')
     }
   } catch (error) {
@@ -2869,8 +3290,10 @@ async function observeSelectedSourceEvidenceVisuals(): Promise<void> {
   isSourceEvidenceObserving.value = true
   sourceEvidenceResourcesErrorMessage.value = ''
   try {
+    const sheetName = getSelectedSourceEvidenceSheetName()
     const selectionResponse = await saveSourceEvidenceVisualSelections(run.id, {
       selected_refs: sourceEvidenceSelectedVisualRefs.value,
+      ...(sheetName ? { sheet_name: sheetName } : {}),
     })
     applySourceEvidenceVisualCandidates(selectionResponse.data)
     const observationResponse = await observeSourceEvidenceRun(run.id)
@@ -2898,7 +3321,7 @@ async function adoptSourceEvidenceObservation(observation: SourceEvidenceObserva
       observation_ids: [observation.id],
     })
     applySourceEvidenceObservations(response.data)
-    if (generationResult.value) {
+    if (hasGeneratedResult.value) {
       markGeneratedResultStale('已采纳视觉证据已变化，需要重新生成。')
     }
   } catch (error) {
@@ -2919,7 +3342,7 @@ async function revokeSourceEvidenceObservation(observation: SourceEvidenceObserv
   try {
     const response = await revokeSourceEvidenceVisualEvidence(run.id, observation.id)
     applySourceEvidenceObservations(response.data)
-    if (generationResult.value) {
+    if (hasGeneratedResult.value) {
       markGeneratedResultStale('已采纳视觉证据已变化，需要重新生成。')
     }
   } catch (error) {
@@ -3058,7 +3481,10 @@ async function readSnapshot(): Promise<void> {
       if (!run) {
         return
       }
-      response = await readSourceEvidenceSnapshot(run.id)
+      const snapshotRequest = buildSourceEvidenceSnapshotRequest()
+      response = snapshotRequest
+        ? await readSourceEvidenceSnapshot(run.id, snapshotRequest)
+        : await readSourceEvidenceSnapshot(run.id)
       sourceEvidenceSnapshotRunId.value = run.id
       if (run.source_type === 'local_file' && localSourceUploadMeta.value) {
         localSourceUploadMeta.value = {
@@ -3096,38 +3522,167 @@ async function readSnapshot(): Promise<void> {
   }
 }
 
+function getStoredGenerationRunId(): number | null {
+  try {
+    const rawValue = window.localStorage.getItem(GENERATION_RUN_STORAGE_KEY)
+    const runId = rawValue ? Number(rawValue) : NaN
+    return Number.isFinite(runId) && runId > 0 ? runId : null
+  } catch {
+    return null
+  }
+}
+
+function storeGenerationRunId(runId: number): void {
+  try {
+    window.localStorage.setItem(GENERATION_RUN_STORAGE_KEY, String(runId))
+  } catch {
+    // localStorage can be unavailable in hardened browser contexts.
+  }
+}
+
+function removeStoredGenerationRunId(runId?: number): void {
+  try {
+    if (runId === undefined || window.localStorage.getItem(GENERATION_RUN_STORAGE_KEY) === String(runId)) {
+      window.localStorage.removeItem(GENERATION_RUN_STORAGE_KEY)
+    }
+  } catch {
+    // localStorage can be unavailable in hardened browser contexts.
+  }
+}
+
+function applyGenerationRun(run: TestCaseGenerationRunResponse, options: { persist?: boolean } = {}): void {
+  generationRun.value = run
+  generationRunArtifacts.value = run.artifacts ?? []
+  if (!generationRunArtifacts.value.some((item) => item.key === selectedArtifactKey.value)) {
+    selectedArtifactKey.value = generationRunArtifacts.value[0]?.key ?? 'workbook'
+  }
+  generationResult.value = null
+  isGeneratedResultStale.value = false
+  generatedResultStaleReason.value = ''
+  if (options.persist !== false) {
+    storeGenerationRunId(run.id)
+  }
+  if (run.status === 'expired') {
+    removeStoredGenerationRunId(run.id)
+  }
+}
+
+function stopGenerationRunPolling(): void {
+  if (generationRunPollTimer !== null) {
+    window.clearTimeout(generationRunPollTimer)
+    generationRunPollTimer = null
+  }
+  isGenerationRunPolling.value = false
+}
+
+function scheduleGenerationRunPolling(runId: number): void {
+  stopGenerationRunPolling()
+  isGenerationRunPolling.value = true
+  generationRunPollTimer = window.setTimeout(() => {
+    generationRunPollTimer = null
+    void refreshGenerationRun(runId, { scheduleNext: true })
+  }, 2000)
+}
+
+async function loadGenerationRunResultDetails(runId: number): Promise<void> {
+  try {
+    const [casesResponse, atomsResponse] = await Promise.all([
+      listGenerationRunCases(runId),
+      listGenerationRunAtoms(runId),
+    ])
+    generationRunCases.value = casesResponse.data.items
+    generationRunAtoms.value = atomsResponse.data.items
+    try {
+      const artifactsResponse = await listGenerationRunArtifacts(runId)
+      generationRunArtifacts.value = artifactsResponse.data.items
+      if (!generationRunArtifacts.value.some((item) => item.key === selectedArtifactKey.value)) {
+        selectedArtifactKey.value = generationRunArtifacts.value[0]?.key ?? 'workbook'
+      }
+    } catch {
+      generationRunArtifacts.value = generationRun.value?.artifacts ?? []
+    }
+  } catch (error) {
+    const message = getApiErrorMessage(error, '')
+    if (message) {
+      apiErrorMessage.value = message
+    }
+    generationRunCases.value = []
+    generationRunAtoms.value = []
+    generationRunArtifacts.value = []
+  }
+}
+
+async function refreshGenerationRun(runId: number, options: { scheduleNext?: boolean } = {}): Promise<void> {
+  try {
+    const response = await getGenerationRun(runId)
+    const run = response.data
+    applyGenerationRun(run)
+    if (GENERATION_RUN_RESULT_STATUSES.has(run.status)) {
+      stopGenerationRunPolling()
+      await loadGenerationRunResultDetails(run.id)
+      return
+    }
+    if (GENERATION_RUN_ACTIVE_STATUSES.has(run.status)) {
+      if (options.scheduleNext !== false) {
+        scheduleGenerationRunPolling(run.id)
+      }
+      return
+    }
+    stopGenerationRunPolling()
+    if (run.status === 'cancelled' || run.status === 'expired') {
+      generationRunCases.value = []
+      generationRunAtoms.value = []
+    }
+  } catch (error) {
+    stopGenerationRunPolling()
+    const message = getApiErrorMessage(error, '恢复 Generation Run 失败。')
+    apiErrorMessage.value = message
+    removeStoredGenerationRunId(runId)
+  }
+}
+
+async function restoreLatestGenerationRun(): Promise<void> {
+  const runId = getStoredGenerationRunId()
+  if (!runId) {
+    return
+  }
+  await refreshGenerationRun(runId, { scheduleNext: true })
+}
+
 async function generateCases(): Promise<void> {
-  if (!planningSnapshot.value) {
+  const run = sourceEvidenceRun.value
+  const planningSheetName = selectedGenerationSheetName.value
+  if (!run || !planningSheetName) {
+    apiErrorMessage.value = 'V3 全量生成需要先读取 Source Evidence 并选择 Planning Sheet。'
     return
   }
 
   isGeneratingCases.value = true
   apiErrorMessage.value = ''
+  stopGenerationRunPolling()
+  generationRunAtoms.value = []
+  generationRunCases.value = []
+  generationRunArtifacts.value = []
+  artifactPreviewText.value = ''
   try {
     const selectedReferenceBackendIds = selectedReferenceFiles.value.map((file) => file.backendId)
     const primaryReferenceBackendId = primaryReference.value?.backendId ?? null
     const primaryReferenceSheetName =
       primaryReference.value && hasReferenceSheetOptions.value ? selectedReferenceSheetName.value || null : null
-    const briefMarkdown = snapshotBriefMarkdown.value.trim()
-    const payload: TestCaseGenerationRequest = {
-      planning_snapshot: planningSnapshot.value,
+    const response = await createGenerationRun({
+      source_evidence_run_id: run.id,
+      planning_sheet_name: planningSheetName,
       reference_ids: selectedReferenceBackendIds,
       primary_reference_id: primaryReferenceBackendId,
       primary_reference_sheet_name: primaryReferenceSheetName,
-    }
-    if (briefMarkdown) {
-      payload.snapshot_brief_markdown = briefMarkdown
-    }
-    if (sourceEvidenceSnapshotRunId.value) {
-      payload.source_evidence_run_id = sourceEvidenceSnapshotRunId.value
-      payload.adopted_visual_evidence_ids = [...sourceEvidenceAdoptedVisualEvidenceIds.value]
-    }
-    const response = await generateTestCases(payload)
-    generationResult.value = response.data
+      strict_mode: strictMode.value,
+    })
+    applyGenerationRun(response.data)
     isGeneratedResultStale.value = false
     generatedResultStaleReason.value = ''
-    snapshotBriefParticipatedInLastGeneration.value = Boolean(briefMarkdown)
+    snapshotBriefParticipatedInLastGeneration.value = false
     activeTab.value = 'cases'
+    await refreshGenerationRun(response.data.id, { scheduleNext: true })
   } catch (error) {
     apiErrorMessage.value = getApiErrorMessage(error, '生成用例失败，请稍后重试。')
   } finally {
@@ -3151,32 +3706,114 @@ function saveDownloadedFile(file: ApiFileResponse): void {
 }
 
 async function exportCases(): Promise<void> {
-  if (!generationResult.value || isGeneratedResultStale.value) {
+  const run = generationRun.value
+  const selectedArtifact = selectedGenerationArtifact.value ?? workbookGenerationArtifact.value
+  if (!run || (!selectedArtifact && !canExportGeneratedResult.value)) {
     return
   }
 
   isExportingCases.value = true
   apiErrorMessage.value = ''
   try {
-    const payload: TestCaseExportRequest = {
-      blueprint: generationResult.value.blueprint,
-      cases: generationResult.value.cases,
-      warnings: generationResult.value.warnings,
-      stats: generationResult.value.stats,
-      export_columns: generationResult.value.export_columns,
-      primary_reference_profile: generationResult.value.primary_reference_profile ?? null,
-      source_summary: planningSnapshot.value?.source_summary ?? '',
+    if (selectedArtifact && selectedArtifact.status !== 'ready') {
+      apiErrorMessage.value = selectedArtifact.message || '所选文件当前不可下载，请重试文件渲染。'
+      return
     }
-    if (sourceEvidenceSnapshotRunId.value) {
-      payload.source_evidence_run_id = sourceEvidenceSnapshotRunId.value
-      payload.adopted_visual_evidence_ids = [...sourceEvidenceAdoptedVisualEvidenceIds.value]
-    }
-    const file = await exportTestCaseWorkbook(payload)
+    const file = selectedArtifact
+      ? await downloadGenerationRunArtifact(run.id, selectedArtifact.key, selectedArtifact.file_name)
+      : await exportGenerationRunWorkbook(run.id)
     saveDownloadedFile(file)
   } catch (error) {
     apiErrorMessage.value = getApiErrorMessage(error, '导出 Excel 失败，请稍后重试。')
   } finally {
     isExportingCases.value = false
+  }
+}
+
+async function previewGenerationArtifact(artifactKey: string): Promise<void> {
+  selectedArtifactKey.value = artifactKey
+  const run = generationRun.value
+  const artifact = generationRunArtifacts.value.find((item) => item.key === artifactKey)
+  artifactPreviewText.value = ''
+  if (!run || !artifact) {
+    return
+  }
+  if (artifact.preview_kind === 'cases') {
+    activeTab.value = 'cases'
+    return
+  }
+  activeTab.value = 'artifact'
+  if (artifact.status !== 'ready') {
+    artifactPreviewText.value = artifact.message || '文件当前不可预览。'
+    return
+  }
+  isArtifactPreviewLoading.value = true
+  try {
+    artifactPreviewText.value = await fetchGenerationRunArtifactText(run.id, artifact.key)
+  } catch (error) {
+    artifactPreviewText.value = ''
+    apiErrorMessage.value = getApiErrorMessage(error, '文件预览失败，请稍后重试。')
+  } finally {
+    isArtifactPreviewLoading.value = false
+  }
+}
+
+async function retryArtifactRendering(): Promise<void> {
+  const run = generationRun.value
+  if (!run || !GENERATION_RUN_RESULT_STATUSES.has(run.status)) {
+    return
+  }
+  isArtifactRenderingRetrying.value = true
+  apiErrorMessage.value = ''
+  try {
+    const response = await retryGenerationRunArtifacts(run.id)
+    generationRunArtifacts.value = response.data.items
+    if (!generationRunArtifacts.value.some((item) => item.key === selectedArtifactKey.value)) {
+      selectedArtifactKey.value = generationRunArtifacts.value[0]?.key ?? 'workbook'
+    }
+    ElMessage.success('文件渲染已完成。')
+    await refreshGenerationRun(run.id, { scheduleNext: false })
+  } catch (error) {
+    apiErrorMessage.value = getApiErrorMessage(error, '重试文件渲染失败。')
+  } finally {
+    isArtifactRenderingRetrying.value = false
+  }
+}
+
+async function cancelCurrentGenerationRun(): Promise<void> {
+  const run = generationRun.value
+  if (!run || !GENERATION_RUN_ACTIVE_STATUSES.has(run.status)) {
+    return
+  }
+  isGenerationRunCancelling.value = true
+  apiErrorMessage.value = ''
+  try {
+    const response = await cancelGenerationRun(run.id)
+    applyGenerationRun(response.data)
+    stopGenerationRunPolling()
+  } catch (error) {
+    apiErrorMessage.value = getApiErrorMessage(error, '取消 Generation Run 失败，请稍后重试。')
+  } finally {
+    isGenerationRunCancelling.value = false
+  }
+}
+
+async function retryFailedChunks(): Promise<void> {
+  const run = generationRun.value
+  if (!run || run.status !== 'partial_completed' || run.failed_chunks <= 0) {
+    return
+  }
+  isGenerationRunRetrying.value = true
+  apiErrorMessage.value = ''
+  try {
+    await retryFailedGenerationChunks(run.id)
+    generationRunCases.value = []
+    generationRunAtoms.value = []
+    await refreshGenerationRun(run.id, { scheduleNext: true })
+  } catch (error) {
+    apiErrorMessage.value = getApiErrorMessage(error, '重试失败 chunk 失败，请稍后重试。')
+  } finally {
+    isGenerationRunRetrying.value = false
   }
 }
 
@@ -3376,6 +4013,10 @@ function handlePlanningSheetSelectionChange(): void {
   if (isPlanningSourceConfigHydrating.value || isApplyingPlanningSourceConfig) {
     return
   }
+  if (activeGenerationInput.value.kind === 'source_evidence') {
+    void refreshSourceEvidenceVisualCandidatesForCurrentSheet()
+    return
+  }
   queuePlanningSourceConfigPersist()
 }
 
@@ -3406,6 +4047,11 @@ onMounted(() => {
   void loadPlanningSourceConfig()
   void loadSourceEvidenceCapabilities()
   void loadReferenceLibrary()
+  void restoreLatestGenerationRun()
+})
+
+onUnmounted(() => {
+  stopGenerationRunPolling()
 })
 </script>
 
@@ -4491,18 +5137,68 @@ onMounted(() => {
               <span class="tcg-module-heading__index">04</span>
               <div>
                 <h2>结果预览</h2>
-                <p>核对整理稿、测试用例和限制提示，确认后导出 Excel。</p>
+                <p>V3 读取完整 selected Planning Sheet；整理稿和快照仅用于来源预览。</p>
               </div>
             </div>
             <div class="tcg-preview__actions">
+              <el-select
+                v-if="generationRunArtifacts.length"
+                v-model="selectedArtifactKey"
+                class="tcg-artifact-select"
+                data-test="generation-artifact-select"
+                aria-label="选择生成文件预览"
+                @change="previewGenerationArtifact"
+              >
+                <el-option
+                  v-for="artifact in generationRunArtifacts"
+                  :key="artifact.key"
+                  :label="`${artifact.label} · ${artifact.status === 'ready' ? '已生成' : '不可用'}`"
+                  :value="artifact.key"
+                />
+              </el-select>
+              <label class="tcg-strict-mode">
+                <input
+                  v-model="strictMode"
+                  type="checkbox"
+                  data-test="generation-strict-mode-checkbox"
+                  :disabled="isGeneratingCases || isGenerationRunPolling"
+                />
+                <span>严格模式</span>
+              </label>
+              <SecondaryButton
+                v-if="generationRun && GENERATION_RUN_ACTIVE_STATUSES.has(generationRun.status)"
+                data-test="generation-run-cancel-button"
+                :loading="isGenerationRunCancelling"
+                @click="cancelCurrentGenerationRun"
+              >
+                取消
+              </SecondaryButton>
+              <SecondaryButton
+                v-if="generationRun?.status === 'partial_completed' && generationRun.failed_chunks > 0"
+                data-test="generation-run-retry-button"
+                :loading="isGenerationRunRetrying"
+                @click="retryFailedChunks"
+              >
+                <template #icon><Refresh /></template>
+                重试失败 chunk
+              </SecondaryButton>
+              <SecondaryButton
+                v-if="generationRun && GENERATION_RUN_RESULT_STATUSES.has(generationRun.status)"
+                data-test="generation-artifact-retry-button"
+                :loading="isArtifactRenderingRetrying"
+                @click="retryArtifactRendering"
+              >
+                <template #icon><Refresh /></template>
+                重试文件渲染
+              </SecondaryButton>
               <SecondaryButton
                 data-test="preview-export-button"
-                :disabled="!canExportGeneratedResult"
+                :disabled="!canDownloadSelectedArtifact"
                 :loading="isExportingCases"
                 @click="exportCases"
               >
                 <template #icon><Download /></template>
-                导出 Excel
+                下载所选文件
               </SecondaryButton>
               <PrimaryButton
                 :disabled="!isGenerationReady"
@@ -4511,7 +5207,7 @@ onMounted(() => {
                 @click="generateCases"
               >
                 <template #icon><VideoPlay /></template>
-                生成用例
+                全量生成用例
               </PrimaryButton>
             </div>
           </div>
@@ -4522,10 +5218,48 @@ onMounted(() => {
               :key="tab.key"
               type="button"
               :class="{ 'is-active': activeTab === tab.key }"
+              :data-test="`preview-tab-${tab.key}`"
               @click="activeTab = tab.key"
             >
               {{ tab.label }}
             </button>
+          </div>
+
+          <div v-if="generationRun" class="tcg-generation-run-progress" data-test="generation-run-stage-progress">
+            <div class="tcg-generation-run-progress__summary">
+              <strong>Generation Run #{{ generationRun.id }}</strong>
+              <span>{{ getGenerationRunStatusLabel(generationRun.status) }}</span>
+              <span>chunk {{ generationRun.completed_chunks }}/{{ generationRun.total_chunks }}</span>
+              <span>失败 {{ generationRun.failed_chunks }}</span>
+              <span>Requirement Atom {{ generationRun.atom_count }}</span>
+              <span>用例 {{ generationRun.case_count }}</span>
+            </div>
+            <div class="tcg-generation-run-progress__stages">
+              <span
+                v-for="stage in generationRunStageItems"
+                :key="stage.key"
+                class="tcg-generation-run-stage"
+                :class="`tcg-generation-run-stage--${stage.status}`"
+                :data-test="`generation-run-stage-${stage.key}`"
+              >
+                {{ stage.label }}
+              </span>
+            </div>
+          </div>
+
+          <div
+            v-if="generationRunPartialMessages.length"
+            class="tcg-partial-notice"
+            data-test="generation-run-partial-notice"
+            role="status"
+          >
+            <el-icon><WarningFilled /></el-icon>
+            <div>
+              <strong>覆盖限制</strong>
+              <ul>
+                <li v-for="message in generationRunPartialMessages" :key="message">{{ message }}</li>
+              </ul>
+            </div>
           </div>
 
           <div class="tcg-preview__toolbar">
@@ -4540,7 +5274,7 @@ onMounted(() => {
             </div>
             <div class="tcg-priority-summary">
               <el-tag v-for="[priority, count] in prioritySummary" :key="priority" :type="getPriorityType(priority)" size="large">
-                {{ priority }} {{ count }}
+                  {{ priority }} {{ count }}
               </el-tag>
               <span v-if="!prioritySummary.length" class="tcg-muted">待读取生成结果</span>
             </div>
@@ -4553,12 +5287,23 @@ onMounted(() => {
             <span>{{ generatedResultStaleReason }}</span>
           </div>
 
-          <div v-if="activeTab === 'brief'" class="tcg-tab-panel">
+          <div v-if="activeTab === 'artifact'" class="tcg-tab-panel">
+            <div class="tcg-artifact-preview" data-test="generation-artifact-preview">
+              <div v-if="isArtifactPreviewLoading" class="tcg-brief-state" role="status">
+                <span class="tcg-loading-dot"></span>
+                <strong>正在读取 {{ selectedGenerationArtifact?.label ?? '文件' }}</strong>
+              </div>
+              <pre v-else-if="artifactPreviewText">{{ artifactPreviewText }}</pre>
+              <div v-else class="tcg-empty-result">选择蓝图、统计或审计文件后可在此预览。</div>
+            </div>
+          </div>
+
+          <div v-else-if="activeTab === 'brief'" class="tcg-tab-panel">
             <div class="tcg-brief-panel">
               <div class="tcg-brief-panel__header">
                 <div>
                   <strong>AI 快照整理稿</strong>
-                  <span>辅助阅读与对齐，需求事实来源仍以 Planning Sheet Snapshot 为准。</span>
+                  <span>辅助阅读与对齐；V3 生成读取完整 selected Planning Sheet，不只读取预览 rows。</span>
                 </div>
                 <div class="tcg-brief-panel__actions">
                   <SecondaryButton
@@ -4626,7 +5371,7 @@ onMounted(() => {
                   </li>
                 </ul>
               </div>
-              <div v-else class="tcg-empty-result">生成前先读取策划案快照</div>
+              <div v-else class="tcg-empty-result">读取来源预览后可查看整理稿</div>
             </div>
           </div>
 
@@ -4654,8 +5399,49 @@ onMounted(() => {
               </el-table-column>
             </el-table>
             <div v-else class="tcg-empty-result">
-              {{ hasPlanningSnapshot ? '快照已读取，点击生成用例。' : '生成前先读取策划案快照' }}
+              {{ sourceEvidenceRun ? '来源已就绪，点击全量生成用例。' : '生成前先读取 Source Evidence' }}
             </div>
+          </div>
+
+          <div v-else-if="activeTab === 'coverage'" class="tcg-tab-panel">
+            <div class="tcg-coverage-panel" data-test="generation-run-coverage-panel">
+              <div class="tcg-coverage-panel__summary">
+                <strong>覆盖 {{ coverageAuditSummary.coveredAtoms }} / {{ coverageAuditSummary.totalAtoms }}</strong>
+                <span>未覆盖 {{ coverageAuditSummary.uncoveredAtoms }}</span>
+                <span>失败 chunk {{ coverageAuditSummary.failedChunkCount }}</span>
+              </div>
+              <ul v-if="coverageAuditSummary.exportLimitations.length" class="tcg-warning-list">
+                <li v-for="limitation in coverageAuditSummary.exportLimitations" :key="limitation">
+                  <el-icon><WarningFilled /></el-icon>
+                  <span>{{ limitation }}</span>
+                </li>
+              </ul>
+              <div v-else class="tcg-empty-result">暂无覆盖限制</div>
+            </div>
+          </div>
+
+          <div v-else-if="activeTab === 'atoms'" class="tcg-tab-panel">
+            <table v-if="generationRunAtoms.length" class="tcg-atom-table">
+              <thead>
+                <tr>
+                  <th>Atom ID</th>
+                  <th>类型</th>
+                  <th>需求原子</th>
+                  <th>覆盖状态</th>
+                  <th>来源</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="atom in generationRunAtoms" :key="atom.id">
+                  <td>{{ atom.atom_id }}</td>
+                  <td>{{ atom.atom_type }}</td>
+                  <td>{{ atom.requirement_text }}</td>
+                  <td>{{ atom.coverage_status }}</td>
+                  <td>{{ atom.source_sheet_name }} {{ atom.source_row_start ?? '-' }}-{{ atom.source_row_end ?? '-' }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else class="tcg-empty-result">暂无 Requirement Atom 明细</div>
           </div>
 
           <div v-else class="tcg-tab-panel">
@@ -4697,7 +5483,7 @@ onMounted(() => {
             <div class="tcg-visual-selection-summary">
               <div>
                 <strong>{{ sourceEvidenceVisualSelectionLabel }}</strong>
-                <span>默认只选系统推荐集合，不会全量观察所有图片/附件。{{ sourceEvidenceObservationLabel }}</span>
+                <span>{{ sourceEvidenceVisualSelectionDescription }}{{ sourceEvidenceObservationLabel }}</span>
             </div>
             <div class="tcg-visual-selection-actions">
               <SecondaryButton
@@ -7880,6 +8666,23 @@ onMounted(() => {
   flex-wrap: wrap;
 }
 
+.tcg-strict-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.25;
+  white-space: nowrap;
+}
+
+.tcg-strict-mode input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-primary);
+}
+
 .tcg-preview__tabs {
   position: sticky;
   top: 0;
@@ -7950,6 +8753,84 @@ onMounted(() => {
   padding: 10px 16px;
 }
 
+.tcg-generation-run-progress {
+  display: grid;
+  gap: 9px;
+  border-bottom: 1px solid var(--color-border-light);
+  background: #f8fafc;
+  padding: 10px 16px;
+}
+
+.tcg-generation-run-progress__summary,
+.tcg-generation-run-progress__stages {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tcg-generation-run-progress__summary strong {
+  color: var(--color-text-main);
+  font-size: 13px;
+  font-weight: 850;
+}
+
+.tcg-generation-run-progress__summary span {
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.tcg-generation-run-stage {
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: #ffffff;
+  color: var(--color-text-muted);
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+  padding: 6px 8px;
+}
+
+.tcg-generation-run-stage--active {
+  border-color: rgba(15, 98, 254, 0.38);
+  background: #eef5ff;
+  color: var(--color-primary-hover);
+}
+
+.tcg-generation-run-stage--done {
+  border-color: rgba(22, 163, 74, 0.25);
+  background: #f0fdf4;
+  color: #15803d;
+}
+
+.tcg-partial-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  border-bottom: 1px solid rgba(245, 158, 11, 0.2);
+  background: var(--color-warning-soft);
+  color: #92400e;
+  padding: 10px 16px;
+}
+
+.tcg-partial-notice strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 850;
+  margin-bottom: 3px;
+}
+
+.tcg-partial-notice ul {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding-left: 16px;
+  font-size: 12px;
+  font-weight: 720;
+  line-height: 1.45;
+}
+
 .tcg-stale-notice {
   display: flex;
   align-items: center;
@@ -7985,6 +8866,48 @@ onMounted(() => {
 .tcg-tab-panel {
   background: rgba(255, 255, 255, 0.54);
   padding: 14px 16px 16px;
+}
+
+.tcg-coverage-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.tcg-coverage-panel__summary {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.tcg-coverage-panel__summary strong {
+  color: var(--color-text-main);
+  font-size: 15px;
+  font-weight: 850;
+}
+
+.tcg-atom-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tcg-atom-table th,
+.tcg-atom-table td {
+  border-bottom: 1px solid var(--color-border-light);
+  padding: 9px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.tcg-atom-table th {
+  color: var(--color-text-main);
+  font-weight: 850;
 }
 
 .tcg-brief-panel {
@@ -8632,6 +9555,28 @@ onMounted(() => {
     overflow-x: auto;
     padding: 0 12px;
   }
+}
+
+.tcg-artifact-select {
+  width: 224px;
+}
+
+.tcg-artifact-preview {
+  min-height: 240px;
+}
+
+.tcg-artifact-preview pre {
+  max-height: 560px;
+  margin: 0;
+  padding: 18px;
+  overflow: auto;
+  border: 1px solid var(--app-border, #dce4ef);
+  border-radius: 12px;
+  background: #f7f9fc;
+  color: #26344a;
+  font: 13px/1.7 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 @media (max-width: 640px) {

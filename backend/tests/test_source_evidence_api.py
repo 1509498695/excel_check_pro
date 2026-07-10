@@ -27,6 +27,7 @@ from backend.app.test_cases import source_evidence_authorization as authz
 from backend.app.test_cases.schemas import (
     GenerationWarning,
     ParsedFeishuSource,
+    ParsedSourceCell,
     ParsedSourceResource,
     ParsedSourceUnit,
 )
@@ -132,6 +133,40 @@ def _parsed_docx_source() -> ParsedFeishuSource:
     )
 
 
+def _parsed_multi_sheet_source() -> ParsedFeishuSource:
+    return ParsedFeishuSource(
+        title="活动多页表",
+        doc_type="sheets",
+        token="shtcnmulti123",
+        url="https://demo.feishu.cn/sheets/shtcnmulti123",
+        markdown="# Source: 活动多页表\n",
+        source_units=[
+            ParsedSourceUnit(
+                unit_id="sheet_gid001",
+                kind="sheet",
+                title="第一页",
+                cells=[
+                    ParsedSourceCell(coord="A1", row=1, col=1, text="模块"),
+                    ParsedSourceCell(coord="B2", row=2, col=2, text="入口规则"),
+                ],
+                metadata={"sheet_id": "gid001", "resource_count": 2},
+            ),
+            ParsedSourceUnit(
+                unit_id="sheet_gid002",
+                kind="sheet",
+                title="第二页",
+                cells=[
+                    ParsedSourceCell(coord="A1", row=1, col=1, text="奖励"),
+                ],
+                metadata={"sheet_id": "gid002", "resource_count": 1},
+            ),
+        ],
+        resources=[],
+        raw_manifest={"doc_type": "sheets"},
+        warnings=[],
+    )
+
+
 @pytest.mark.anyio
 async def test_create_docx_source_evidence_run_and_read_resources(
     auth_client: AsyncClient,
@@ -171,6 +206,7 @@ async def test_create_docx_source_evidence_run_and_read_resources(
     assert data["source_identifier"].startswith("sha256:")
     assert "doccnabc123" not in data["source_identifier"]
     assert any("download failed" in item["message"] for item in data["warnings"])
+    assert data["sheet_options"] == []
 
     run_id = data["id"]
     source_meta = source_evidence_storage.read_source_evidence_json(
@@ -244,6 +280,45 @@ async def test_create_docx_source_evidence_run_and_read_resources(
     )
     assert snapshot_response.status_code == 200
     assert snapshot_response.json()["data"]["non_empty_cell_count"] > 0
+
+
+@pytest.mark.anyio
+async def test_create_sheet_source_evidence_run_returns_sheet_options(
+    auth_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """多 Sheet parsed source 的 run response 暴露安全 Sheet 摘要。"""
+
+    async def _read_source(*_args, **_kwargs) -> ParsedFeishuSource:
+        return _parsed_multi_sheet_source()
+
+    monkeypatch.setattr(source_evidence, "read_feishu_parsed_source", _read_source, raising=False)
+
+    response = await auth_client.post(
+        "/api/v1/test-cases/source-evidence-runs",
+        json={
+            "source_type": "feishu",
+            "source_url": "https://demo.feishu.cn/sheets/shtcnmulti123",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["sheet_options"] == [
+        {
+            "name": "第一页",
+            "kind": "sheet",
+            "cell_count": 2,
+            "resource_count": 2,
+            "is_default": True,
+        },
+        {
+            "name": "第二页",
+            "kind": "sheet",
+            "cell_count": 1,
+            "resource_count": 1,
+            "is_default": False,
+        },
+    ]
 
 
 @pytest.mark.anyio

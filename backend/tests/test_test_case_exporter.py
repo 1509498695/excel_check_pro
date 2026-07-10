@@ -20,6 +20,11 @@ from backend.app.models import (
     SourceEvidenceResourceRecord,
     SourceEvidenceRunRecord,
     SourceEvidenceVisualObservationRecord,
+    TestCaseCoverageAuditRecord as CoverageAuditRecord,
+    TestCaseGenerationCaseRecord as GenerationCaseRecord,
+    TestCaseGenerationChunkRecord as GenerationChunkRecord,
+    TestCaseGenerationRunRecord as GenerationRunRecord,
+    TestCaseRequirementAtomRecord as RequirementAtomRecord,
 )
 from backend.app.test_cases import source_evidence_storage
 from backend.app.test_cases.constants import STANDARD_CASE_FIELD_LABELS, STANDARD_CASE_FIELDS
@@ -144,6 +149,16 @@ def _export_payload(**overrides: Any) -> dict[str, Any]:
 
 def _load_response_workbook(response) -> Any:
     return load_workbook(BytesIO(response.content))
+
+
+def _workbook_text(workbook: Any) -> str:
+    return "\n".join(
+        str(cell.value)
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+        if cell.value is not None
+    )
 
 
 async def _execution_run_count() -> int:
@@ -282,6 +297,173 @@ async def _seed_visual_evidence(
         return observation.id
 
 
+async def _seed_sheet_scope_source_evidence_run(project_id: int) -> int:
+    expires_at = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1)
+    async with async_session_factory() as session:
+        run = SourceEvidenceRunRecord(
+            project_id=project_id,
+            source_type="local_file",
+            source_url="",
+            source_token="sha256:sheet-export",
+            source_identifier="sha256:sheet-export",
+            source_title="Sheet 导出需求.xlsx",
+            status="ready",
+            expires_at=expires_at,
+            raw_manifest_json=json.dumps(
+                {
+                    "run_id": 0,
+                    "project_id": project_id,
+                    "source_type": "local_file",
+                    "source_title": "Sheet 导出需求.xlsx",
+                    "doc_type": "xlsx",
+                    "warnings": [],
+                    "expires_at": expires_at.isoformat(),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        session.add(run)
+        await session.flush()
+        run.raw_manifest_json = json.dumps(
+            {**json.loads(run.raw_manifest_json), "run_id": run.id},
+            ensure_ascii=False,
+        )
+        source_evidence_storage.ensure_source_evidence_subdirs(
+            project_id=project_id,
+            run_id=run.id,
+        )
+        resources = [
+            SourceEvidenceResourceRecord(
+                run_id=run.id,
+                project_id=project_id,
+                ref="export_sheet_a_img",
+                resource_type="image",
+                position="excel:sheet=需求A:image=1:anchor=B2",
+                filename="需求A入口.png",
+                status="unobserved",
+                download_status="downloaded",
+                local_path="visual_evidence/images/secret-a.jpg",
+                mime_type="image/png",
+                metadata_json=json.dumps(
+                    {"sheet": "需求A", "sheet_index": 1, "provider_response": "raw-a"},
+                    ensure_ascii=False,
+                ),
+            ),
+            SourceEvidenceResourceRecord(
+                run_id=run.id,
+                project_id=project_id,
+                ref="export_sheet_b_img",
+                resource_type="image",
+                position="excel:sheet=需求B:image=1:anchor=C2",
+                filename="需求B入口.png",
+                status="unobserved",
+                download_status="downloaded",
+                local_path="visual_evidence/images/secret-b.jpg",
+                mime_type="image/png",
+                metadata_json=json.dumps(
+                    {"sheet": "需求B", "sheet_index": 2, "provider_response": "raw-b"},
+                    ensure_ascii=False,
+                ),
+            ),
+        ]
+        session.add_all(resources)
+        source_evidence_storage.write_source_evidence_json(
+            project_id,
+            run.id,
+            "raw/parsed_source.json",
+            {
+                "source_type": "local_file",
+                "title": "Sheet 导出需求.xlsx",
+                "doc_type": "xlsx",
+                "token": "sha256:sheet-export",
+                "url": "",
+                "markdown": "",
+                "source_units": [
+                    {
+                        "unit_id": "sheet_a",
+                        "kind": "sheet",
+                        "title": "需求A",
+                        "cells": [{"coord": "A1", "row": 1, "col": 1, "text": "需求A导出规则。"}],
+                        "metadata": {"sheet_index": 1, "resource_count": 1},
+                    },
+                    {
+                        "unit_id": "sheet_b",
+                        "kind": "sheet",
+                        "title": "需求B",
+                        "cells": [{"coord": "A1", "row": 1, "col": 1, "text": "需求B导出规则。"}],
+                        "metadata": {"sheet_index": 2, "resource_count": 1},
+                    },
+                ],
+                "resources": [],
+                "raw_manifest": {},
+                "warnings": [],
+            },
+        )
+        await session.commit()
+        return run.id
+
+
+async def _seed_sheet_visual_evidence(
+    project_id: int,
+    run_id: int,
+    *,
+    ref: str,
+    summary: str,
+) -> int:
+    async with async_session_factory() as session:
+        run = await session.get(SourceEvidenceRunRecord, run_id)
+        assert run is not None
+        resource = (
+            await session.execute(
+                select(SourceEvidenceResourceRecord).where(
+                    SourceEvidenceResourceRecord.project_id == project_id,
+                    SourceEvidenceResourceRecord.run_id == run_id,
+                    SourceEvidenceResourceRecord.ref == ref,
+                )
+            )
+        ).scalar_one()
+        observation = SourceEvidenceVisualObservationRecord(
+            run_id=run_id,
+            project_id=project_id,
+            resource_id=resource.id,
+            ref=resource.ref,
+            position=resource.position,
+            filename=resource.filename,
+            status="adopted",
+            observation_path="",
+            created_by=run.created_by,
+            adopted_by=run.created_by,
+            adopted_at=datetime.datetime.now(datetime.UTC),
+        )
+        session.add(observation)
+        await session.flush()
+        observation_path = f"visual_evidence/observations/{observation.id}.json"
+        source_evidence_storage.write_source_evidence_json(
+            project_id,
+            run_id,
+            observation_path,
+            {
+                "id": observation.id,
+                "run_id": run_id,
+                "resource_id": resource.id,
+                "ref": resource.ref,
+                "position": resource.position,
+                "summary": summary,
+                "visible_text": summary,
+                "confidence": 0.89,
+                "limitations": ["仅确认当前 Sheet 截图可见内容。"],
+                "source": {"provider": "openai", "model": "gpt-4o-mini"},
+                "created_by": run.created_by,
+                "created_at": datetime.datetime.now(datetime.UTC).isoformat(),
+                "provider_response": "provider response must not leak",
+            },
+        )
+        observation.observation_path = observation_path
+        resource.status = "adopted"
+        await session.commit()
+        return observation.id
+
+
 async def _seed_adopted_visual_evidence(project_id: int, run_id: int) -> int:
     return await _seed_visual_evidence(project_id, run_id, status="adopted")
 
@@ -354,6 +536,436 @@ async def _seed_textless_image_source_evidence_run(project_id: int) -> int:
         )
         await session.commit()
         return run.id
+
+
+async def _seed_v3_export_run(
+    project_id: int,
+    *,
+    status: str = "completed",
+    strict_mode: bool = False,
+    uncovered: bool = False,
+    failed_chunk: bool = False,
+    include_sensitive_payload: bool = False,
+) -> int:
+    async with async_session_factory() as session:
+        source_run = SourceEvidenceRunRecord(
+            project_id=project_id,
+            source_type="local_file",
+            source_url="https://demo.invalid/v3-export.xlsx",
+            source_token="source-token-secret",
+            source_identifier="v3-export",
+            source_title="V3 导出需求.xlsx",
+            status="ready",
+            expires_at=datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=1),
+        )
+        session.add(source_run)
+        await session.flush()
+        official_atom_ids = ["ATOM-0001", "ATOM-0002"]
+        covered_atom_ids = ["ATOM-0001"] if uncovered else list(official_atom_ids)
+        blueprint = {
+            "modules": [
+                {"name": "活动入口", "atom_ids": ["ATOM-0001"]},
+                {"name": "奖励领取", "atom_ids": ["ATOM-0002"]},
+            ],
+            "flows": [{"name": "入口到奖励", "atom_ids": official_atom_ids}],
+            "requirement_traces": [
+                {
+                    "atom_id": "ATOM-0001",
+                    "source_fragment": "ATOM-0001: 活动入口按配置开放",
+                },
+                {
+                    "atom_id": "ATOM-0002",
+                    "source_fragment": "ATOM-0002: 奖励每日只能领取一次",
+                },
+            ],
+            "coverage_dimensions": [{"name": "功能覆盖"}],
+            "risks": [],
+            "unmapped_requirements": [],
+            "unsupported_or_unfounded_test_points": [],
+            "open_questions": [],
+            "warnings": [],
+        }
+        stage_payload: dict[str, Any] = {"blueprint": blueprint}
+        warnings: list[dict[str, str]] = []
+        if include_sensitive_payload:
+            stage_payload.update(
+                {
+                    "raw_prompt": "prompt should not leak",
+                    "provider_response": "provider response should not leak",
+                    "local_path": "D:/secret/source.xlsx",
+                    "api_key": "sk-v3-secret",
+                }
+            )
+            warnings.append(
+                {
+                    "source": "coverage",
+                    "level": "warning",
+                    "message": (
+                        "provider_response raw_response prompt "
+                        "token=secret-value D:/secret/source.xlsx"
+                    ),
+                }
+            )
+        run = GenerationRunRecord(
+            project_id=project_id,
+            source_evidence_run_id=source_run.id,
+            status=status,
+            planning_sheet_name="需求A",
+            reference_ids_json="[]",
+            strict_mode=strict_mode,
+            total_chunks=2,
+            completed_chunks=1 if failed_chunk else 2,
+            failed_chunks=1 if failed_chunk else 0,
+            atom_count=len(official_atom_ids),
+            case_count=len(covered_atom_ids),
+            warning_count=len(warnings),
+            warnings_json=json.dumps(warnings, ensure_ascii=False),
+            stage_payload_json=json.dumps(stage_payload, ensure_ascii=False),
+            completed_at=datetime.datetime.now(datetime.UTC)
+            if status in {"completed", "partial_completed"}
+            else None,
+            expires_at=datetime.datetime.now(datetime.UTC)
+            + datetime.timedelta(days=-1 if status == "expired" else 1),
+        )
+        session.add(run)
+        await session.flush()
+        chunk_statuses = ["completed", "failed" if failed_chunk else "completed"]
+        for index, chunk_status in enumerate(chunk_statuses, start=1):
+            session.add(
+                GenerationChunkRecord(
+                    run_id=run.id,
+                    project_id=project_id,
+                    chunk_index=index - 1,
+                    source_row_start=index,
+                    source_row_end=index,
+                    source_column_start=1,
+                    source_column_end=3,
+                    title_hint=f"chunk-{index}",
+                    status=chunk_status,
+                    error_summary="chunk provider_response D:/secret/chunk.xlsx"
+                    if chunk_status == "failed"
+                    else "",
+                )
+            )
+        atom_specs = [
+            {
+                "atom_id": "ATOM-0001",
+                "atom_type": "rule",
+                "requirement_text": "活动入口按配置开放",
+                "rows": (2, 2),
+                "columns": ["模块", "规则"],
+                "coverage_status": "covered" if "ATOM-0001" in covered_atom_ids else "unmapped",
+            },
+            {
+                "atom_id": "ATOM-0002",
+                "atom_type": "timing",
+                "requirement_text": "奖励每日只能领取一次",
+                "rows": (5, 6),
+                "columns": ["奖励", "次数"],
+                "coverage_status": "covered" if "ATOM-0002" in covered_atom_ids else "unmapped",
+            },
+        ]
+        for atom in atom_specs:
+            row_start, row_end = atom["rows"]
+            session.add(
+                RequirementAtomRecord(
+                    run_id=run.id,
+                    project_id=project_id,
+                    atom_id=atom["atom_id"],
+                    atom_type=atom["atom_type"],
+                    requirement_text=atom["requirement_text"],
+                    source_sheet_name="需求A",
+                    source_row_start=row_start,
+                    source_row_end=row_end,
+                    source_columns_json=json.dumps(atom["columns"], ensure_ascii=False),
+                    cell_excerpt=atom["requirement_text"],
+                    visual_evidence_refs_json=json.dumps([], ensure_ascii=False),
+                    coverage_status=atom["coverage_status"],
+                    merge_group_id=atom["atom_id"],
+                )
+            )
+        case_specs = [
+            (
+                "TC-DB-001",
+                ["ATOM-0001"],
+                {
+                    **_cases()[0],
+                    "case_id": "TC-DB-001",
+                    "title": "数据库中的活动入口用例",
+                },
+            ),
+            (
+                "TC-DB-002",
+                ["ATOM-0002"],
+                {
+                    **_cases()[1],
+                    "case_id": "TC-DB-002",
+                    "title": "数据库中的奖励领取用例",
+                },
+            ),
+        ]
+        for case_id, atom_refs, fields in case_specs:
+            if not set(atom_refs).issubset(set(covered_atom_ids)):
+                continue
+            session.add(
+                GenerationCaseRecord(
+                    run_id=run.id,
+                    project_id=project_id,
+                    case_id=case_id,
+                    fields_json=json.dumps(fields, ensure_ascii=False),
+                    atom_refs_json=json.dumps(atom_refs, ensure_ascii=False),
+                    status="official",
+                )
+            )
+        uncovered_atom_ids = [
+            atom_id for atom_id in official_atom_ids if atom_id not in covered_atom_ids
+        ]
+        export_limitations = []
+        if uncovered_atom_ids:
+            export_limitations.append(
+                {
+                    "type": "uncovered_atoms",
+                    "level": "error" if strict_mode else "warning",
+                    "message": "存在 1 个未覆盖 Requirement Atom。",
+                    "atom_ids": uncovered_atom_ids,
+                    "blocks_export": strict_mode,
+                }
+            )
+        if failed_chunk:
+            export_limitations.append(
+                {
+                    "type": "failed_chunks",
+                    "level": "warning",
+                    "message": "存在 1 个失败 chunk，可能有未知覆盖缺口。",
+                    "failed_chunk_count": 1,
+                    "blocks_export": False,
+                }
+            )
+        audit_warnings = [
+            {"source": "coverage", "level": item["level"], "message": item["message"]}
+            for item in export_limitations
+        ]
+        if include_sensitive_payload:
+            audit_warnings.append(
+                {
+                    "source": "coverage",
+                    "level": "warning",
+                    "message": "raw_response prompt api_key=sk-v3-secret C:/secret/local.xlsx",
+                }
+            )
+        session.add(
+            CoverageAuditRecord(
+                run_id=run.id,
+                project_id=project_id,
+                status="completed" if not uncovered_atom_ids and not failed_chunk else "partial_completed",
+                total_atoms=len(official_atom_ids),
+                covered_atoms=len(covered_atom_ids),
+                uncovered_atoms=len(uncovered_atom_ids),
+                failed_chunk_count=1 if failed_chunk else 0,
+                uncovered_atom_ids_json=json.dumps(uncovered_atom_ids, ensure_ascii=False),
+                unfounded_case_count=1 if include_sensitive_payload else 0,
+                unfounded_candidates_json=json.dumps(
+                    [
+                        {
+                            "case_id": "BAD-001",
+                            "reason": "未采纳视觉 observation detail unadopted_img_001 provider_response",
+                        }
+                    ]
+                    if include_sensitive_payload
+                    else [],
+                    ensure_ascii=False,
+                ),
+                supplement_summary_json=json.dumps(
+                    {"attempted": bool(uncovered_atom_ids), "status": "partial"}
+                    if uncovered_atom_ids
+                    else {},
+                    ensure_ascii=False,
+                ),
+                export_limitations_json=json.dumps(export_limitations, ensure_ascii=False),
+                warnings_json=json.dumps(audit_warnings, ensure_ascii=False),
+            )
+        )
+        await session.commit()
+        return run.id
+
+
+@pytest.mark.anyio
+async def test_generation_run_export_returns_db_backed_workbook_with_coverage_sheet(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    """V3 导出只按 run_id 读取 DB 短期结果，并写出覆盖审计 Sheet。"""
+    run_id = await _seed_v3_export_run(test_project_id, status="completed")
+
+    response = await auth_client.post(
+        f"/api/v1/test-cases/generation-runs/{run_id}/export",
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith(
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+    workbook = _load_response_workbook(response)
+    assert workbook.sheetnames == ["测试用例", "用例蓝图", "生成说明", "覆盖审计"]
+    assert workbook["测试用例"]["A11"].value == 1
+    assert workbook["测试用例"]["D11"].value == "按配置开放入口"
+    assert workbook["用例蓝图"]["A1"].value == "蓝图节点"
+    assert workbook["生成说明"]["A1"].value == "项目"
+
+    audit_sheet = workbook["覆盖审计"]
+    assert [cell.value for cell in audit_sheet[1]] == [
+        "atom id",
+        "atom type",
+        "source sheet",
+        "source rows",
+        "requirement",
+        "coverage status",
+        "linked case ids",
+        "limitation notes",
+    ]
+    first_atom_row = [cell.value for cell in audit_sheet[2]]
+    assert first_atom_row == [
+        "ATOM-0001",
+        "rule",
+        "需求A",
+        "2",
+        "活动入口按配置开放",
+        "covered",
+        "TC-DB-001",
+        None,
+    ]
+
+
+@pytest.mark.anyio
+async def test_generation_run_export_allows_non_strict_partial_with_visible_limitations(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    """partial_completed 非严格模式可导出，但生成说明和覆盖审计要暴露限制。"""
+    run_id = await _seed_v3_export_run(
+        test_project_id,
+        status="partial_completed",
+        strict_mode=False,
+        uncovered=True,
+        failed_chunk=True,
+    )
+
+    response = await auth_client.post(
+        f"/api/v1/test-cases/generation-runs/{run_id}/export",
+    )
+
+    assert response.status_code == 200, response.text
+    workbook = _load_response_workbook(response)
+    workbook_text = _workbook_text(workbook)
+    assert "partial_completed" in workbook_text
+    assert "存在 1 个未覆盖 Requirement Atom" in workbook_text
+    assert "存在 1 个失败 chunk" in workbook_text
+    audit_rows = [
+        [cell.value for cell in row]
+        for row in workbook["覆盖审计"].iter_rows(min_row=2)
+    ]
+    uncovered_row = next(row for row in audit_rows if row[0] == "ATOM-0002")
+    assert uncovered_row[5] == "uncovered"
+    assert "存在 1 个未覆盖 Requirement Atom" in uncovered_row[7]
+
+
+@pytest.mark.anyio
+async def test_generation_run_export_blocks_strict_mode_with_uncovered_atoms(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    run_id = await _seed_v3_export_run(
+        test_project_id,
+        status="partial_completed",
+        strict_mode=True,
+        uncovered=True,
+    )
+
+    response = await auth_client.post(
+        f"/api/v1/test-cases/generation-runs/{run_id}/export",
+    )
+
+    assert response.status_code == 409
+    assert "严格模式下存在覆盖缺口，不能导出" in response.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("status", ["cancelled", "failed", "expired"])
+async def test_generation_run_export_rejects_non_exportable_terminal_runs(
+    auth_client: AsyncClient,
+    test_project_id: int,
+    status: str,
+) -> None:
+    run_id = await _seed_v3_export_run(test_project_id, status=status)
+
+    response = await auth_client.post(
+        f"/api/v1/test-cases/generation-runs/{run_id}/export",
+    )
+
+    assert response.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_generation_run_export_ignores_tampered_client_cases_payload(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    """V3 export 不接受前端回传 cases 作为事实来源。"""
+    run_id = await _seed_v3_export_run(test_project_id, status="completed")
+
+    response = await auth_client.post(
+        f"/api/v1/test-cases/generation-runs/{run_id}/export",
+        json={
+            "cases": [
+                {
+                    "case_id": "TC-TAMPER",
+                    "title": "客户端篡改用例",
+                    "atom_ids": ["ATOM-9999"],
+                }
+            ],
+            "stats": {"total": 999},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    workbook_text = _workbook_text(_load_response_workbook(response))
+    assert "TC-DB-001" in workbook_text
+    assert "TC-TAMPER" not in workbook_text
+    assert "客户端篡改用例" not in workbook_text
+    assert "999" not in workbook_text
+
+
+@pytest.mark.anyio
+async def test_generation_run_export_sanitizes_sensitive_values(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    run_id = await _seed_v3_export_run(
+        test_project_id,
+        status="completed",
+        include_sensitive_payload=True,
+    )
+
+    response = await auth_client.post(
+        f"/api/v1/test-cases/generation-runs/{run_id}/export",
+    )
+
+    assert response.status_code == 200, response.text
+    workbook_text = _workbook_text(_load_response_workbook(response))
+    for forbidden in (
+        "prompt should not leak",
+        "provider response should not leak",
+        "provider_response",
+        "raw_response",
+        "raw prompt",
+        "sk-v3-secret",
+        "source-token-secret",
+        "D:/secret",
+        "C:/secret",
+        "unadopted_img_001",
+        "observation detail",
+    ):
+        assert forbidden not in workbook_text
 
 
 @pytest.mark.anyio
@@ -578,6 +1190,84 @@ async def test_export_includes_only_adopted_visual_evidence_summary(
         "sk-",
     ):
         assert forbidden not in workbook_text
+
+
+@pytest.mark.anyio
+async def test_export_scopes_adopted_visual_evidence_to_current_sheet(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    run_id = await _seed_sheet_scope_source_evidence_run(test_project_id)
+    evidence_a = await _seed_sheet_visual_evidence(
+        test_project_id,
+        run_id,
+        ref="export_sheet_a_img",
+        summary="需求A截图显示 A 入口按钮。",
+    )
+    await _seed_sheet_visual_evidence(
+        test_project_id,
+        run_id,
+        ref="export_sheet_b_img",
+        summary="需求B截图显示 B 入口按钮。",
+    )
+
+    response = await auth_client.post(
+        "/api/v1/test-cases/export",
+        json=_export_payload(
+            source_evidence_run_id=run_id,
+            adopted_visual_evidence_ids=[evidence_a],
+            planning_sheet_name="需求A",
+        ),
+    )
+
+    assert response.status_code == 200, response.text
+    workbook = _load_response_workbook(response)
+    workbook_text = "\n".join(
+        str(cell.value)
+        for sheet in workbook.worksheets
+        for row in sheet.iter_rows()
+        for cell in row
+        if cell.value is not None
+    )
+    assert "当前 Planning Sheet：需求A" in workbook_text
+    assert "export_sheet_a_img" in workbook_text
+    assert "需求A截图显示 A 入口按钮" in workbook_text
+    assert "export_sheet_b_img" not in workbook_text
+    assert "需求B截图显示 B 入口按钮" not in workbook_text
+    for forbidden in (
+        "visual_evidence/images",
+        "visual_evidence/observations",
+        "provider_response",
+        "provider response must not leak",
+        "sha256:sheet-export",
+    ):
+        assert forbidden not in workbook_text
+
+
+@pytest.mark.anyio
+async def test_export_rejects_cross_sheet_adopted_visual_evidence(
+    auth_client: AsyncClient,
+    test_project_id: int,
+) -> None:
+    run_id = await _seed_sheet_scope_source_evidence_run(test_project_id)
+    evidence_b = await _seed_sheet_visual_evidence(
+        test_project_id,
+        run_id,
+        ref="export_sheet_b_img",
+        summary="需求B截图显示 B 入口按钮。",
+    )
+
+    response = await auth_client.post(
+        "/api/v1/test-cases/export",
+        json=_export_payload(
+            source_evidence_run_id=run_id,
+            adopted_visual_evidence_ids=[evidence_b],
+            planning_sheet_name="需求A",
+        ),
+    )
+
+    assert response.status_code == 400
+    assert "不属于当前 Sheet" in response.text
 
 
 @pytest.mark.anyio

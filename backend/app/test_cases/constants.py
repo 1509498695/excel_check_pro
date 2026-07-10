@@ -69,3 +69,40 @@ REFERENCE_MAX_FILE_BYTES = 20 * 1024 * 1024
 REFERENCE_DEFAULT_SHEET_NAMES: tuple[str, ...] = ("测试用例", "用例", "TestCases")
 
 REFERENCE_UNCATEGORIZED_NAME = "未分类"
+
+
+CANONICAL_PRIMARY_MODULES: tuple[str, ...] = (
+    "开关/入口",
+    "界面",
+    "按钮",
+    "功能",
+    "数值/配置",
+    "奖励/消耗",
+    "红点/提示",
+    "文本/多语言",
+    "兼容",
+    "特殊操作",
+    "常规测试点",
+)
+
+CANONICAL_CASE_FIELDS: tuple[str, ...] = (
+    "primary_module",
+    "secondary_module",
+    "checkpoint",
+    "preconditions",
+    "steps",
+    "expected_results",
+    "priority",
+    "remarks",
+)
+
+CANONICAL_CASE_FIELD_LABELS: dict[str, str] = {
+    "primary_module": "一级模块",
+    "secondary_module": "二级模块",
+    "checkpoint": "检查点",
+    "preconditions": "前置条件",
+    "steps": "操作步骤",
+    "expected_results": "预期结果",
+    "priority": "优先级",
+    "remarks": "备注",
+}

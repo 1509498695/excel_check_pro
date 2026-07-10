@@ -261,19 +261,35 @@ A project-member-visible workspace where users turn one planning sheet into a te
 _Avoid_: Personal check workspace, rule configuration workspace, manual rule editor
 
 **Generation Run**:
-A short-lived project-scoped workflow that turns one full planning sheet context into requirement atoms, a test case blueprint, generated case rows, and coverage audit results. It is not a permanent generation history or project QA knowledge library.
+A short-lived project-scoped workflow that turns one full planning sheet context into requirement atoms, a test case blueprint, generated case rows, coverage and quality audit results, and a verified artifact bundle. It is not a permanent generation history or project QA knowledge library.
 _Avoid_: Source Evidence Run, permanent generation history, project QA knowledge library, raw prompt log
 
 **QA Case Method**:
-A built-in testing method for test case generation that derives a blueprint before case rows, checks coverage dimensions, records assumptions and warnings, and treats statistics as code-computed facts rather than model claims.
+A built-in testing method for test case generation that derives a blueprint before case rows, requires executable and explicit expectations, checks coverage dimensions, records assumptions and warnings, and treats statistics as code-computed facts rather than model claims.
 _Avoid_: Editable knowledge library, raw prompt text, reference test case library, generated test case table
+
+**Method-Derived Test Point**:
+A testing concern introduced by the QA Case Method and anchored to one or more case-bearing requirement atoms. It may extend risk coverage but cannot invent product values, states, or rules absent from current source evidence.
+_Avoid_: Source requirement, reference case, untraceable common case, model guess
+
+**Test Case Export Template**:
+A repository-versioned workbook contract that defines the visible test-case hierarchy, execution columns, and summary layout for generated delivery. It shapes the exported artifact but is not a requirement source, reference test case, user-local download dependency, or generated result.
+_Avoid_: Reference test case, user-local download dependency, reference-defined schema, generated workbook
+
+**Generated Test Case Artifact**:
+A deterministic, verified file belonging to one short-lived Generation Run. The bundle contains the canonical workbook, blueprint Markdown, statistics JSON, coverage audit JSON, and quality audit JSON; files are rendered automatically from database truth, previewed or downloaded without regeneration, and deleted with the run's detailed TTL data.
+_Avoid_: Permanent generation history, frontend-built export, AI-generated binary, QA Workspace task artifact, source evidence
+
+**Template Test Case Row**:
+The canonical visible V3 case row containing a case number, two execution-view module levels, checkpoint, preconditions, steps, expected results, priority, remarks, and separate execution cells. Audit-only metadata remains outside this row contract.
+_Avoid_: Legacy generated case payload, dynamic reference-shaped row, coverage audit row, grouping-only row
 
 **Project QA Knowledge Library**:
 A future project-scoped collection of reviewed QA knowledge that could supplement the QA Case Method with project-specific testing lessons. It is distinct from the reference test case library and is not required for V1 generation.
 _Avoid_: Reference test case library, planning document, unreviewed raw source dump, V1 required input
 
 **Reference Test Case Library**:
-A project-scoped collection of existing test case materials used as style, field, hierarchy, and granularity examples for test case generation. It is shared by members of one project and guides output format and testing style, but is not a planning document or source requirement.
+A project-scoped collection of existing test case materials used as naming, hierarchy, and granularity examples for test case generation. It can guide testing style but cannot redefine the test case export template or act as a planning document or source requirement.
 _Avoid_: Personal case directory, global case library, planning document, requirement source, Reference Lookup File, configuration table
 
 **Reference Test Case Category**:
@@ -285,7 +301,7 @@ The optional set of reference test case materials selected from the current refe
 _Avoid_: Cross-category selection, implicit first-file selection, required reference selection, multiple primary references
 
 **Primary Reference Test Case**:
-An optional reference test case material within the current reference test case selection that most strongly influences generated test case fields, hierarchy, naming style, and case granularity when selected. It is not a source requirement and is not required for generation.
+An optional reference test case material within the current reference test case selection that most strongly influences generated hierarchy, naming style, and case granularity when selected. It cannot change the canonical export fields, is not a source requirement, and is not required for generation.
 _Avoid_: Requirement source, generated result, lookup reference file, secondary reference, multiple primaries
 
 **Reference Test Case Profile**:
@@ -300,13 +316,21 @@ _Avoid_: Silent omission, debug log, model disclaimer
 A traceable requirement unit extracted from a full planning sheet context before blueprint or case generation. Each atom represents one requirement fact, rule, state, configuration, visual fact, or open question and keeps its source location or evidence limitation.
 _Avoid_: Test case row, reference case, model guess, untraceable checklist item
 
+**Case-Bearing Requirement Atom**:
+An official requirement atom that can support executable test cases and therefore counts toward required coverage. Open questions and limitations remain traceable atoms but are not case-bearing until their missing rule or evidence is resolved.
+_Avoid_: Open question, limitation, unfounded candidate, reference-derived suggestion
+
 **Test Case Blueprint**:
 An intermediate testing outline derived from a planning sheet that names the feature areas, rules, scenarios, risks, and coverage dimensions before test case rows are produced.
 _Avoid_: Final test case table, coverage statistics, raw planning content
 
 **Coverage Audit**:
-A generated-result review that compares requirement atoms, blueprint nodes, and case rows to identify covered requirements, unmapped requirements, unfounded cases, failed chunks, and export limitations.
+A generated-result review that compares case-bearing requirement atoms, blueprint nodes, and case rows to identify covered requirements, unmapped requirements, unfounded cases, failed chunks, and export limitations.
 _Avoid_: Model-provided statistics, manual QA sign-off, test execution result, bug report
+
+**Case Quality Audit**:
+A generated-result review that checks official case rows against the QA Case Method, including explicit numeric expectations, core-property coverage, cross-entry consistency, inverse non-effect rules, refresh timing, and configuration-change regression.
+_Avoid_: Coverage Audit, model self-assessment, manual test execution, reference-case comparison
 
 **Project AI Credential**:
 An administrator-managed AI provider credential owned by a project and used by text-oriented project automation such as Feishu bot configuration-table lookups, AI-assisted validation helpers, and structured test case generation. It is separate from visual understanding credentials; individual users do not maintain separate text AI provider keys.

@@ -20,6 +20,7 @@ DIRECT_REQUIREMENTS = {
     "pydantic",
     "pandas",
     "openpyxl",
+    "pillow",
     "xlrd",
     "requests",
     "pytest",

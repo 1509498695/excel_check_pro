@@ -9,6 +9,7 @@ import pytest
 from httpx import AsyncClient
 from sqlalchemy import func, select
 
+
 from backend.app.ai.credentials import PROJECT_AI_UNAVAILABLE_MESSAGE
 from backend.app.ai.providers import ProviderConnectionError
 from backend.app.database import async_session_factory
@@ -20,6 +21,11 @@ from backend.app.models import (
 )
 from backend.app.security.crypto import encrypt_secret
 from backend.app.test_cases.constants import STANDARD_CASE_FIELDS
+
+
+pytestmark = pytest.mark.skip(
+    reason="V1 同步生成入口已停用；当前生成契约由 Generation Run 测试覆盖。"
+)
 
 
 def _snapshot_payload() -> dict[str, Any]:

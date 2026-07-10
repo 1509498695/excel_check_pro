@@ -6,6 +6,7 @@ import datetime
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
@@ -22,6 +23,27 @@ from backend.app.database import Base
 
 SOURCE_EVIDENCE_DEFAULT_TTL_DAYS = 7
 SOURCE_EVIDENCE_AUTHORIZATION_DEFAULT_TTL_DAYS = 90
+TEST_CASE_GENERATION_RUN_DEFAULT_TTL_DAYS = 7
+
+TEST_CASE_GENERATION_RUN_STATUSES = (
+    "queued",
+    "reading",
+    "chunking",
+    "extracting_atoms",
+    "merging_atoms",
+    "blueprinting",
+    "generating_cases",
+    "auditing_coverage",
+    "supplementing",
+    "auditing_quality",
+    "repairing_cases",
+    "rendering_artifacts",
+    "completed",
+    "partial_completed",
+    "failed",
+    "cancelled",
+    "expired",
+)
 
 
 def _default_source_evidence_expires_at() -> datetime.datetime:
@@ -33,6 +55,12 @@ def _default_source_evidence_expires_at() -> datetime.datetime:
 def _default_source_evidence_authorization_expires_at() -> datetime.datetime:
     return datetime.datetime.now(datetime.UTC) + datetime.timedelta(
         days=SOURCE_EVIDENCE_AUTHORIZATION_DEFAULT_TTL_DAYS,
+    )
+
+
+def _default_test_case_generation_run_expires_at() -> datetime.datetime:
+    return datetime.datetime.now(datetime.UTC) + datetime.timedelta(
+        days=TEST_CASE_GENERATION_RUN_DEFAULT_TTL_DAYS,
     )
 
 
@@ -953,3 +981,293 @@ class SourceEvidenceVisualObservationRecord(Base):
     )
 
     run: Mapped[SourceEvidenceRunRecord] = relationship(back_populates="visual_observations")
+
+
+class TestCaseGenerationRunRecord(Base):
+    """用例生成 V3 全量异步 Generation Run。
+
+    只保存运行状态、输入选择和结构化结果摘要，不保存 raw prompt 或 provider response。
+    """
+
+    __tablename__ = "test_case_generation_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ("
+            "'queued', 'reading', 'chunking', 'extracting_atoms', "
+                "'merging_atoms', 'blueprinting', 'generating_cases', "
+                "'auditing_coverage', 'supplementing', 'auditing_quality', "
+                "'repairing_cases', 'rendering_artifacts', 'completed', "
+            "'partial_completed', 'failed', 'cancelled', 'expired'"
+            ")",
+            name="ck_test_case_generation_runs_status",
+        ),
+        Index("ix_test_case_generation_runs_project_id", "project_id"),
+        Index("ix_test_case_generation_runs_status", "status"),
+        Index("ix_test_case_generation_runs_project_status", "project_id", "status"),
+        Index("ix_test_case_generation_runs_project_expires", "project_id", "expires_at"),
+        Index(
+            "ix_test_case_generation_runs_source_evidence_run",
+            "source_evidence_run_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    source_evidence_run_id: Mapped[int] = mapped_column(
+        ForeignKey("source_evidence_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    created_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    cancelled_by: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(String(32), default="queued", nullable=False)
+    planning_sheet_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    reference_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    primary_reference_id: Mapped[int | None] = mapped_column(
+        ForeignKey("test_case_reference_files.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    primary_reference_sheet_name: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+    strict_mode: Mapped[bool] = mapped_column(Boolean, default=False)
+    total_chunks: Mapped[int] = mapped_column(default=0)
+    completed_chunks: Mapped[int] = mapped_column(default=0)
+    failed_chunks: Mapped[int] = mapped_column(default=0)
+    atom_count: Mapped[int] = mapped_column(default=0)
+    case_count: Mapped[int] = mapped_column(default=0)
+    warning_count: Mapped[int] = mapped_column(default=0)
+    error_summary: Mapped[str] = mapped_column(Text, default="")
+    warnings_json: Mapped[str] = mapped_column(Text, default="[]")
+    summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    stage_payload_json: Mapped[str] = mapped_column(Text, default="{}")
+    minimal_audit_json: Mapped[str] = mapped_column(Text, default="{}")
+    expires_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=_default_test_case_generation_run_expires_at,
+        nullable=False,
+    )
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    cancelled_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    expired_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    cleaned_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    chunks: Mapped[list["TestCaseGenerationChunkRecord"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+    atoms: Mapped[list["TestCaseRequirementAtomRecord"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+    cases: Mapped[list["TestCaseGenerationCaseRecord"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+    coverage_audits: Mapped[list["TestCaseCoverageAuditRecord"]] = relationship(
+        back_populates="run",
+        cascade="all, delete-orphan",
+    )
+
+
+class TestCaseGenerationChunkRecord(Base):
+    """Generation Run 中的策划案 chunk 处理状态。"""
+
+    __tablename__ = "test_case_generation_chunks"
+    __table_args__ = (
+        Index(
+            "uq_test_case_generation_chunks_run_chunk_index",
+            "run_id",
+            "chunk_index",
+            unique=True,
+        ),
+        Index("ix_test_case_generation_chunks_run_id", "run_id"),
+        Index("ix_test_case_generation_chunks_project_id", "project_id"),
+        Index("ix_test_case_generation_chunks_project_status", "project_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("test_case_generation_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chunk_index: Mapped[int] = mapped_column(nullable=False)
+    source_row_start: Mapped[int | None] = mapped_column(nullable=True)
+    source_row_end: Mapped[int | None] = mapped_column(nullable=True)
+    source_column_start: Mapped[int | None] = mapped_column(nullable=True)
+    source_column_end: Mapped[int | None] = mapped_column(nullable=True)
+    title_hint: Mapped[str] = mapped_column(String(255), default="")
+    status: Mapped[str] = mapped_column(String(32), default="queued")
+    retry_count: Mapped[int] = mapped_column(default=0)
+    error_summary: Mapped[str] = mapped_column(Text, default="")
+    structure_hints_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    run: Mapped[TestCaseGenerationRunRecord] = relationship(back_populates="chunks")
+
+
+class TestCaseRequirementAtomRecord(Base):
+    """V3 从策划案 chunk 中提取并合并后的需求原子。"""
+
+    __tablename__ = "test_case_requirement_atoms"
+    __table_args__ = (
+        Index(
+            "uq_test_case_requirement_atoms_run_atom_id",
+            "run_id",
+            "atom_id",
+            unique=True,
+        ),
+        Index("ix_test_case_requirement_atoms_run_id", "run_id"),
+        Index("ix_test_case_requirement_atoms_project_id", "project_id"),
+        Index("ix_test_case_requirement_atoms_project_type", "project_id", "atom_type"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("test_case_generation_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chunk_id: Mapped[int | None] = mapped_column(
+        ForeignKey("test_case_generation_chunks.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    atom_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    atom_type: Mapped[str] = mapped_column(String(32), default="requirement")
+    requirement_text: Mapped[str] = mapped_column(Text, default="")
+    source_sheet_name: Mapped[str] = mapped_column(String(255), default="")
+    source_row_start: Mapped[int | None] = mapped_column(nullable=True)
+    source_row_end: Mapped[int | None] = mapped_column(nullable=True)
+    source_columns_json: Mapped[str] = mapped_column(Text, default="[]")
+    cell_excerpt: Mapped[str] = mapped_column(Text, default="")
+    visual_evidence_refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    warnings_json: Mapped[str] = mapped_column(Text, default="[]")
+    coverage_status: Mapped[str] = mapped_column(String(32), default="unmapped")
+    merge_group_id: Mapped[str] = mapped_column(String(64), default="")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    run: Mapped[TestCaseGenerationRunRecord] = relationship(back_populates="atoms")
+
+
+class TestCaseGenerationCaseRecord(Base):
+    """V3 生成的结构化用例行。"""
+
+    __tablename__ = "test_case_generation_cases"
+    __table_args__ = (
+        Index(
+            "uq_test_case_generation_cases_run_case_id",
+            "run_id",
+            "case_id",
+            unique=True,
+        ),
+        Index("ix_test_case_generation_cases_run_id", "run_id"),
+        Index("ix_test_case_generation_cases_project_id", "project_id"),
+        Index("ix_test_case_generation_cases_project_status", "project_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("test_case_generation_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    case_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    fields_json: Mapped[str] = mapped_column(Text, default="{}")
+    atom_refs_json: Mapped[str] = mapped_column(Text, default="[]")
+    status: Mapped[str] = mapped_column(String(32), default="official")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    run: Mapped[TestCaseGenerationRunRecord] = relationship(back_populates="cases")
+
+
+class TestCaseCoverageAuditRecord(Base):
+    """V3 覆盖率审计摘要。"""
+
+    __tablename__ = "test_case_coverage_audits"
+    __table_args__ = (
+        Index("uq_test_case_coverage_audits_run_id", "run_id", unique=True),
+        Index("ix_test_case_coverage_audits_project_id", "project_id"),
+        Index("ix_test_case_coverage_audits_project_status", "project_id", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("test_case_generation_runs.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    total_atoms: Mapped[int] = mapped_column(default=0)
+    covered_atoms: Mapped[int] = mapped_column(default=0)
+    uncovered_atoms: Mapped[int] = mapped_column(default=0)
+    unfounded_case_count: Mapped[int] = mapped_column(default=0)
+    failed_chunk_count: Mapped[int] = mapped_column(default=0)
+    uncovered_atom_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    unfounded_candidates_json: Mapped[str] = mapped_column(Text, default="[]")
+    supplement_summary_json: Mapped[str] = mapped_column(Text, default="{}")
+    export_limitations_json: Mapped[str] = mapped_column(Text, default="[]")
+    warnings_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    run: Mapped[TestCaseGenerationRunRecord] = relationship(back_populates="coverage_audits")

@@ -3,14 +3,25 @@
 from __future__ import annotations
 
 import datetime
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+from sqlalchemy import func, select
 
 from backend.app.database import async_session_factory
-from backend.app.models import Project, SourceEvidenceRunRecord, User
+from backend.app.models import (
+    Project,
+    SourceEvidenceRunRecord,
+    TestCaseCoverageAuditRecord as GenerationCoverageAuditRecord,
+    TestCaseGenerationCaseRecord as GenerationCaseRecord,
+    TestCaseGenerationChunkRecord as GenerationChunkRecord,
+    TestCaseGenerationRunRecord as GenerationRunRecord,
+    TestCaseRequirementAtomRecord as RequirementAtomRecord,
+    User,
+)
 from backend.app.services import runtime_cleanup
 from backend.app.test_cases import source_evidence_storage
 
@@ -81,6 +92,87 @@ async def _seed_runtime_source_evidence_run(
     return project_id, run.id
 
 
+async def _seed_runtime_generation_run(
+    *,
+    project_id: int,
+    source_evidence_run_id: int,
+    expires_at: datetime.datetime,
+) -> int:
+    async with async_session_factory() as session:
+        run = GenerationRunRecord(
+            project_id=project_id,
+            source_evidence_run_id=source_evidence_run_id,
+            status="queued",
+            planning_sheet_name="策划案",
+            reference_ids_json="[]",
+            total_chunks=1,
+            completed_chunks=1,
+            atom_count=1,
+            case_count=1,
+            stage_payload_json=json.dumps(
+                {"safe_summary": "runtime cleanup", "raw_response": "must not leak"},
+                ensure_ascii=False,
+            ),
+            expires_at=expires_at,
+        )
+        session.add(run)
+        await session.flush()
+        chunk = GenerationChunkRecord(
+            run_id=run.id,
+            project_id=project_id,
+            chunk_index=0,
+            status="completed",
+        )
+        session.add(chunk)
+        await session.flush()
+        session.add_all(
+            [
+                RequirementAtomRecord(
+                    run_id=run.id,
+                    project_id=project_id,
+                    chunk_id=chunk.id,
+                    atom_id="ATOM-RUNTIME-001",
+                    requirement_text="runtime cleanup should not leak detail",
+                ),
+                GenerationCaseRecord(
+                    run_id=run.id,
+                    project_id=project_id,
+                    case_id="TC-RUNTIME-001",
+                    fields_json=json.dumps(
+                        {"title": "runtime cleanup detail"},
+                        ensure_ascii=False,
+                    ),
+                    atom_refs_json=json.dumps(["ATOM-RUNTIME-001"], ensure_ascii=False),
+                ),
+                GenerationCoverageAuditRecord(
+                    run_id=run.id,
+                    project_id=project_id,
+                    status="completed",
+                    total_atoms=1,
+                    covered_atoms=1,
+                ),
+            ]
+        )
+        await session.commit()
+        return run.id
+
+
+async def _generation_run_detail_count(run_id: int) -> int:
+    async with async_session_factory() as session:
+        total = 0
+        for model in (
+            GenerationChunkRecord,
+            RequirementAtomRecord,
+            GenerationCaseRecord,
+            GenerationCoverageAuditRecord,
+        ):
+            result = await session.execute(
+                select(func.count(model.id)).where(model.run_id == run_id)
+            )
+            total += int(result.scalar_one() or 0)
+        return total
+
+
 @pytest.mark.anyio
 async def test_runtime_cleanup_dry_run_collects_source_evidence_without_deleting(
     test_db,
@@ -96,6 +188,7 @@ async def test_runtime_cleanup_dry_run_collects_source_evidence_without_deleting
     assert report.dry_run is True
     assert report.source_evidence_runs.run_ids == [run_id]
     assert report.source_evidence_runs.cleaned_count == 0
+    assert report.generation_runs.run_ids == []
     report_payload = report.to_dict()
     assert "source.md" not in str(report_payload)
     assert "source-evidence" not in str(report_payload)
@@ -145,6 +238,7 @@ async def test_runtime_cleanup_execute_cleans_only_expired_source_evidence(
     assert report.dry_run is False
     assert report.source_evidence_runs.run_ids == [expired_run_id]
     assert report.source_evidence_runs.cleaned_count == 1
+    assert report.generation_runs.run_ids == []
     assert not source_evidence_storage.resolve_source_evidence_path(
         project_id,
         expired_run_id,
@@ -180,3 +274,71 @@ async def test_runtime_cleanup_report_serializes_source_evidence_summary(test_db
     assert payload["source_evidence_runs"]["run_ids"] == [run_id]
     assert payload["source_evidence_runs"]["resource_count"] == 0
     assert payload["source_evidence_runs"]["observation_count"] == 0
+    assert payload["generation_runs"]["run_ids"] == []
+    assert payload["generation_runs"]["chunk_count"] == 0
+
+
+@pytest.mark.anyio
+async def test_runtime_cleanup_dry_run_collects_generation_runs_without_detail_leak(
+    test_db,
+) -> None:
+    now = datetime.datetime(2026, 7, 8, 9, 0, tzinfo=datetime.UTC)
+    project_id, source_run_id = await _seed_runtime_source_evidence_run(
+        expires_at=now + datetime.timedelta(days=1)
+    )
+    run_id = await _seed_runtime_generation_run(
+        project_id=project_id,
+        source_evidence_run_id=source_run_id,
+        expires_at=now - datetime.timedelta(seconds=1),
+    )
+
+    async with async_session_factory() as session:
+        report = await runtime_cleanup.collect_runtime_cleanup_candidates(session, now=now)
+
+    assert report.generation_runs.run_ids == [run_id]
+    assert report.generation_runs.cleaned_count == 0
+    assert report.generation_runs.chunk_count == 1
+    assert report.generation_runs.atom_count == 1
+    assert report.generation_runs.case_count == 1
+    payload_text = json.dumps(report.to_dict(), ensure_ascii=False)
+    assert "runtime cleanup detail" not in payload_text
+    assert "must not leak" not in payload_text
+
+
+@pytest.mark.anyio
+async def test_runtime_cleanup_execute_cleans_generation_run_details_only(
+    test_db,
+) -> None:
+    now = datetime.datetime(2026, 7, 8, 9, 0, tzinfo=datetime.UTC)
+    project_id, source_run_id = await _seed_runtime_source_evidence_run(
+        expires_at=now + datetime.timedelta(days=1)
+    )
+    source_file = source_evidence_storage.resolve_source_evidence_path(
+        project_id,
+        source_run_id,
+        "source.md",
+    )
+    run_id = await _seed_runtime_generation_run(
+        project_id=project_id,
+        source_evidence_run_id=source_run_id,
+        expires_at=now - datetime.timedelta(seconds=1),
+    )
+
+    async with async_session_factory() as session:
+        report = await runtime_cleanup.cleanup_runtime(False, session, now=now)
+
+    assert report.generation_runs.run_ids == [run_id]
+    assert report.generation_runs.cleaned_count == 1
+    assert report.source_evidence_runs.run_ids == []
+    assert source_file.read_text(encoding="utf-8") == "runtime sensitive source"
+    assert await _generation_run_detail_count(run_id) == 0
+
+    async with async_session_factory() as session:
+        run = await session.get(GenerationRunRecord, run_id)
+        source_run = await session.get(SourceEvidenceRunRecord, source_run_id)
+    assert run is not None
+    assert run.status == "expired"
+    assert run.cleaned_at is not None
+    assert run.stage_payload_json == "{}"
+    assert "runtime cleanup detail" not in run.minimal_audit_json
+    assert source_run is not None and source_run.status == "ready"
